@@ -144,12 +144,13 @@ Settings → Environments → „New environment“. Für jedes der drei Environ
 „Deployment branches and tags“ → „Selected branches and tags“ → „Add deployment branch or
 tag rule“ → Ref type **Branch**, Name pattern **`qas`**.
 
-> **Neu mit dem PR-Ablauf (ungeprüft):** Die Jobs laufen jetzt in `pull_request`-Läufen
-> (`GITHUB_REF` = `refs/pull/<n>/merge`). Die Regel „Branch `qas`“ passt dann
-> voraussichtlich nicht mehr. Was zu tun ist, steht in `RELEASE_QAS.md` unter
-> „Deployment-Branch-Regeln bei `pull_request`-Läufen“: zuerst Muster für die
-> Entwicklungsbranches ergänzen (z. B. `claude/*`), sonst „No restriction“ und in
-> `release` zusätzlich dich als Required reviewer.
+> **Neu mit dem PR-Ablauf (geprüft):** Die Jobs laufen jetzt in `pull_request`-Läufen;
+> GitHub prüft die Regel gegen `refs/pull/<n>/merge`. Die Regel „Branch `qas`“ allein
+> reicht nicht mehr (Fehler „Branch "refs/pull/20/merge" is not allowed to deploy to
+> qas“). In allen drei Environments zusätzlich die Branch-Regel `refs/pull/*/merge`
+> eintragen **(ungeprüft, ob angenommen)**; sonst „No restriction“ und in `release`
+> zusätzlich dich als Required reviewer. Details: `RELEASE_QAS.md`,
+> „Deployment-Branch-Regeln bei `pull_request`-Läufen“.
 
 - [ ] **`qas`** (Jobs `bundle-windows`, `bundle-macos`): keine Reviewer, Branch `qas`.
 - [ ] **`production`** (Job `abnahme`): Branch `qas`, **Required reviewers** anhaken →
@@ -328,8 +329,9 @@ Branch `qas` existiert (aus `main`).
       startet neu und bricht den laufenden Lauf ab.
 - [ ] Actions → „Release (QAS und Abnahme)“ → Lauf öffnen (Link auch im PR-Kommentar,
       sobald das Pre-Release steht). Fallback: „Run workflow“ mit der PR-Nummer.
-- [ ] Bleibt der Lauf mit „… is not allowed to deploy to …“ stehen: Deployment-Branch-
-      Regeln anpassen (1c, Hinweis „Neu mit dem PR-Ablauf“), Lauf neu starten.
+- [ ] Scheitert ein Job mit „Branch "refs/pull/<n>/merge" is not allowed to deploy to
+      …“: Deployment-Branch-Regeln anpassen (1c, Hinweis „Neu mit dem PR-Ablauf“), dann
+      „Re-run failed jobs“.
 - [ ] **Zusammenfassung prüfen** (unten auf der Lauf-Seite):
   - Job `version`: „QAS-Lauf für Version …“, Tabelle der KI-Modelle.
   - Warnungen, die ohne SignPath bzw. Schlüssel normal sind: „Windows-Installer
@@ -417,7 +419,7 @@ Diese erste Version mit Updater muss jeder einmal von Hand installieren.
 | `PR #… kommt aus …; PRs aus Forks bauen keine Releases.` | PR aus einem Fork | Branch im eigenen Repository anlegen. |
 | `Der Branch von PR #… enthält den aktuellen Stand von qas nicht` | `qas` hat sich weiterbewegt | Im PR „Update branch“ (Merge), neuer Lauf startet. |
 | `PR #… steht inzwischen auf …, getestet wurde …` (abnahme/release) | Push nach dem Start bzw. nach der Freigabe | Lauf zum neuen Stand abnehmen. Siehe `RELEASE_QAS.md`, „Abbruch nach der Abnahme“. |
-| `… is not allowed to deploy to … due to environment protection rules` **(ungeprüft)** | Deployment-Branch-Regel passt nicht zum PR-Lauf | 1c, Hinweis „Neu mit dem PR-Ablauf“. |
+| `Branch "refs/pull/<n>/merge" is not allowed to deploy to … due to environment protection rules` | Deployment-Branch-Regel passt nicht zum PR-Lauf | 1c, Hinweis „Neu mit dem PR-Ablauf“; dann „Re-run failed jobs“. |
 | `release-qas.yml`: `Der abgenommene Commit … ist in qas nicht enthalten, obwohl PR #… gemergt ist` | PR per Squash/Rebase gemergt | Ruleset auf Merge-Commit beschränken; Version erhöhen und neu abnehmen. |
 | Entwurf wird nach dem Merge nach `main` nicht veröffentlicht | Merge `qas` → `main` per Squash/Rebase oder Tag-Commit fehlt | Zusammenfassung von `release-main.yml` lesen; notfalls von Hand veröffentlichen. |
 | `Versionen passen nicht: Cargo.toml=… tauri.conf.json=… package.json=…` | Version nicht in allen drei Dateien gleich | Angleichen, erneut nach `qas`. |

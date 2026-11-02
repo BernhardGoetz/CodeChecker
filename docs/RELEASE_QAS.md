@@ -248,26 +248,27 @@ Settings → Environments:
 | `production` | **Bernhard** (Required reviewers); „Prevent self-review“ **aus** lassen, da Bernhard selbst pusht | siehe unten **(ungeprüft)** | keine (nur Freigabe) |
 | `release` | keine (die Freigabe erfolgt über `production`); siehe unten, falls die Branch-Regel entfallen muss | siehe unten **(ungeprüft)** | SignPath **Release-Signing** (dieselben Namen, `SIGNPATH_SIGNING_POLICY_SLUG` = `release-signing`); App-Updater: Secrets `TAURI_SIGNING_PRIVATE_KEY`, `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` ([`UPDATER.md`](UPDATER.md)) |
 
-**Deployment-Branch-Regeln bei `pull_request`-Läufen (ungeprüft, beim ersten Lauf
-klären):** Alle Jobs von `release.yml` laufen jetzt im Kontext eines Pull Requests.
-`GITHUB_REF` ist dort `refs/pull/<n>/merge`, `GITHUB_HEAD_REF` der Entwicklungsbranch.
-Gegen welchen Ref GitHub die Regel „Selected branches and tags“ prüft, konnte ich nicht
-nachlesen (docs.github.com war aus der Arbeitsumgebung nicht erreichbar). Die bisherige
-Regel „Branch `qas`“ passt sehr wahrscheinlich **nicht** mehr: Der Lauf bleibt dann am
-ersten Job mit Environment hängen bzw. schlägt fehl mit „Branch „…“ is not allowed to
-deploy to … due to environment protection rules“. Die Meldung nennt den geprüften Ref.
-Vorgehen:
+**Deployment-Branch-Regeln bei `pull_request`-Läufen (geprüft im Lauf 41503339956):**
+Alle Jobs von `release.yml` laufen jetzt im Kontext eines Pull Requests. GitHub prüft die
+Regel „Selected branches and tags“ dann gegen **`refs/pull/<n>/merge`**, nicht gegen den
+Head-Branch und nicht gegen `qas`. Mit der bisherigen Regel „Branch `qas`“ endet der
+erste Job mit Environment sofort mit:
+`Branch "refs/pull/20/merge" is not allowed to deploy to qas due to environment protection rules.`
+Vorgehen, in allen drei Environments (`qas`, `production`, `release`):
 
-1. Erst die Regel in allen drei Environments um ein Muster für die Entwicklungsbranches
-   ergänzen (z. B. `claude/*`, `feature/*`). Greift das (Lauf kommt an `bundle-windows`
-   vorbei), wird der Head-Branch geprüft.
-2. Nennt die Fehlermeldung `refs/pull/<n>/merge`, kann keine Branch-Regel passen. Dann für
-   `qas`, `production` und `release` „No restriction“ wählen und **in `release`
-   zusätzlich „Required reviewers: Bernhard“** setzen. Ohne Branch-Regel könnte sonst
-   jeder Workflow-Lauf mit Schreibrecht die Release-Secrets (Updater-Schlüssel,
+1. Regel ergänzen: „Add deployment branch or tag rule“ → Ref type **Branch** → Name
+   pattern **`refs/pull/*/merge`** **(ungeprüft: ob GitHub dieses Muster als Branch-Regel
+   annimmt und es passt; `*` passt nicht auf `/`, die PR-Nummer enthält keinen)**. Die
+   Regel `qas` kann bleiben.
+2. Wird das Muster nicht angenommen oder passt es nicht: „No restriction“ wählen und **in
+   `release` zusätzlich „Required reviewers: Bernhard“** setzen. Ohne Branch-Regel könnte
+   sonst jeder Workflow-Lauf mit Schreibrecht die Release-Secrets (Updater-Schlüssel,
    SignPath-Release-Token) benutzen. Bei einem Ein-Personen-Repository ist das
    Restrisiko gering; die zweite Freigabe kommt dann für `promote-windows` und
    `updater-sign` hinzu.
+
+Läufe aus Forks erreichen die Environments nicht: Der Job `version` läuft für Forks
+nicht, alle anderen Jobs hängen von ihm ab, und GitHub gibt Fork-Läufen keine Secrets.
 
 **Ruleset für `qas`** (Settings → Rules → Rulesets → Branch `qas`):
 
@@ -303,8 +304,8 @@ Weitere Einstellungen:
   „Restrict deletions“ behalten. **[ungeprüft: ob „GitHub Actions“ in der Bypass-Liste
   auswählbar ist]**
 - **SignPath:** Die Policies `test-signing` und `release-signing` prüfen den Git-Ref des
-  Laufs. Bei PR-Läufen ist das voraussichtlich `refs/pull/<n>/merge` (oder der
-  Head-Branch), nicht mehr `refs/heads/qas` **(ungeprüft)**. Den erlaubten Ref in beiden
+  Laufs. Bei PR-Läufen ist `GITHUB_REF` `refs/pull/<n>/merge` (geprüft), nicht mehr
+  `refs/heads/qas`; welchen Ref SignPath davon prüft, ist **ungeprüft**. Den erlaubten Ref in beiden
   Policies entsprechend anpassen; die Fehlermeldung von SignPath nennt den abgelehnten
   Ref. Siehe [`RELEASE_SIGNING.md`](RELEASE_SIGNING.md).
 

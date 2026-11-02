@@ -192,8 +192,8 @@ Die Foundation legt die Organisation an und lädt Bernhard ein. Dann in SignPath
    - Für `test-signing` ebenfalls `refs/heads/qas` zulassen.
    - **PR-Ablauf (ungeprüft):** `release.yml` läuft jetzt bei Pull Requests nach `qas`
      (`pull_request`). Der Ref des Laufs ist dann `refs/pull/<n>/merge`
-     (`GITHUB_REF`), der Head-Branch steht in `GITHUB_HEAD_REF`. Welchen Ref SignPath
-     prüft, ist nicht nachgeprüft; die Ablehnung nennt ihn. In beiden Policies den
+     (`GITHUB_REF`, im Lauf 41503339956 geprüft), der Head-Branch steht in
+     `GITHUB_HEAD_REF`. Welchen Ref SignPath prüft, ist nicht nachgeprüft; die Ablehnung nennt ihn. In beiden Policies den
      tatsächlich gemeldeten Ref bzw. ein passendes Muster erlauben.
 5. **CI-Benutzer / API-Token**: einen Benutzer für GitHub Actions anlegen (bzw. das eigene
    Konto), ihn in beiden Policies als **Submitter** eintragen und ein **API-Token**

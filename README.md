@@ -277,8 +277,8 @@ Herstellern aufbauen (z. B. Update-Prüfung); das liegt außerhalb des Code-Prü
 ### Nötige GitHub-Einstellungen (einmalig, durch den Repository-Inhaber)
 
 1. **Environments `qas`, `production` und `release`** anlegen (Settings → Environments),
-   „Deployment branches and tags“ passend zu PR-Läufen nach `qas` (**ungeprüft**, siehe
-   [`docs/RELEASE_QAS.md`](docs/RELEASE_QAS.md)). In `production` ist Bernhard
+   „Deployment branches and tags“ passend zu PR-Läufen nach `qas` (GitHub prüft
+   `refs/pull/<n>/merge`, siehe [`docs/RELEASE_QAS.md`](docs/RELEASE_QAS.md)). In `production` ist Bernhard
    „Required reviewer“ (QAS-Abnahme). Die Apple-Secrets (`APPLE_CERTIFICATE`, …) und die
    SignPath-Einträge für Test-Signing kommen nach `qas`, die SignPath-Einträge für
    Release-Signing nach `release`, jeweils als **Environment-Secrets** bzw.
