@@ -10,7 +10,9 @@
 #   MODE=pull              das veröffentlichte Image per Digest von GHCR holen
 #                          (Release-Workflow: identische Digests wie online);
 #                          benötigt IMAGE_DIGEST und genau eine Sprache
-#   IMAGE_DIGEST=sha256:…  Digest (Manifest-Liste) des gepushten Images
+#   IMAGE_DIGEST=sha256:…  Digest (Manifest-Liste) des gepushten Images; je
+#                          Plattform wird das zugehörige Manifest per Digest
+#                          gezogen (benötigt docker buildx)
 #   LANGUAGES="python java"
 #   IMAGE_REGISTRY=ghcr.io/<owner>  (Standard: IMAGE_REGISTRY aus languages.rs)
 #
@@ -59,6 +61,10 @@ command -v jq >/dev/null || {
   echo "jq wird benötigt." >&2
   exit 1
 }
+if [ "$mode" = pull ] && ! docker buildx version >/dev/null 2>&1; then
+  echo "MODE=pull benötigt docker buildx (imagetools)." >&2
+  exit 1
+fi
 
 sha256_of() {
   if command -v sha256sum >/dev/null; then
@@ -79,6 +85,28 @@ image_ids_of() {
   } | grep -E '^sha256:[0-9a-f]{64}$' | jq -R . | jq -cs 'unique'
 }
 
+# Digest des Manifests für linux/<arch> aus dem Index <repo>@<digest>
+# (Attestation-Manifeste mit Plattform unknown/unknown fallen weg; bei arm64
+# nur Variante v8 oder ohne Variante). Ist <digest> kein Index, sondern schon
+# ein einzelnes Manifest, wird er unverändert genutzt.
+platform_digest() {
+  local raw pd
+  raw="$(docker buildx imagetools inspect --raw "$1")" || return 1
+  if ! jq -e '.manifests | type == "array"' >/dev/null <<<"$raw"; then
+    printf '%s\n' "${1##*@}"
+    return
+  fi
+  pd="$(jq -r --arg a "$2" '[.manifests[]
+      | select(.platform.os == "linux" and .platform.architecture == $a)
+      | select($a != "arm64" or ((.platform.variant // "v8") == "v8"))
+      | .digest] | first // empty' <<<"$raw")"
+  if ! [[ "$pd" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+    echo "Kein Manifest für linux/$2 in $1." >&2
+    return 1
+  fi
+  printf '%s\n' "$pd"
+}
+
 mkdir -p "$out"
 digests="$out/image-digests.json"
 # Eine Datei einer anderen Version (oder kaputte Datei) wird ersetzt.
@@ -92,12 +120,22 @@ for lang in $languages; do
   file="$out/code-pruefer-$lang-$arch.tar.gz"
   echo "==> $ref ($arch) -> $file"
   if [ "$mode" = pull ]; then
-    docker pull --platform "linux/$arch" "$repo@$digest"
-    docker tag "$repo@$digest" "$ref"
+    # Pull per Plattform-Digest statt per Index-Digest: Der klassische
+    # Docker-Image-Store hält je Referenz nur eine Plattformvariante, ein
+    # zweiter Pull von <repo>@<Index-Digest> für die andere Plattform
+    # scheitert mit "cannot overwrite digest" (moby/moby#43188).
+    pdigest="$(platform_digest "$repo@$digest" "$arch")"
+    docker pull --platform "linux/$arch" "$repo@$pdigest"
+    docker tag "$repo@$pdigest" "$ref"
   else
     docker build --platform "linux/$arch" -t "$ref" "$root/images/$lang"
   fi
   docker save --platform "linux/$arch" "$ref" | gzip -6 > "$file.tmp"
+  if [ "$mode" = pull ]; then
+    # Referenzen dieser Plattform wieder entfernen, damit die nächste
+    # Plattform (gleiche Engine) nicht mit ihnen kollidiert.
+    docker image rm "$ref" "$repo@$pdigest" >/dev/null 2>&1 || true
+  fi
   # Plausibilitätsprüfung: Archiv lesbar und mit der erwarteten Referenz.
   tar -xzOf "$file.tmp" manifest.json | grep -q "\"$ref\"" || {
     echo "Archiv $file enthält $ref nicht." >&2

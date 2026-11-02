@@ -229,6 +229,21 @@ jobs:
           # Bewusst ohne Build-Cache (Schutz vor Cache-Poisoning).
           no-cache: true
 
+      # Diagnose: Version und Image-Store der Runner-Engine (klassischer
+      # Store "overlay2" bzw. containerd "driver-type io.containerd...").
+      # Der klassische Store hält je Referenz nur eine Plattform, daher
+      # zieht export-image-archives.sh je Plattform per Manifest-Digest.
+      - name: Docker-Engine (Diagnose)
+        run: |
+          set -euo pipefail
+          {
+            echo '### Docker-Engine'
+            echo '```'
+            docker version
+            docker info --format 'Storage-Driver: {{.Driver}} {{json .DriverStatus}}'
+            echo '```'
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+
       # Die Archive werden aus den gerade gepushten Images (per Digest)
       # erzeugt, damit Offline- und Online-Variante identische Digests haben.
       - name: Image-Archive exportieren (amd64, arm64)
