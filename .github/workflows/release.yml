@@ -2,21 +2,36 @@ name: Release (QAS und Abnahme)
 
 # Release-Ablauf mit QAS-Stufe und manueller Abnahme (docs/RELEASE_QAS.md):
 #
-#   push auf Branch "qas" (oder "Run workflow" auf qas)
-#     -> version, images, build-windows, bundle-windows, bundle-macos
+#   Pull Request <Entwicklungsbranch> -> qas (geöffnet, neuer Push, wieder
+#   geöffnet; nur Branches dieses Repositorys, nie Forks) oder "Run
+#   workflow" mit der PR-Nummer
+#     -> version: PR prüfen (offen, Basis qas, kein Fork, enthält qas),
+#        Version, Modellkatalog; gebaut wird der PR-Head-Commit
+#     -> images, build-windows, bundle-windows, bundle-macos
 #        (wie ein Release; Windows mit SignPath-Test-Signing aus dem
 #        Environment "qas", falls eingerichtet)
-#     -> qas-release: GitHub-Pre-Release v<version>-qas.<lauf> zum Testen
+#     -> qas-release: GitHub-Pre-Release v<version>-qas.<lauf> zum Testen,
+#        qas-kommentar: Kommentar mit den Links im PR
 #     -> abnahme: wartet auf "Approve and deploy" (Environment "production")
+#        und prüft danach, dass der PR-Head noch der getestete Commit ist
 #     -> promote-images: Images per Digest auf :<version> umtaggen
 #        promote-windows: dieselben unsignierten Programmdateien mit
 #        Release-Signing (Environment "release") neu bündeln
 #     -> updater-sign: Updater-Signaturen (Environment "release") über den
 #        finalen Windows-Installer und die macOS-Archive (.app.tar.gz)
-#     -> release: Tag v<version> auf dem QAS-Commit, Entwurfs-Release mit
-#        latest.json (App-Updater), SHA256SUMS.txt und
+#     -> release: Tag v<version> auf dem getesteten PR-Head-Commit,
+#        Entwurfs-Release mit latest.json (App-Updater), SHA256SUMS.txt und
 #        Build-Provenance-Attestierung
-#     -> pull-request: PR qas -> main
+#     -> abnahme-kommentar: Kommentar im PR "Abgenommen – bitte in qas
+#        mergen (Merge-Commit, kein Squash)". Der Workflow mergt nie.
+#   Danach (eigene Workflows, ohne Build):
+#     Merge des PRs in qas -> release-qas.yml: PR qas -> main anlegen
+#     Merge nach main      -> release-main.yml: Entwurfs-Release
+#                             veröffentlichen (latest)
+#
+# Ein neuer Push auf den PR bricht den laufenden Lauf ab (auch eine offene
+# Abnahme); abgenommen werden kann nur der neueste PR-Stand. Direkte Pushes
+# auf qas starten keinen Build mehr.
 #
 # Gebaut wird nur einmal (QAS); die Abnahme befördert genau diesen Build.
 # Im Einzelnen:
@@ -66,46 +81,106 @@ name: Release (QAS und Abnahme)
 # ersetzen. Matrix-Jobs schreiben je Eintrag einen eigenen Output-Namen; ein
 # fehlender Wert lässt die Prüfung scheitern.
 
+# pull_request (nicht pull_request_target): Der Lauf verwendet Workflow und
+# Code des PRs; Forks sind über die Bedingung im Job "version"
+# ausgeschlossen (sie bekämen ohnehin keine Secrets).
 on:
-  push:
+  pull_request:
     branches: [qas]
+    types: [opened, synchronize, reopened]
   workflow_dispatch:
+    inputs:
+      pr:
+        description: Nummer des offenen Pull Requests nach qas (baut dessen aktuellen Head-Commit)
+        required: true
+        type: string
 
 # Keine Rechte auf Workflow-Ebene; jeder Job bekommt nur, was er braucht.
 permissions: {}
 
-# Ein Lauf je Branch; ein neuer Push wartet, bis der laufende (auch eine
-# offene Abnahme) abgeschlossen oder abgelehnt ist.
+# Ein Lauf je Pull Request; ein neuer Push bricht den laufenden Lauf ab
+# (auch eine wartende Abnahme), damit nur der neueste Stand abgenommen
+# werden kann. Nach "Approve and deploy" nicht mehr auf den PR pushen: Das
+# bräche die Beförderung ab (docs/RELEASE_QAS.md, "Abbruch nach der
+# Abnahme").
 concurrency:
-  group: release-${{ github.ref }}
-  cancel-in-progress: false
+  group: release-pr-${{ github.event.pull_request.number || inputs.pr }}
+  cancel-in-progress: true
 
 jobs:
   version:
+    # Nur PRs aus diesem Repository (keine Forks); alle anderen Jobs hängen
+    # von diesem ab.
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      pull-requests: read # PR-Stand prüfen (scripts/pr-head-check.sh)
     outputs:
       version: ${{ steps.v.outputs.version }}
       registry: ${{ steps.v.outputs.registry }}
       qas_tag: ${{ steps.v.outputs.qas_tag }}
       catalog: ${{ steps.manifest.outputs.catalog }}
+      # Getesteter Commit (PR-Head, nicht der Test-Merge refs/pull/<n>/merge)
+      # und PR-Nummer; alle Jobs checken genau diesen Commit aus.
+      sha: ${{ steps.pr.outputs.sha }}
+      pr: ${{ steps.pr.outputs.pr }}
     steps:
+      - name: Pull Request und Commit bestimmen
+        id: pr
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          EVENT_PR: ${{ github.event.pull_request.number }}
+          EVENT_SHA: ${{ github.event.pull_request.head.sha }}
+          INPUT_PR: ${{ inputs.pr }}
+        run: |
+          set -euo pipefail
+          if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
+            pr="$EVENT_PR"
+            sha="$EVENT_SHA"
+          else
+            pr="$INPUT_PR"
+            if ! [[ "$pr" =~ ^[1-9][0-9]{0,9}$ ]]; then
+              echo "::error::Ungültige PR-Nummer: $pr"
+              exit 1
+            fi
+            sha="$(gh api "repos/$GH_REPO/pulls/$pr" --jq .head.sha)"
+          fi
+          if ! [[ "$sha" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::Kein gültiger Head-Commit für PR #$pr ($sha)."
+            exit 1
+          fi
+          {
+            echo "pr=$pr"
+            echo "sha=$sha"
+          } >> "$GITHUB_OUTPUT"
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ steps.pr.outputs.sha }}
           persist-credentials: false
+
+      # PR offen, Basis qas, kein Fork, Head unverändert und aktuell mit qas
+      # (sonst enthielte der spätere Merge ungetesteten Code).
+      - name: Pull Request prüfen
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PR: ${{ steps.pr.outputs.pr }}
+          HEAD_SHA: ${{ steps.pr.outputs.sha }}
+        run: scripts/pr-head-check.sh "$PR" "$HEAD_SHA" --up-to-date
 
       - name: Version und Image-Referenzen prüfen
         id: v
+        env:
+          PR: ${{ steps.pr.outputs.pr }}
+          HEAD_SHA: ${{ steps.pr.outputs.sha }}
         run: |
           set -euo pipefail
           cargo_version="$(sed -n 's/^version = "\(.*\)"$/\1/p' src-tauri/Cargo.toml | head -n 1)"
           tauri_version="$(jq -r .version src-tauri/tauri.conf.json)"
           npm_version="$(jq -r .version package.json)"
-          if [ "$GITHUB_REF" != "refs/heads/qas" ]; then
-            echo "::error::Releases laufen nur über den Branch qas (gestartet auf $GITHUB_REF)."
-            exit 1
-          fi
           for v in "$tauri_version" "$npm_version"; do
             if [ "$v" != "$cargo_version" ]; then
               echo "::error::Versionen passen nicht: Cargo.toml=$cargo_version tauri.conf.json=$tauri_version package.json=$npm_version"
@@ -127,7 +202,7 @@ jobs:
             echo "qas_tag=$qas_tag"
           } >> "$GITHUB_OUTPUT"
           {
-            echo "QAS-Lauf für Version $cargo_version: Pre-Release \`$qas_tag\`"
+            echo "QAS-Lauf für Version $cargo_version (PR #$PR, Commit \`$HEAD_SHA\`): Pre-Release \`$qas_tag\`"
             echo
             echo "Images (QAS): \`$registry/code-pruefer-<sprache>:${qas_tag#v}\`"
           } >> "$GITHUB_STEP_SUMMARY"
@@ -203,6 +278,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ needs.version.outputs.sha }}
           persist-credentials: false
       - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
@@ -224,7 +300,7 @@ jobs:
           # Nur QAS-Tags; :<version> setzt promote-images nach der Abnahme
           # (gleicher Digest, kein Neubau).
           tags: |
-            ${{ env.REPO }}:sha-${{ github.sha }}
+            ${{ env.REPO }}:sha-${{ needs.version.outputs.sha }}
             ${{ env.REPO }}:${{ env.QAS_IMAGE_TAG }}
           # Bewusst ohne Build-Cache (Schutz vor Cache-Poisoning).
           no-cache: true
@@ -323,6 +399,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ needs.version.outputs.sha }}
           persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
@@ -409,7 +486,7 @@ jobs:
           if-no-files-found: error
 
   bundle-windows:
-    needs: [images, build-windows]
+    needs: [version, images, build-windows]
     runs-on: windows-latest
     permissions:
       contents: read # Checkout
@@ -448,6 +525,7 @@ jobs:
     steps: &windows-bundle-steps
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ needs.version.outputs.sha }}
           persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
@@ -944,6 +1022,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ needs.version.outputs.sha }}
           persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
@@ -1075,6 +1154,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ needs.version.outputs.sha }}
           persist-credentials: false
 
       - name: Windows-Installer (QAS)
@@ -1137,6 +1217,7 @@ jobs:
           REGISTRY: ${{ needs.version.outputs.registry }}
           QAS_TAG: ${{ needs.version.outputs.qas_tag }}
           WINDOWS_SIGNED: ${{ needs.bundle-windows.outputs.signed }}
+          HEAD_SHA: ${{ needs.version.outputs.sha }}
         run: |
           set -euo pipefail
           shopt -s nullglob
@@ -1160,7 +1241,7 @@ jobs:
             gh release upload "$QAS_TAG" "${files[@]}" --clobber
           else
             gh release create "$QAS_TAG" "${files[@]}" --prerelease \
-              --target "$GITHUB_SHA" \
+              --target "$HEAD_SHA" \
               --title "Code-Prüfer ${VERSION} – QAS-Lauf ${GITHUB_RUN_NUMBER}" \
               --notes-file notes.md
           fi
@@ -1168,23 +1249,69 @@ jobs:
           echo "url=$url" >> "$GITHUB_OUTPUT"
           echo "QAS-Pre-Release: $url" >> "$GITHUB_STEP_SUMMARY"
 
+  # Links zum QAS-Stand im Pull Request (eigener Job: nur hier
+  # pull-requests: write).
+  qas-kommentar:
+    needs: [version, qas-release]
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write # Kommentar im PR
+    steps:
+      - name: Kommentar im Pull Request
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PR: ${{ needs.version.outputs.pr }}
+          HEAD_SHA: ${{ needs.version.outputs.sha }}
+          VERSION: ${{ needs.version.outputs.version }}
+          QAS_TAG: ${{ needs.version.outputs.qas_tag }}
+          QAS_URL: ${{ needs.qas-release.outputs.url }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          gh pr comment "$PR" --body "$(printf '%s\n' \
+            "QAS-Stand für Version ${VERSION} gebaut (Commit \`${HEAD_SHA}\`)." \
+            "" \
+            "- Pre-Release zum Testen: ${QAS_URL}" \
+            "- Lauf (Abnahme unter „Review deployments“): ${RUN_URL}" \
+            "" \
+            "Abgenommen werden kann nur dieser Stand; ein neuer Push bricht den Lauf ab und startet einen neuen.")"
+
   # Manuelle Abnahme: wartet, bis ein Pflicht-Reviewer des Environments
   # "production" den Lauf freigibt ("Review deployments" -> "Approve and
   # deploy"); "Reject" beendet den Lauf ohne Release. GitHub bricht eine
-  # offene Freigabe nach 30 Tagen ab.
+  # offene Freigabe nach 30 Tagen ab. Nach der Freigabe: Ist der PR-Head
+  # nicht mehr der getestete Commit (oder der PR zu), wird nichts befördert.
   abnahme:
     needs: [version, qas-release]
     runs-on: ubuntu-latest
-    permissions: {}
+    permissions:
+      contents: read # Checkout (scripts/pr-head-check.sh)
+      pull-requests: read # PR-Stand prüfen
     environment:
       name: production
       url: ${{ needs.qas-release.outputs.url }}
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.version.outputs.sha }}
+          persist-credentials: false
+
+      - name: PR-Head unverändert?
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PR: ${{ needs.version.outputs.pr }}
+          HEAD_SHA: ${{ needs.version.outputs.sha }}
+        run: scripts/pr-head-check.sh "$PR" "$HEAD_SHA"
+
       - name: Abnahme erteilt
         env:
           VERSION: ${{ needs.version.outputs.version }}
           QAS_TAG: ${{ needs.version.outputs.qas_tag }}
-        run: echo "QAS-Stand $QAS_TAG als Version $VERSION abgenommen (Commit $GITHUB_SHA)." >> "$GITHUB_STEP_SUMMARY"
+          PR: ${{ needs.version.outputs.pr }}
+          HEAD_SHA: ${{ needs.version.outputs.sha }}
+        run: echo "QAS-Stand $QAS_TAG als Version $VERSION abgenommen (PR #$PR, Commit $HEAD_SHA)." >> "$GITHUB_STEP_SUMMARY"
 
   # Images ohne Neubau befördern: :<version> zeigt danach auf denselben
   # Digest (Manifest-Liste) wie der getestete QAS-Tag.
@@ -1204,6 +1331,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ needs.version.outputs.sha }}
           persist-credentials: false
 
       - name: Prüfsummen der Images
@@ -1362,6 +1490,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         if: steps.mode.outputs.enabled == 'true'
         with:
+          ref: ${{ needs.version.outputs.sha }}
           persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         if: steps.mode.outputs.enabled == 'true'
@@ -1471,9 +1600,11 @@ jobs:
       contents: write # Tag v<version> und Entwurfs-Release anlegen
       id-token: write # Signatur der Attestierung (Sigstore)
       attestations: write # Attestierung speichern
+      pull-requests: read # PR-Stand vor dem Tag prüfen
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ needs.version.outputs.sha }}
           persist-credentials: false
 
       # Release-Fassung: Windows aus promote-windows, macOS aus QAS.
@@ -1567,7 +1698,18 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           VERSION: ${{ needs.version.outputs.version }}
-        run: scripts/check-version-unreleased.sh "v$VERSION" --rerun-ok "$GITHUB_SHA"
+          HEAD_SHA: ${{ needs.version.outputs.sha }}
+        run: scripts/check-version-unreleased.sh "v$VERSION" --rerun-ok "$HEAD_SHA"
+
+      # Unmittelbar vor dem Tag noch einmal: PR offen, Head = getesteter
+      # Commit (kein Push seit dem Start des Laufs).
+      - name: PR-Head unverändert?
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PR: ${{ needs.version.outputs.pr }}
+          HEAD_SHA: ${{ needs.version.outputs.sha }}
+        run: scripts/pr-head-check.sh "$PR" "$HEAD_SHA"
 
       - name: SHA256SUMS.txt
         working-directory: release
@@ -1594,6 +1736,7 @@ jobs:
           QAS_TAG: ${{ needs.version.outputs.qas_tag }}
           WINDOWS_SIGNED: ${{ needs.promote-windows.outputs.signed }}
           TAG_EXISTS: ${{ steps.check.outputs.tag_exists }}
+          HEAD_SHA: ${{ needs.version.outputs.sha }}
         run: |
           set -euo pipefail
           shopt -s nullglob
@@ -1610,7 +1753,7 @@ jobs:
           IMAGE_TAG="$VERSION" scripts/release-notes.sh release catalog/catalog.json > notes.md
           tag="v${VERSION}"
           if [ "$TAG_EXISTS" != "true" ]; then
-            gh api "repos/$GH_REPO/git/refs" -f ref="refs/tags/$tag" -f sha="$GITHUB_SHA" > /dev/null
+            gh api "repos/$GH_REPO/git/refs" -f ref="refs/tags/$tag" -f sha="$HEAD_SHA" > /dev/null
           fi
           if gh release view "$tag" >/dev/null 2>&1; then
             # Erneuter Lauf: Entwurf aktualisieren (veröffentlicht -> oben abgebrochen).
@@ -1630,31 +1773,29 @@ jobs:
             fi
           done
           if [ "$missing" -ne 0 ]; then exit 1; fi
-          echo "Entwurfs-Release $tag angelegt (Tag auf $GITHUB_SHA) – zum Veröffentlichen in GitHub auf 'Publish release' klicken (\"Set as the latest release\" angehakt lassen, sonst findet der App-Updater es nicht)." >> "$GITHUB_STEP_SUMMARY"
+          echo "Entwurfs-Release $tag angelegt (Tag auf $HEAD_SHA). Veröffentlicht wird es automatisch, sobald dieser Commit über qas in main angekommen ist (release-main.yml)." >> "$GITHUB_STEP_SUMMARY"
 
-  # Abgenommenen Stand nach main bringen – nur als Pull Request, nie direkt.
-  # Voraussetzung: Settings -> Actions -> General -> "Allow GitHub Actions to
-  # create and approve pull requests".
-  pull-request:
+  # Nach der Abnahme mergt der Workflow nicht selbst: Bernhard mergt den PR
+  # in qas (Merge-Commit, damit der Tag-Commit in qas enthalten ist);
+  # release-qas.yml legt danach den PR qas -> main an.
+  abnahme-kommentar:
     needs: [version, release]
     runs-on: ubuntu-latest
     permissions:
-      pull-requests: write # PR qas -> main anlegen
+      pull-requests: write # Kommentar im PR
     steps:
-      - name: Pull Request qas -> main
+      - name: Kommentar im Pull Request
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
+          PR: ${{ needs.version.outputs.pr }}
+          HEAD_SHA: ${{ needs.version.outputs.sha }}
           VERSION: ${{ needs.version.outputs.version }}
-          QAS_TAG: ${{ needs.version.outputs.qas_tag }}
         run: |
           set -euo pipefail
-          existing="$(gh pr list --base main --head qas --state open --json url -q '.[0].url')"
-          if [ -n "$existing" ]; then
-            echo "Pull Request existiert bereits: $existing" >> "$GITHUB_STEP_SUMMARY"
-            exit 0
-          fi
-          url="$(gh pr create --base main --head qas \
-            --title "Release v${VERSION} nach main" \
-            --body "Abgenommener QAS-Stand \`${QAS_TAG}\` (Commit ${GITHUB_SHA}), veröffentlicht als Release v${VERSION} (Entwurf). Automatisch angelegt vom Release-Workflow.")"
-          echo "Pull Request: $url" >> "$GITHUB_STEP_SUMMARY"
+          gh pr comment "$PR" --body "$(printf '%s\n' \
+            "Abgenommen – bitte in qas mergen (Merge-Commit, kein Squash)." \
+            "" \
+            "Tag \`v${VERSION}\` steht auf \`${HEAD_SHA}\`, das Release ist als Entwurf angelegt. Nach dem Merge legt release-qas.yml den PR qas -> main an; der Merge nach main veröffentlicht das Release (release-main.yml)." \
+            "" \
+            "Nicht mehr auf diesen Branch pushen: Bei Squash, Rebase oder neuen Commits ist der abgenommene Commit nicht in qas enthalten.")"
