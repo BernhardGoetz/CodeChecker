@@ -1311,7 +1311,8 @@ jobs:
           QAS_TAG: ${{ needs.version.outputs.qas_tag }}
           PR: ${{ needs.version.outputs.pr }}
           HEAD_SHA: ${{ needs.version.outputs.sha }}
-        run: echo "QAS-Stand $QAS_TAG als Version $VERSION abgenommen (PR #$PR, Commit $HEAD_SHA)." >> "$GITHUB_STEP_SUMMARY"
+        run: |
+          echo "QAS-Stand $QAS_TAG als Version $VERSION abgenommen (PR #$PR, Commit $HEAD_SHA)." >> "$GITHUB_STEP_SUMMARY"
 
   # Images ohne Neubau befördern: :<version> zeigt danach auf denselben
   # Digest (Manifest-Liste) wie der getestete QAS-Tag.
