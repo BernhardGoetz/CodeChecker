@@ -1,0 +1,32 @@
+name: Release veröffentlichen (main)
+
+# "Released auf main" (docs/RELEASE_QAS.md): Ist der Commit des Tags
+# v<version> jetzt in main enthalten und das Release dazu noch ein Entwurf,
+# wird es veröffentlicht und als "latest" markiert (der App-Updater fragt
+# releases/latest ab). Passt nichts, passiert nichts. Kein Build.
+
+on:
+  push:
+    branches: [main]
+
+permissions: {}
+
+concurrency:
+  group: release-main
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # Entwurfs-Release lesen und veröffentlichen
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Entwurfs-Release veröffentlichen
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: scripts/release-stage.sh main "$GITHUB_SHA"

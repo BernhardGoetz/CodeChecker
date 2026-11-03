@@ -167,9 +167,12 @@ benutzt.
 
 - Die erste Version **mit** Updater muss jeder einmal von Hand installieren. Ältere
   Versionen haben keinen Updater.
-- Ab der folgenden Version kommt das Update automatisch: Version erhöhen, QAS-Lauf,
-  Abnahme, Entwurf prüfen (enthält `latest.json`, `*.app.tar.gz`, Installer, DMGs) und
-  veröffentlichen, mit „Set as the latest release“ angehakt.
+- Ab der folgenden Version kommt das Update automatisch: Version erhöhen, PR nach `qas`
+  (QAS-Lauf), Abnahme, Entwurf prüfen (enthält `latest.json`, `*.app.tar.gz`, Installer,
+  DMGs), PR in `qas` mergen, PR `qas` → `main` mergen (jeweils Merge-Commit). Der Merge
+  nach `main` veröffentlicht den Entwurf und markiert ihn als „latest“
+  (`release-main.yml`, [`RELEASE_QAS.md`](RELEASE_QAS.md)). Erst ab dann sieht die App das
+  Update. Von Hand veröffentlichen geht auch („Set as the latest release“ angehakt).
 - Kontrolle nach dem Veröffentlichen:
   `curl -sL https://github.com/bernhardgoetz/entwicklung-test/releases/latest/download/latest.json`
   muss die neue Version zeigen.

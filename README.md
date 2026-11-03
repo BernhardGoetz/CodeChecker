@@ -226,7 +226,7 @@ Jede Prüfung startet einen frischen Container, der danach immer gelöscht wird:
   Job-Objekt; unter macOS/Linux beendet ihn der nächste App-Start (Pid-Datei, nur nach
   Prüfung der Exe).
 - **Lieferkette:** Runner-Images und Installer entstehen ausschließlich im
-  Release-Workflow auf dem Branch `qas` (QAS-Lauf, danach manuelle Abnahme). Basis-Images
+  Release-Workflow für Pull Requests nach `qas` (QAS-Lauf, danach manuelle Abnahme). Basis-Images
   und GitHub-Actions sind per Digest bzw. Commit-SHA gepinnt (Updates über Dependabot,
   7 Tage Wartezeit), Release-Jobs laufen ohne Caches und mit minimalen Token-Rechten. Den
   Versions-Tag `:<version>` der Images setzt erst die Abnahme, und zwar auf den getesteten
@@ -269,26 +269,29 @@ Herstellern aufbauen (z. B. Update-Prüfung); das liegt außerhalb des Code-Prü
   einem manipulierten Installationsordner (Abhilfe: signierte Installer).
 - Prozesse, die ein Test im Hintergrund startet, werden beendet, bleiben aber bis zum
   Ende der Prüfung als Zombie-Prozess im Container (zählen zum Limit von 64 Prozessen).
-- Ohne Pflicht-Reviewer im Environment `production` und ohne Schutz des Branches `qas`
-  kann jeder mit Schreibrecht auf das Repository einen Release auslösen (siehe nächster
-  Abschnitt).
+- Ohne Pflicht-Reviewer im Environment `production` kann jeder mit Schreibrecht auf das
+  Repository über einen PR nach `qas` einen Release auslösen; ein PR kann auch die
+  Workflow-Datei ändern (`pull_request` nutzt die Fassung des PRs). Vor der Abnahme die
+  Änderungen an `.github/` und `scripts/` prüfen (siehe nächster Abschnitt).
 
 ### Nötige GitHub-Einstellungen (einmalig, durch den Repository-Inhaber)
 
 1. **Environments `qas`, `production` und `release`** anlegen (Settings → Environments),
-   jeweils mit „Deployment branches and tags“ = Branch `qas`. In `production` ist Bernhard
+   „Deployment branches and tags“ passend zu PR-Läufen nach `qas` (GitHub prüft
+   `refs/pull/<n>/merge`, siehe [`docs/RELEASE_QAS.md`](docs/RELEASE_QAS.md)). In `production` ist Bernhard
    „Required reviewer“ (QAS-Abnahme). Die Apple-Secrets (`APPLE_CERTIFICATE`, …) und die
    SignPath-Einträge für Test-Signing kommen nach `qas`, die SignPath-Einträge für
    Release-Signing nach `release`, jeweils als **Environment-Secrets** bzw.
    **Environment-Variablen** und nicht im Repository. Genaue Tabelle:
    [`docs/RELEASE_QAS.md`](docs/RELEASE_QAS.md); SignPath:
    [`docs/RELEASE_SIGNING.md`](docs/RELEASE_SIGNING.md).
-2. **Branch `qas` schützen** (Ruleset: Push/Merge nur durch Bernhard, keine Force-Pushes).
+2. **Branches `qas` und `main` schützen** (Ruleset: Änderungen nur per Pull Request, nur
+   Merge-Commits, kein Squash/Rebase; keine Force-Pushes).
    **Tag-Schutz:** Settings → Rules → Rulesets → New tag ruleset, Ziel `v*`, „Restrict
    updates“ und „Restrict deletions“. Die Tags `v*` legt der Workflow selbst an, deshalb
    entweder „Restrict creations“ weglassen oder „GitHub Actions“ als Bypass eintragen.
 3. **Actions darf PRs anlegen:** Settings → Actions → General → „Allow GitHub Actions to
-   create and approve pull requests“ (für den PR `qas` → `main` nach der Abnahme).
+   create and approve pull requests“ (für den PR `qas` → `main`, `release-qas.yml`).
 4. **GHCR-Pakete öffentlich:** `code-pruefer-python` und `code-pruefer-java` unter
    GitHub → Packages → Package settings → „Change visibility“ auf **public** stellen
    (sonst funktionieren Download und „Images aktualisieren“ nicht).
@@ -553,11 +556,14 @@ Integrationstest für das Laden aus einem Archiv:
   `CARGO_PKG_VERSION`. `Cargo.toml`, `tauri.conf.json` und `package.json` müssen dieselbe
   Version haben (Unit-Test `versions_are_in_sync`).
 - Release auslösen (QAS mit Abnahme, [`docs/RELEASE_QAS.md`](docs/RELEASE_QAS.md)): Version
-  in den drei Dateien erhöhen, committen und auf den Branch **`qas`** bringen. Jeder Push
-  auf `qas` startet einen QAS-Lauf, der ein Pre-Release `v<version>-qas.<n>` zum Testen
-  anlegt. Nach „Approve and deploy“ (Environment `production`) wird genau dieser Build
-  befördert: Images per Digest auf `:<version>` umgetaggt, Windows mit Release-Signing neu
-  signiert, Tag `v<version>` und Entwurfs-Release angelegt, PR `qas` → `main` geöffnet.
+  in den drei Dateien erhöhen, committen und einen **Pull Request nach `qas`** öffnen.
+  Jeder Push auf den PR startet einen QAS-Lauf (der vorige wird abgebrochen), der ein
+  Pre-Release `v<version>-qas.<n>` zum Testen anlegt und im PR verlinkt. Nach „Approve and
+  deploy“ (Environment `production`) wird genau dieser Build befördert: Images per Digest
+  auf `:<version>` umgetaggt, Windows mit Release-Signing neu signiert, Tag `v<version>`
+  auf dem getesteten PR-Commit und Entwurfs-Release angelegt. Danach den PR in `qas`
+  mergen (Merge-Commit) → PR `qas` → `main` entsteht (`release-qas.yml`); dessen Merge
+  veröffentlicht das Release (`release-main.yml`). Direkte Pushes auf `qas` bauen nicht.
   Einen Tag `v*` von Hand zu pushen, startet keinen Release mehr.
 - Der Workflow prüft Versionen, Registry-Namensraum und dass `v<version>` noch frei ist,
   baut die Images multi-arch (linux/amd64, linux/arm64, ohne Build-Cache), pusht sie als
@@ -646,6 +652,8 @@ scripts/updater.mjs      App-Updater: Konfigurations-Overlay (öffentlicher Schl
                          Signaturprüfung, latest.json (release.yml)
 scripts/check-version-unreleased.sh, scripts/release-notes.sh
                          Release-Workflow: Version frei?, Release-Notizen
+scripts/pr-head-check.sh, scripts/release-stage.sh
+                         PR-Stand prüfen; PR qas → main, Release veröffentlichen
 .signpath/               SignPath-Artefaktkonfigurationen (zum Einfügen in SignPath)
 docs/CODE_SIGNING_POLICY.md, docs/RELEASE_SIGNING.md
                          Code-Signing-Policy (englisch) und Einrichtung (deutsch)
@@ -660,7 +668,8 @@ scripts/pin-models.sh    Modellkatalog aus der Hugging-Face-API pinnen (--check,
 scripts/artifact-manifest.sh  SHA-256-Manifeste der Release-Artefakte zwischen Jobs
 scripts/install-signer.sh     nur die Tauri-CLI für die Updater-Signatur (ohne npm ci)
 THIRD_PARTY_NOTICES.txt  Lizenzen von llama.cpp u. a. (wird mitgeliefert)
-.github/workflows/       ci.yml, images.yml (edge), release.yml (Branch qas: QAS, Abnahme, Release),
+.github/workflows/       ci.yml, images.yml (edge), release.yml (PRs nach qas: QAS, Abnahme, Release),
+                         release-qas.yml (PR qas → main), release-main.yml (Release veröffentlichen),
                          pin-models.yml (Modellkatalog pinnen → Pull Request)
 .github/dependabot.yml   Updates für Actions, npm, cargo, Basis-Images
 ```
