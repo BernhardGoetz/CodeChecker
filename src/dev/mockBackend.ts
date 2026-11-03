@@ -107,13 +107,13 @@ Behoben:
 
 function updateMock(param: string) {
   let info: UpdateInfo = {
-    currentVersion: "0.1.0",
+    currentVersion: "1.0.0",
     availability: param === "notConfigured" ? "notConfigured" : param === "portable" ? "portable" : "available",
     interval: "daily",
     lastCheck: Date.parse("2026-10-29T08:15:00Z"),
     releasesUrl: "https://github.com/bernhardgoetz/entwicklung-test/releases",
   };
-  const offer = { version: "0.2.0", currentVersion: "0.1.0", notes: UPDATE_NOTES, date: "2026-10-28T12:00:00Z" };
+  const offer = { version: "1.1.0", currentVersion: "1.0.0", notes: UPDATE_NOTES, date: "2026-10-28T12:00:00Z" };
   return async (cmd: string, a: Record<string, unknown>) => {
     switch (cmd) {
       case "update_info":

@@ -5,7 +5,8 @@
 #
 # Umgebung: VERSION, REGISTRY, GH_REPO, IMAGE_TAG (Tag der Runner-Images),
 # WINDOWS_NOTE (Signaturstatus Windows), QAS_TAG (nur release: getesteter
-# QAS-Stand).
+# QAS-Stand). Steht in CHANGELOG.md ein Abschnitt "## [<VERSION>]", wird er
+# unter "Änderungen" übernommen (sonst entfällt der Teil).
 set -euo pipefail
 
 kind="${1:?Aufruf: $0 <qas|release> <katalog.json>}"
@@ -20,7 +21,7 @@ if [ "$kind" = "qas" ]; then
 NOTES
 else
   cat <<NOTES
-Code-Prüfer ${VERSION} (Entwurf)
+Code-Prüfer ${VERSION}
 
 Abgenommen als QAS-Stand \`${QAS_TAG:-?}\`; Windows-Programmdateien und macOS-DMGs
 stammen aus genau diesem Build (Windows nur neu signiert, siehe docs/RELEASE_QAS.md).
@@ -34,6 +35,24 @@ cat <<NOTES
 NOTES
 if [ "$kind" = "release" ]; then
   echo "- Herkunft: \`gh attestation verify <Datei> --repo ${GH_REPO}\`"
+fi
+# Abschnitt der Version aus CHANGELOG.md (ohne Überschrift, ohne Leerzeilen
+# am Anfang/Ende); index() statt Regex, damit Punkte in der Version wörtlich gelten.
+changelog="$(dirname "$0")/../CHANGELOG.md"
+changes=""
+if [ -f "$changelog" ]; then
+  changes="$(awk -v head="## [${VERSION}]" '
+    index($0, head) == 1 { found = 1; next }
+    found && /^## / { exit }
+    found { lines[++n] = $0 }
+    END {
+      first = 1; while (first <= n && lines[first] ~ /^[[:space:]]*$/) first++
+      last = n; while (last >= first && lines[last] ~ /^[[:space:]]*$/) last--
+      for (i = first; i <= last; i++) print lines[i]
+    }' "$changelog")"
+fi
+if [ -n "$changes" ]; then
+  printf '\n## Änderungen in %s\n\n%s\n' "$VERSION" "$changes"
 fi
 cat <<NOTES
 

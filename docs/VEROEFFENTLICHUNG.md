@@ -360,6 +360,8 @@ Branch `qas` existiert (aus `main`).
       Release gibt (QAS-Tags `v0.1.0-qas.<n>` zählen nicht). Sonst erhöhen, z. B.
       `npm version 0.2.0 --no-git-tag-version` und die übrigen Dateien von Hand. Diese
       Dateien müssen übereinstimmen (Tabelle unten).
+- [ ] **`CHANGELOG.md`** um den Abschnitt `## [<version>] - <Datum>` ergänzen; er steht
+      dann auch in den Release-Notizen (ohne Abschnitt entfällt dieser Teil).
 - [ ] `IMAGE_REGISTRY = "ghcr.io/bernhardgoetz"` in `src-tauri/src/runner/languages.rs`
       unverändert lassen (wird gegen den Repository-Owner geprüft).
 
@@ -473,7 +475,8 @@ Diese erste Version mit Updater muss jeder einmal von Hand installieren.
 | `scripts/updater.mjs` | Updater-Overlay (`config`), Signatur prüfen (`verify`), `latest.json` (`manifest`) |
 | `scripts/install-signer.sh` | installiert nur die Tauri-CLI für `updater-sign` |
 | `scripts/artifact-manifest.sh` | SHA-256-Manifeste der Artefakte zwischen den Jobs |
-| `scripts/release-notes.sh` | Release-Notizen (QAS und Release) |
+| `scripts/release-notes.sh` | Release-Notizen (QAS und Release), übernimmt den Abschnitt der Version aus `CHANGELOG.md` |
+| `CHANGELOG.md` | Änderungsprotokoll (Abschnitt `## [<version>]` je Version) |
 | `scripts/fetch-llama-server.sh` | llama.cpp-Laufzeit `b11700`, SHA-256 gepinnt |
 | `scripts/export-image-archives.sh` | Image-Archive und `image-digests.json` |
 | `src-tauri/src/ai/catalog.json` | KI-Modellkatalog (Pins) |
@@ -484,7 +487,7 @@ Diese erste Version mit Updater muss jeder einmal von Hand installieren.
 | `src-tauri/Cargo.toml`, `package.json` | Version |
 | `src-tauri/src/runner/languages.rs` | `IMAGE_REGISTRY` |
 | `src-tauri/src/app_update.rs` | App-Updater (Endpunkt `latest.json`) |
-| `docs/updates/<version>.txt` | optionaler Update-Hinweis (gibt es noch nicht) |
+| `docs/updates/<version>.txt` | optionaler Update-Hinweis für den Dialog (Klartext, UTF-8; z. B. `docs/updates/1.0.0.txt`) |
 | `docs/RELEASE_QAS.md` | Ablauf QAS und Abnahme im Detail |
 | `docs/RELEASE_SIGNING.md` | Windows-Signatur über SignPath im Detail |
 | `docs/UPDATER.md` | App-Updater im Detail |
