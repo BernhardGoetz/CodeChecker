@@ -1,0 +1,9 @@
+Code-Prüfer 1.0.0 – die erste stabile Version.
+
+- Programmieraufgaben in Python und Java lokal in Docker oder Podman prüfen, in einer abgeschotteten Sandbox.
+- Vergleichsmodi Zeilen, Wörter und Zahlen mit Toleranz; Leerzeichen und Zeilenumbrüche am Zeilenende werden sichtbar gemacht.
+- Aufgabenblätter als Word, PDF oder Bild hochladen, mit Texterkennung und KI-Korrekturvorschlägen.
+- Testfälle mit lokaler KI erzeugen (llama.cpp), mit Konfidenzanzeige.
+- Einstellungen für Darstellung, Container-Engine, KI-Modell und Updates.
+
+Alle Änderungen stehen auf der Release-Seite auf GitHub.

@@ -677,20 +677,23 @@ THIRD_PARTY_NOTICES.txt  Lizenzen von llama.cpp u. a. (wird mitgeliefert)
 Eine neue Sprache benötigt einen Eintrag in `runner/languages.rs` und ein Dockerfile
 unter `images/`.
 
-## Einschränkungen des MVP
+## Bekannte Einschränkungen
 
 - Nur Python und Java; Java-Code muss eine Klasse `Main` enthalten (Datei `Main.java`).
 - Testfälle werden manuell eingegeben oder mit der lokalen KI vorgeschlagen (siehe „KI und
   Texterkennung“); keine Speicherung von Aufgaben/Testfällen.
 - Vergleich nur über stdout (Zeilen, Wörter oder Zahlen mit Toleranz).
-- Builds sind nicht signiert (Windows SmartScreen / macOS Gatekeeper warnen; Signatur ist
-  vorbereitet, Windows über die SignPath Foundation), kein Auto-Update der App (die Images lassen sich über „Images aktualisieren“ neu laden).
+- Builds sind noch nicht signiert: Windows SmartScreen und macOS Gatekeeper warnen beim
+  ersten Start (Windows-Signatur über die SignPath Foundation ist vorbereitet, siehe
+  „Code-Signing“; macOS-Signatur und Notarisierung fehlen noch).
+- Die portable Windows-Version aktualisiert sich nicht selbst (siehe „Updates“).
 - Mit eingebetteten Images ist der Installer deutlich größer (Java-Image ≈ 200 MB).
 - Benötigt eine Container-Engine (Docker Desktop oder Podman); der Windows-Installer kann
   sie über winget nachinstallieren.
+- Texterkennung nur unter Windows und macOS.
 
-Geplant für spätere Phasen: weitere Sprachen (C/C++/C#/JavaScript), signierter
-Aufgabenkatalog, macOS-Signatur, Updater.
+Geplant für spätere Versionen: weitere Sprachen (C/C++/C#/JavaScript), signierter
+Aufgabenkatalog, macOS-Signatur.
 
 ## Code-Signing
 
