@@ -1,6 +1,6 @@
 [package]
 name = "code-pruefer"
-version = "0.1.0"
+version = "1.0.0"
 description = "Code-Prüfer: Programmieraufgaben lokal in Docker-Containern testen"
 authors = ["Bernhard Goetz"]
 edition = "2021"

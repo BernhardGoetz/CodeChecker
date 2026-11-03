@@ -27,6 +27,10 @@ fn setup() {
     }
 }
 
+/// Image reference that is never present and can never be pulled
+/// (`.invalid` is a reserved TLD), independent of what GHCR contains.
+const UNRESOLVABLE_IMAGE: &str = "code-pruefer-does-not-exist.invalid/nope:0";
+
 fn tc(input: &str, expected: &str) -> TestCase {
     TestCase {
         name: String::new(),
@@ -361,38 +365,50 @@ async fn orphaned_sandboxes_are_removed() {
 #[tokio::test]
 #[ignore = "benötigt Docker und die Runner-Images"]
 async fn falls_back_to_local_dev_image_without_override() {
-    // Simulates a Windows start without env vars: the published default image
-    // is not present locally, so the locally built `:dev` tag must be used.
+    // Simulates a Windows start without env vars where the published default
+    // image is neither present nor downloadable: the locally built `:dev` tag
+    // must be used. Hermetic: the pinned reference of the real table may exist
+    // locally or in GHCR (it does once a version is released), so the test
+    // uses a copy of the Python config whose pinned image can never resolve
+    // (`.invalid` is a reserved TLD, so no pull can satisfy it). No bundle
+    // dir is set in this process, so there is no archive either.
     let old = std::env::var("CODE_PRUEFER_PYTHON_IMAGE").ok();
     std::env::remove_var("CODE_PRUEFER_PYTHON_IMAGE");
-    let r = runner::run_submission(
-        RunRequest {
-            language: "python".into(),
-            code: "print(input())".into(),
-            tests: vec![tc("x\n", "x\n")],
-            trim_whitespace: true,
-            compare_mode: None,
-            forbid_trailing_newline: false,
-        },
-        |_| {},
-    )
-    .await;
+    let mut lang = runner::language("python").unwrap().clone();
+    lang.default_image = UNRESOLVABLE_IMAGE;
+    let lang: &'static runner::languages::LanguageConfig = Box::leak(Box::new(lang));
+    let client = docker::connect().await.expect("engine");
+    let image = runner::prepare(&client, lang, &mut |_| {}).await;
+    let out = match &image {
+        Ok(image) => Some(
+            runner::run_program(
+                &client,
+                lang,
+                image,
+                "print(input())",
+                &["x\n".into()],
+                |_| {},
+            )
+            .await,
+        ),
+        Err(_) => None,
+    };
     if let Some(v) = old {
         std::env::set_var("CODE_PRUEFER_PYTHON_IMAGE", v);
     }
-    let r = r.expect("run_submission failed");
-    assert_eq!(r.image, "code-pruefer-python:dev");
-    assert_eq!(statuses(&r), vec![TestStatus::Passed]);
+    let image = image.expect("prepare failed");
+    assert_eq!(image, "code-pruefer-python:dev");
+    let out = out.unwrap().expect("run_program failed");
+    assert!(out.compile_ok);
+    assert_eq!(out.outputs.len(), 1);
+    assert_eq!(out.outputs[0].stdout, "x\n");
 }
 
 #[tokio::test]
 #[ignore = "benötigt Docker"]
 async fn missing_override_image_gives_actionable_error() {
     let old = std::env::var("CODE_PRUEFER_PYTHON_IMAGE").ok();
-    std::env::set_var(
-        "CODE_PRUEFER_PYTHON_IMAGE",
-        "code-pruefer-does-not-exist.invalid/nope:0",
-    );
+    std::env::set_var("CODE_PRUEFER_PYTHON_IMAGE", UNRESOLVABLE_IMAGE);
     let r = runner::run_submission(
         RunRequest {
             language: "python".into(),
