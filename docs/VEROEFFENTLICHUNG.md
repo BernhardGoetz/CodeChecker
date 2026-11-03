@@ -16,31 +16,35 @@ eingerichtet werden muss, und was danach für jede Version zu tun ist. Die Detai
 ## 0. Überblick
 
 ```
- Feature-Branch ──PR──► main ──► Branch qas (push oder „Run workflow“ auf qas)
+ Entwicklungsbranch ──PR──► qas   (jeder Push auf den PR startet den Lauf; Forks nie)
                                     │
   Workflow „Release (QAS und Abnahme)“ (.github/workflows/release.yml)
                                     ▼
-  version ─ Versionen gleich? v<version> frei? Modell-Pins gegen Hugging Face prüfen
+  version ─ PR prüfen (offen, Basis qas, enthält qas), Versionen gleich? v<version> frei?
+     │      Modell-Pins gegen Hugging Face prüfen; gebaut wird der PR-Head-Commit
      ├─ images ─────────── Images nach GHCR (:<version>-qas.<n>, :sha-<commit>)
      ├─ build-windows ──── code-pruefer.exe + KI-Laufzeit, unsigniert
      ├─ bundle-windows ─── Installer, SignPath Test-Signing  (Environment qas)
      └─ bundle-macos ───── DMGs, Apple-Signatur optional      (Environment qas)
                                     ▼
-  qas-release ─ Pre-Release v<version>-qas.<n> zum Testen
+  qas-release ─ Pre-Release v<version>-qas.<n> zum Testen, Kommentar mit Links im PR
                                     ▼
   abnahme ───── wartet auf dich: „Approve and deploy“          (Environment production)
+                PR-Head noch der getestete Commit? sonst Abbruch
                                     ▼
      ├─ promote-images ─── :<version> = derselbe Digest wie getestet
      └─ promote-windows ── dieselben Dateien, Release-Signing   (Environment release)
                                     ▼
   updater-sign ─ Updater-Signaturen (minisign)                 (Environment release)
                                     ▼
-  release ───── Tag v<version> + ENTWURFS-Release (latest.json, SHA256SUMS.txt, Attestierung)
+  release ───── Tag v<version> auf dem getesteten Commit + ENTWURFS-Release
+                (latest.json, SHA256SUMS.txt, Attestierung)
                                     ▼
-  pull-request ─ PR qas → main
+  Kommentar im PR: „Abgenommen – bitte in qas mergen (Merge-Commit, kein Squash)“
 
-  Du: Entwurf veröffentlichen („Set as the latest release“) → installierte Apps fragen
-  releases/latest/download/latest.json ab und bieten das Update an.
+  Du: PR in qas mergen (Merge-Commit)  → release-qas.yml legt PR qas → main an
+  Du: PR qas → main mergen (Merge-Commit) → release-main.yml veröffentlicht den Entwurf
+      als „latest“ → installierte Apps bieten das Update an.
 ```
 
 **Kosten**
@@ -58,10 +62,10 @@ Warnungen. Du kannst also mit den Schritten 1a–1e anfangen und SignPath (1f) u
 
 ## 1. Einmalige Vorbereitung
 
-Reihenfolge einhalten. Wichtig: **Den Branch `qas` erst in Abschnitt 2 anlegen.** Jeder
-Push auf `qas` (auch das Anlegen des Branches) startet sofort einen Release-Lauf. Bis dahin
-müssen die Environments existieren, sonst legt GitHub sie beim ersten Lauf automatisch
-**ohne** Schutzregeln an (siehe Abschnitt 5).
+Reihenfolge einhalten. Ein Release-Lauf startet mit jedem Pull Request nach `qas` (und
+jedem weiteren Push darauf); Pushes direkt auf `qas` starten keinen Build mehr. Vor dem
+ersten PR nach `qas` müssen die Environments existieren, sonst legt GitHub sie beim
+ersten Lauf automatisch **ohne** Schutzregeln an (siehe Abschnitt 5).
 
 ### a. GitHub-Grundeinstellungen
 
@@ -69,10 +73,11 @@ müssen die Environments existieren, sonst legt GitHub sie beim ersten Lauf auto
       „Enable two-factor authentication“. SignPath verlangt MFA bei GitHub und SignPath.
 - [ ] **Repository öffentlich** (Settings → General → Danger Zone → Change visibility).
       Nötig für die SignPath Foundation und für kostenlose Runner.
-- [ ] **Diesen Stand nach `main` bringen:** `main` enthält bisher nur den „Initial
-      commit“ ohne Workflows. Pull Request `claude/wonderful-pascal-maugv1` → `main`
-      anlegen und mergen. Grund: Den Knopf „Run workflow“ zeigt GitHub nur für Workflows,
-      die auf dem Standard-Branch liegen.
+- [x] **Workflows nach `main` bringen** (erledigt mit PR #1). Grund: Den Knopf „Run
+      workflow“ zeigt GitHub nur für Workflows, die auf dem Standard-Branch liegen.
+      Künftig kommen Änderungen nur über abgenommene Releases (`qas` → `main`) nach
+      `main`; geänderte Workflows wirken für PRs nach `qas` aber sofort, denn
+      `pull_request` verwendet die Workflow-Datei des PRs.
 - [ ] **Actions erlauben:** Settings → Actions → General → „Actions permissions“:
       „Allow all actions and reusable workflows“. Wenn du einschränkst, müssen erlaubt
       sein: `actions/*`, `docker/*`, `dtolnay/rust-toolchain`, `Swatinem/rust-cache`,
@@ -81,7 +86,7 @@ müssen die Environments existieren, sonst legt GitHub sie beim ersten Lauf auto
   - [ ] „Read repository contents and packages permissions“ (die Jobs fordern ihre
         Rechte selbst an).
   - [ ] Haken bei **„Allow GitHub Actions to create and approve pull requests“**. Sonst
-        scheitern `pin-models.yml` (Pin-PR) und der Job `pull-request` (PR `qas` → `main`).
+        scheitern `pin-models.yml` (Pin-PR) und `release-qas.yml` (PR `qas` → `main`).
   - [ ] „Save“.
 - [ ] **„Automatically delete head branches“ aus lassen** (Settings → General → Pull
       Requests). Sonst löscht GitHub `qas` nach dem Merge des PRs `qas` → `main`.
@@ -105,13 +110,20 @@ ruleset“.
 - [ ] Ruleset Name: `qas`, Enforcement status: **Active**.
 - [ ] Bypass list → „Add bypass“ → Rolle **Repository admin** (das bist du).
 - [ ] Target branches → „Add target“ → „Include by pattern“ → `qas`.
-- [ ] Rules: **Restrict deletions**, **Block force pushes**, dazu **Restrict updates**
-      (dann darf nur, wer in der Bypass-Liste steht, auf `qas` pushen oder mergen)
-      **(ungeprüft: ob „Restrict updates“ mit Admin-Bypass genau so wirkt)**.
+- [ ] Rules: **Restrict deletions**, **Block force pushes**, **Require a pull request
+      before merging** mit „Allowed merge methods“ = nur **Merge** (kein Squash, kein
+      Rebase: der Tag `v<version>` zeigt auf den getesteten Commit, nur ein Merge-Commit
+      übernimmt ihn) **(ungeprüft: Bezeichnungen in der Oberfläche)**. Optional „Require
+      status checks to pass“ (CI) mit „Require branches to be up to date“.
+- [ ] Dasselbe Ruleset (PR, nur Merge) auch für `main` anlegen: `main` bekommt nur noch
+      den PR `qas` → `main` nach der Abnahme.
 - [ ] „Create“.
 
-Warum: Die Environments `qas` und `release` vertrauen jedem Lauf auf `qas`. Wer auf `qas`
-pushen kann, kommt an deren Secrets.
+Warum: Releases laufen nur noch über PRs nach `qas`, und die Herkunft des Tags hängt am
+Merge-Commit. Wer einen PR nach `qas` öffnen kann (Schreibrecht), kann über den
+Workflow des PRs die Secrets des Environments `qas` nutzen; die Release-Secrets hängen an
+deiner Freigabe in `production` (Details: `RELEASE_QAS.md`, „Sicherheit des
+PR-Ablaufs“).
 
 **Tag-Ruleset `v*`:** Settings → Rules → Rulesets → New ruleset → „New tag ruleset“.
 
@@ -131,6 +143,14 @@ Vorarbeit von mir in: `docs/RELEASE_QAS.md` („Nötige GitHub-Einstellungen“)
 Settings → Environments → „New environment“. Für jedes der drei Environments:
 „Deployment branches and tags“ → „Selected branches and tags“ → „Add deployment branch or
 tag rule“ → Ref type **Branch**, Name pattern **`qas`**.
+
+> **Neu mit dem PR-Ablauf (geprüft):** Die Jobs laufen jetzt in `pull_request`-Läufen;
+> GitHub prüft die Regel gegen `refs/pull/<n>/merge`. Die Regel „Branch `qas`“ allein
+> reicht nicht mehr (Fehler „Branch "refs/pull/20/merge" is not allowed to deploy to
+> qas“). In allen drei Environments zusätzlich die Branch-Regel `refs/pull/*/merge`
+> eintragen **(ungeprüft, ob angenommen)**; sonst „No restriction“ und in `release`
+> zusätzlich dich als Required reviewer. Details: `RELEASE_QAS.md`,
+> „Deployment-Branch-Regeln bei `pull_request`-Läufen“.
 
 - [ ] **`qas`** (Jobs `bundle-windows`, `bundle-macos`): keine Reviewer, Branch `qas`.
 - [ ] **`production`** (Job `abnahme`): Branch `qas`, **Required reviewers** anhaken →
@@ -185,8 +205,10 @@ Abschnitt „Einrichtung durch Bernhard“.
 leer). Der Job `version` bricht dann jeden Release-Lauf ab. Pins entstehen nur über einen
 Pull Request, den du prüfst.
 
-- [ ] Actions → „KI-Modellkatalog pinnen“ → „Run workflow“ → Branch **`main`** → „Run
-      workflow“. (Auf `qas` würde der Merge des PRs sofort einen Release-Lauf starten.)
+- [ ] Actions → „KI-Modellkatalog pinnen“ → „Run workflow“ → Branch **`qas`** → „Run
+      workflow“. Der Pin-PR geht nach `qas` (`main` bekommt nur noch Releases). Der Merge
+      startet keinen Build; die Pins kommen mit dem nächsten Entwicklungs-PR, der `qas`
+      enthalten muss, in den QAS-Lauf.
 - [ ] Der Lauf legt den PR „KI-Modellkatalog pinnen“ an (Branch
       `pin-models/run-<id>`). Im PR die Tabelle prüfen: Revision in der Commit-Historie
       von `Qwen/Qwen2.5-Coder-1.5B-Instruct-GGUF` bzw. `Qwen/Qwen2.5-Coder-7B-Instruct-GGUF`,
@@ -258,6 +280,10 @@ blockiert).
      `refs/heads/qas`.
    - `release-signing`: Zertifikat der Foundation, Origin Verification an, manuelle
      Freigabe durch dich (Approver), erlaubter Ref `refs/heads/qas` (nicht Tags `v*`).
+   - Mit dem PR-Ablauf laufen die Signaturen in `pull_request`-Läufen; der Ref,
+     den SignPath sieht, ist dann voraussichtlich `refs/pull/<n>/merge` oder der
+     Head-Branch **(ungeprüft)**. Beim ersten Lauf nennt die Ablehnung den Ref; diesen
+     (bzw. ein Muster) erlauben.
 7. [ ] **API-Token:** CI-Benutzer (oder dein Konto) in beiden Policies als **Submitter**
        eintragen, API-Token erzeugen → Secret `SIGNPATH_API_TOKEN` in `qas` und `release`.
 8. [ ] **Organisations-ID** (Organisationseinstellungen bzw. oben rechts beim
@@ -295,13 +321,17 @@ und DMG bauen (signiert und notarisiert)“.
 
 ## 2. Erster Testlauf (QAS ohne Freigabe)
 
-Voraussetzungen: 1a–1d erledigt, Environments `qas`, `production`, `release` existieren.
+Voraussetzungen: 1a–1d erledigt, Environments `qas`, `production`, `release` existieren,
+Branch `qas` existiert (aus `main`).
 
-- [ ] **Branch `qas` anlegen** (startet den Lauf): Code → Branch-Auswahl → „View all
-      branches“ → „New branch“ → Name `qas`, Source `main`. Oder lokal
-      `git push origin main:qas`.
-- [ ] Actions → „Release (QAS und Abnahme)“ → Lauf öffnen. Später auch: „Run workflow“
-      → Branch `qas`.
+- [ ] **Pull Request nach `qas` öffnen** (startet den Lauf): Entwicklungsbranch (mit dem
+      aktuellen Stand von `qas`) → „New pull request“ → base **`qas`**. Jeder weitere Push
+      startet neu und bricht den laufenden Lauf ab.
+- [ ] Actions → „Release (QAS und Abnahme)“ → Lauf öffnen (Link auch im PR-Kommentar,
+      sobald das Pre-Release steht). Fallback: „Run workflow“ mit der PR-Nummer.
+- [ ] Scheitert ein Job mit „Branch "refs/pull/<n>/merge" is not allowed to deploy to
+      …“: Deployment-Branch-Regeln anpassen (1c, Hinweis „Neu mit dem PR-Ablauf“), dann
+      „Re-run failed jobs“.
 - [ ] **Zusammenfassung prüfen** (unten auf der Lauf-Seite):
   - Job `version`: „QAS-Lauf für Version …“, Tabelle der KI-Modelle.
   - Warnungen, die ohne SignPath bzw. Schlüssel normal sind: „Windows-Installer
@@ -343,8 +373,8 @@ Voraussetzungen: 1a–1d erledigt, Environments `qas`, `production`, `release` e
 
 - [ ] Optional: Update-Hinweis für den Dialog in `docs/updates/<version>.txt` (Klartext,
       UTF-8). Ohne Datei steht dort ein Standardtext.
-- [ ] Committen, per PR nach `main` (CI grün), dann `main` nach `qas`:
-      `git push origin main:qas` oder PR `main` → `qas`.
+- [ ] Committen, Branch mit `qas` aktualisieren, **PR nach `qas`** öffnen (CI und
+      QAS-Lauf starten).
 - [ ] **Testen** wie in Abschnitt 2 (Pre-Release `v<version>-qas.<n>`).
 - [ ] **Abnehmen:** „Review deployments“ → `production` → **„Approve and deploy“**.
 - [ ] **SignPath** (falls in `release` eingerichtet): In SignPath jeden Signing Request
@@ -353,36 +383,45 @@ Voraussetzungen: 1a–1d erledigt, Environments `qas`, `production`, `release` e
 - [ ] **Zusammenfassung prüfen:** `promote-images` (`:<version> -> sha256:…`),
       `promote-windows` („Vergleich mit dem QAS-Installer“, bei Release-Signing Status
       `Valid`), `updater-sign` (Signaturen), `release` (`latest.json`).
-- [ ] **Entwurf veröffentlichen:** Releases → Entwurf „Code-Prüfer <version>“ → Edit →
-      Dateien prüfen (Installer `Code-Pruefer_<version>_x64-setup.exe`, DMGs,
-      `latest.json`, `*.app.tar.gz`, `SHA256SUMS.txt`) → **„Set as the latest release“
-      angehakt lassen** → „Publish release“.
+- [ ] **Entwurf prüfen:** Releases → Entwurf „Code-Prüfer <version>“ → Dateien
+      (Installer `Code-Pruefer_<version>_x64-setup.exe`, DMGs, `latest.json`,
+      `*.app.tar.gz`, `SHA256SUMS.txt`).
+- [ ] **PR in `qas` mergen** (Kommentar „Abgenommen – bitte in qas mergen“): „Create a
+      merge commit“, **kein Squash**. Danach legt `release-qas.yml` den PR „Release
+      v<version> nach main“ (`qas` → `main`) an.
+- [ ] **PR `qas` → `main` mergen** („Create a merge commit“), Branch `qas` dabei **nicht**
+      löschen. Danach veröffentlicht `release-main.yml` den Entwurf als „latest“ (von
+      Hand ginge: Edit → „Set as the latest release“ → „Publish release“).
 - [ ] Kontrolle: `curl -sL https://github.com/bernhardgoetz/entwicklung-test/releases/latest/download/latest.json`
       zeigt die neue Version.
 - [ ] Optional: `gh attestation verify <Datei> --repo bernhardgoetz/entwicklung-test`.
-- [ ] **PR „Release v<version> nach main“** (`qas` → `main`) prüfen und mergen. Den
-      Branch `qas` dabei **nicht** löschen.
 
 Diese erste Version mit Updater muss jeder einmal von Hand installieren.
 
 ## 4. Jede weitere Version
 
-- [ ] Änderungen per PR nach `main`.
-- [ ] Bei Modell-Update: „KI-Modellkatalog pinnen“ auf `main`, PR prüfen und mergen.
+- [ ] Entwicklungsbranch von `qas` abzweigen bzw. mit `qas` aktualisieren.
+- [ ] Bei Modell-Update: „KI-Modellkatalog pinnen“ auf `qas`, Pin-PR prüfen und mergen.
 - [ ] Version in `src-tauri/Cargo.toml`, `src-tauri/tauri.conf.json`, `package.json`
       (+ `package-lock.json`, `src-tauri/Cargo.lock`) erhöhen; optional
       `docs/updates/<version>.txt`.
-- [ ] `main` nach `qas` bringen → QAS-Lauf startet.
-- [ ] Pre-Release testen → „Approve and deploy“ (oder „Reject“).
+- [ ] PR nach `qas` → QAS-Lauf startet (jeder Push erneut).
+- [ ] Pre-Release testen → „Approve and deploy“ (oder „Reject“). Danach nicht mehr pushen.
 - [ ] SignPath-Requests freigeben.
-- [ ] Entwurf veröffentlichen, „Set as the latest release“ angehakt.
-- [ ] `latest.json` per `curl` prüfen; PR `qas` → `main` mergen.
+- [ ] PR in `qas` mergen (Merge-Commit), dann PR `qas` → `main` mergen (Merge-Commit).
+- [ ] Veröffentlichung prüfen: `latest.json` per `curl`.
 
 ## 5. Fehlerbehebung
 
 | Meldung / Symptom | Ursache | Abhilfe |
 |---|---|---|
-| `Releases laufen nur über den Branch qas (gestartet auf …)` | „Run workflow“ auf anderem Branch | Auf `qas` starten. |
+| `PR #… geht nach …, Releases laufen nur über PRs nach qas.` / `… ist nicht offen` | Falsche PR-Nummer bei „Run workflow“ oder PR geschlossen | Offenen PR nach `qas` angeben. |
+| `PR #… kommt aus …; PRs aus Forks bauen keine Releases.` | PR aus einem Fork | Branch im eigenen Repository anlegen. |
+| `Der Branch von PR #… enthält den aktuellen Stand von qas nicht` | `qas` hat sich weiterbewegt | Im PR „Update branch“ (Merge), neuer Lauf startet. |
+| `PR #… steht inzwischen auf …, getestet wurde …` (abnahme/release) | Push nach dem Start bzw. nach der Freigabe | Lauf zum neuen Stand abnehmen. Siehe `RELEASE_QAS.md`, „Abbruch nach der Abnahme“. |
+| `Branch "refs/pull/<n>/merge" is not allowed to deploy to … due to environment protection rules` | Deployment-Branch-Regel passt nicht zum PR-Lauf | 1c, Hinweis „Neu mit dem PR-Ablauf“; dann „Re-run failed jobs“. |
+| `release-qas.yml`: `Der abgenommene Commit … ist in qas nicht enthalten, obwohl PR #… gemergt ist` | PR per Squash/Rebase gemergt | Ruleset auf Merge-Commit beschränken; Version erhöhen und neu abnehmen. |
+| Entwurf wird nach dem Merge nach `main` nicht veröffentlicht | Merge `qas` → `main` per Squash/Rebase oder Tag-Commit fehlt | Zusammenfassung von `release-main.yml` lesen; notfalls von Hand veröffentlichen. |
 | `Versionen passen nicht: Cargo.toml=… tauri.conf.json=… package.json=…` | Version nicht in allen drei Dateien gleich | Angleichen, erneut nach `qas`. |
 | `Die App erwartet Images unter …, der Workflow würde nach … pushen` | `IMAGE_REGISTRY` in `languages.rs` passt nicht zum Owner | `ghcr.io/bernhardgoetz` lassen (nur im Fork ändern). |
 | `Version … ist bereits vergeben (Tag: …, Release: …)` (Job `version`) | Tag `v<version>` oder Release existiert | Version erhöhen. |
@@ -393,21 +432,22 @@ Diese erste Version mit Updater muss jeder einmal von Hand installieren.
 | Warnung `SignPath ist im Environment … nicht eingerichtet – der Windows-Installer ist UNSIGNIERT` | Keine SignPath-Einträge | Gewollt bis 1f fertig ist. |
 | `… Signaturfehler` im Schritt „Signaturen prüfen“ | Release-Policy liefert keine gültige Signatur, oder Test-Slug enthält kein „test“, oder eine unbekannte exe/dll ist unsigniert | Policy und Slug prüfen; neue Dateien in `scripts/signpath-stage.mjs` und der Artefaktkonfiguration ergänzen. |
 | Zeitüberschreitung bei „Runde …: bei SignPath signieren“ | Request nicht innerhalb von 3600 s freigegeben | In SignPath freigeben, „Re-run failed jobs“. |
-| `Build artifact … cannot be signed because of build system validation errors` (aus `RELEASE_SIGNING.md`) | Trusted Build System fehlt, Ref `refs/heads/qas` nicht erlaubt, Repository-URL falsch | SignPath-Projekt/Policy korrigieren. |
+| `Build artifact … cannot be signed because of build system validation errors` (aus `RELEASE_SIGNING.md`) | Trusted Build System fehlt, Ref des PR-Laufs nicht erlaubt (siehe 1f, Punkt 6), Repository-URL falsch | SignPath-Projekt/Policy korrigieren. |
 | `Release-Installer weicht inhaltlich vom QAS-Installer ab` / `Signatur-Manifeste (app/llama) unterscheiden sich` | z. B. `SIGNPATH_SIGN_UPSTREAM` in `qas` und `release` verschieden | Gleich setzen, neuer QAS-Lauf. |
 | `Nach der letzten Runde ist noch … unsigniert.` | Uninstaller nicht reproduzierbar oder neue Datei | Log der Runde ansehen (`RELEASE_SIGNING.md`, „Fehlerbilder“). |
 | `Updater nur teilweise eingerichtet: …` | Nur Secret oder nur Variable gesetzt | Beide setzen (1e). |
 | Warnung `Updater nicht eingerichtet …` | Weder Secret noch Variable | Gewollt nur ohne Updater; sonst 1e. |
-| Lauf hängt bei `abnahme`, nach 30 Tagen fehlgeschlagen | GitHub bricht offene Freigaben nach 30 Tagen ab; Artefakte halten 30 Tage | Neuer QAS-Lauf (Push auf `qas` oder „Run workflow“). |
+| Lauf hängt bei `abnahme`, nach 30 Tagen fehlgeschlagen | GitHub bricht offene Freigaben nach 30 Tagen ab; Artefakte halten 30 Tage | Neuer QAS-Lauf (Push auf den PR oder „Run workflow“ mit der PR-Nummer). |
 | `abnahme` läuft ohne Freigabe durch | Environment `production` fehlte; GitHub legt ein referenziertes, nicht vorhandenes Environment automatisch **ohne** Schutzregeln an (laut GitHub-Doku, hier ungeprüft) | Sofort Required reviewer in `production` setzen; Entwurf nicht veröffentlichen, wenn nicht getestet. Gleiches gilt für `qas`/`release` (dann ohne Branch-Regel und ohne Secrets → unsigniert). |
-| Job `pull-request`: GitHub Actions darf keine PRs anlegen | Haken aus 1a fehlt | Setzen, Job neu starten. Das Release ist trotzdem fertig. |
+| `release-qas.yml`: GitHub Actions darf keine PRs anlegen | Haken aus 1a fehlt | Setzen, Lauf neu starten. Der Release-Entwurf ist trotzdem fertig. |
 | Tag anlegen scheitert (Ruleset) in `qas-release` oder `release` | Tag-Ruleset mit „Restrict creations“ | Haken entfernen (1b), Job neu starten. |
 | `…:<version> existiert bereits mit anderem Digest` (promote-images) | Image-Tag wurde anders gesetzt | Version erhöhen. |
 | `Asset … fehlt im Release (GitHub hat den Namen geändert?)` | Asset-Name verändert | Log prüfen, Job neu starten. |
 | `… existiert und ist kein Pre-Release.` (qas-release) | QAS-Tag als normales Release markiert | Release/Tag `v<version>-qas.<n>` löschen, neu starten. |
 | Pakete in GHCR privat, App lädt keine Images | Standard nach dem ersten Push | Auf Public stellen (1a). |
-| „Run workflow“-Knopf fehlt | Workflow liegt nicht auf `main` | Stand nach `main` mergen (1a). |
-| Neuer Push auf `qas` startet nicht sofort | Concurrency: ein Lauf je Branch, wartet auf den laufenden (auch auf offene Abnahme) | Alten Lauf abnehmen oder ablehnen. |
+| „Run workflow“-Knopf fehlt | Workflow liegt nicht auf `main` | Kommt mit dem ersten Release nach `main`; bis dahin über PRs nach `qas`. |
+| Push direkt auf `qas` startet keinen Lauf | Gewollt: Builds nur über PRs nach `qas` | PR nach `qas` öffnen. |
+| Lauf wurde „cancelled“ | Neuer Push auf denselben PR (ein Lauf je PR) | Den neuen Lauf verwenden. |
 
 „Re-run failed jobs“ nach der Abnahme geht, solange die Artefakte existieren (30 Tage);
 `release` und `promote-images` sind dafür wiederholbar ausgelegt.
@@ -416,13 +456,17 @@ Diese erste Version mit Updater muss jeder einmal von Hand installieren.
 
 | Datei | Zweck |
 |---|---|
-| `.github/workflows/release.yml` | Release-Pipeline: QAS-Lauf, Abnahme, Beförderung, Entwurfs-Release, PR `qas` → `main` |
+| `.github/workflows/release.yml` | Release-Pipeline je PR nach `qas`: QAS-Lauf, Abnahme, Beförderung, Tag + Entwurfs-Release, PR-Kommentare |
+| `.github/workflows/release-qas.yml` | nach dem Merge in `qas`: PR `qas` → `main` (prüft Merge-Commit) |
+| `.github/workflows/release-main.yml` | nach dem Merge in `main`: Entwurfs-Release veröffentlichen (latest) |
 | `.github/workflows/pin-models.yml` | „KI-Modellkatalog pinnen“: Pins per PR |
 | `.github/workflows/ci.yml` | CI auf `main`, `qas` und PRs (Build, Tests, Clippy, Docker-Tests) |
 | `.github/workflows/images.yml` | Runner-Images `:edge`/`:sha-…` bei Änderungen unter `images/` |
 | `.signpath/artifact-configurations/default.xml` | SignPath-Artefaktkonfiguration (nur eigene Dateien) |
 | `.signpath/artifact-configurations/with-upstream.xml` | dito, mit llama.cpp und NSIS-Plugins (nur nach Zusage) |
 | `scripts/check-version-unreleased.sh` | prüft, ob `v<version>` noch frei ist |
+| `scripts/pr-head-check.sh` | PR offen, Basis `qas`, kein Fork, Head = getesteter Commit (optional aktuell mit `qas`) |
+| `scripts/release-stage.sh` | Logik von `release-qas.yml` und `release-main.yml` |
 | `scripts/pin-models.sh` | Katalog pinnen, `--check`, `--verify` |
 | `scripts/signpath-stage.mjs` | Brücke Tauri-`signCommand` ↔ SignPath (Runden) |
 | `scripts/signpath-round.sh` | wertet eine Signaturrunde aus |
@@ -450,11 +494,8 @@ Diese erste Version mit Updater muss jeder einmal von Hand installieren.
 
 - `.github/workflows/images.yml` (Kommentar): „Die Versions-Tags (:<version>) pusht
   ausschließlich release.yml beim Versions-Tag v<version>.“ Tatsächlich startet
-  `release.yml` beim Push auf `qas`, und `:<version>` setzt erst `promote-images` nach der
+  `release.yml` bei PRs nach `qas`, und `:<version>` setzt erst `promote-images` nach der
   Abnahme. Ein Tag `v*` startet nichts.
-- `docs/RELEASE_QAS.md` schlägt vor, den Pin-Workflow z. B. auf `qas` zu starten. Das
-  geht, aber der Merge des Pin-PRs in `qas` startet sofort einen Release-Lauf. Diese
-  Anleitung empfiehlt deshalb `main`.
 - `SIGNPATH_ARTIFACT_CONFIGURATION_SLUG` wird an SignPath übergeben, zählt aber nicht zu
   den vier Einträgen, die der Workflow auf Vollständigkeit prüft. Ein Tippfehler darin
   fällt erst bei SignPath auf.

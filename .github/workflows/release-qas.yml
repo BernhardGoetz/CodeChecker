@@ -1,0 +1,36 @@
+name: Release nach main (PR qas -> main)
+
+# Nach dem Merge eines abgenommenen PRs in qas (docs/RELEASE_QAS.md):
+# Enthält qas den abgenommenen Commit (Tag v<version>, gesetzt vom Job
+# "release" in release.yml), wird der PR qas -> main angelegt. Kein Build.
+# Wurde der PR per Squash/Rebase gemergt, fehlt der Tag-Commit in qas: Der
+# Lauf schlägt mit Erklärung fehl (auch als Kommentar im PR).
+# Voraussetzung: Settings -> Actions -> General -> "Allow GitHub Actions to
+# create and approve pull requests".
+
+on:
+  push:
+    branches: [qas]
+
+permissions: {}
+
+concurrency:
+  group: release-qas
+  cancel-in-progress: false
+
+jobs:
+  pull-request:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read # Checkout, Tag und Vergleich lesen
+      pull-requests: write # PR qas -> main anlegen, Hinweis im PR
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Abgenommenen Stand prüfen, PR qas -> main
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: scripts/release-stage.sh qas "$GITHUB_SHA"
