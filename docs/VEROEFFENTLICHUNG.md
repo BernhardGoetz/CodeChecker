@@ -487,7 +487,7 @@ Diese erste Version mit Updater muss jeder einmal von Hand installieren.
 | `src-tauri/Cargo.toml`, `package.json` | Version |
 | `src-tauri/src/runner/languages.rs` | `IMAGE_REGISTRY` |
 | `src-tauri/src/app_update.rs` | App-Updater (Endpunkt `latest.json`) |
-| `docs/updates/<version>.txt` | optionaler Update-Hinweis (gibt es noch nicht) |
+| `docs/updates/<version>.txt` | optionaler Update-Hinweis für den Dialog (Klartext, UTF-8; z. B. `docs/updates/1.0.0.txt`) |
 | `docs/RELEASE_QAS.md` | Ablauf QAS und Abnahme im Detail |
 | `docs/RELEASE_SIGNING.md` | Windows-Signatur über SignPath im Detail |
 | `docs/UPDATER.md` | App-Updater im Detail |
