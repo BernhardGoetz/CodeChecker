@@ -359,7 +359,7 @@ export default function App() {
   const onAiResult = (r: GenerateResult) => {
     setAiNote(null);
     setOutputTemplates(r.outputTemplates ?? []);
-    if (r.referenceSolution) setReference({ code: r.referenceSolution, language: languageId });
+    setReference(r.referenceSolution ? { code: r.referenceSolution, language: languageId } : null);
     if (r.tests.length === 0) return;
     const prev = testsRef.current;
     const room = Math.max(0, MAX_TESTS - prev.length);
