@@ -5,7 +5,9 @@
 use serde_json::{json, Value};
 
 use super::llama::ChatMessage;
-use crate::runner::template::{OutputTemplate, MAX_PLACEHOLDERS, MAX_TEMPLATES};
+use crate::runner::template::{
+    placeholder_kind, OutputTemplate, PlaceholderKind, MAX_PLACEHOLDERS, MAX_TEMPLATES,
+};
 
 /// Upper bound for examples taken from the task sheet.
 pub const MAX_EXAMPLES: usize = 5;
@@ -54,8 +56,9 @@ string. Never put an output template (see below) into examples.\n\
 - outputTemplates: output format templates, in which placeholder values stand in for the \
 real values (e.g. \"12345678 seconds have passed\" when the task says 12345678 is only a \
 placeholder, or \"<n>\"/\"X\"). text: the template copied character by character; \
-placeholders: the placeholder tokens exactly as they appear in the text. A template is not \
-an example. Empty list if there is none.\n\
+placeholders: the placeholder tokens exactly as they appear in the text. A template spanning \
+several consecutive lines is ONE template; never split it into one template per line. A \
+template is not an example. Empty list if there is none.\n\
 - compareMode: \"float\" if the output contains decimal numbers where tiny rounding \
 differences are acceptable, \"tokens\" if only the words/numbers matter and spacing or \
 line breaks do not, otherwise \"lines\".\n\
@@ -168,6 +171,14 @@ pub fn solution_messages(
              computes, and keep all other text unchanged:\n```\n{}\n```",
             t.text.trim_end()
         ));
+        for p in &t.placeholders {
+            if placeholder_kind(p) == PlaceholderKind::Integer {
+                user.push_str(&format!(
+                    "\nPlaceholder `{p}` stands for an integer: print it as a whole number \
+                     without decimal places."
+                ));
+            }
+        }
     }
     vec![ChatMessage::system(system), ChatMessage::user(user)]
 }
@@ -400,6 +411,11 @@ mod tests {
         assert!(m[1]
             .content
             .contains("```\n12345678 seconds have passed.\n```"));
+        assert!(m[1].content.contains(
+            "Placeholder `12345678` stands for an integer: print it as a whole number without \
+             decimal places."
+        ));
+        assert!(STRUCTURE_SYSTEM.contains("never split it into one template per line"));
         assert_eq!(inputs_schema()["properties"]["inputs"]["maxItems"], 10);
     }
 }

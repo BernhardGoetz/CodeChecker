@@ -680,9 +680,13 @@ pub fn verify_examples(task_text: &str, examples: &[Example]) -> (Vec<Example>, 
     (kept, discarded)
 }
 
-/// Safety net against placeholder templates extracted as examples: drops
-/// examples without input whose output fits an accepted template. Returns
-/// the kept examples and the number dropped.
+/// Safety net against placeholder templates extracted as examples (a
+/// placeholder must never become an expected output). Independent of the
+/// input, an example is dropped if its output
+/// - contains a placeholder token of an accepted template (word boundary),
+/// - or fits a template as a whole.
+///
+/// Returns the kept examples and the number dropped.
 pub fn drop_template_examples(
     examples: Vec<Example>,
     templates: &[OutputTemplate],
@@ -694,8 +698,14 @@ pub fn drop_template_examples(
     let kept: Vec<Example> = examples
         .into_iter()
         .filter(|e| {
-            !(normalize_for_match(&e.input).is_empty()
-                && template::check_output(templates, &e.output).is_none())
+            let has_placeholder = templates
+                .iter()
+                .flat_map(|t| &t.placeholders)
+                .any(|p| template::contains_token(&e.output, p));
+            let is_template = templates
+                .iter()
+                .any(|t| normalize_for_match(&t.text) == normalize_for_match(&e.output));
+            !(has_placeholder || is_template)
         })
         .collect();
     let dropped = before - kept.len();
@@ -1792,6 +1802,10 @@ mod tests {
             } else {
                 step(&format!("Ergebnis: {}\n", n * 2), 0)
             }
+        } else if code.contains("qasfloat") {
+            step(QAS_FLOAT_OUTPUT, 0)
+        } else if code.contains("qas") {
+            step(QAS_OUTPUT, 0)
         } else if code.contains("secs") {
             step(SECS_OUTPUT, 0)
         } else if code.contains("badfmt") {
@@ -2528,6 +2542,108 @@ mod tests {
             language: "python".into(),
             compare_mode: None,
         }
+    }
+
+    // --- QAS scenario (task 2.2): template split into three one-line ones -----
+
+    const QAS_OUTPUT: &str = "54630 seconds have passed since midnight.\n31770 seconds are left \
+        until midnight.\nSince I started with the task 441 seconds have passed.\n";
+    const QAS_FLOAT_OUTPUT: &str = "54630.0 seconds have passed since midnight.\n31770.0 seconds \
+        are left until midnight.\nSince I started with the task 441.0 seconds have passed.\n";
+    const QAS_LINES: [&str; 3] = [
+        "12345678 seconds have passed since midnight.",
+        "12345678 seconds are left until midnight.",
+        "Since I started with the task 12345678 seconds have passed.",
+    ];
+    const QAS_TASK: &str = "Aufgabe 2.2\nDie Uhrzeit ist 15:10:30, mit der Aufgabe begonnen um \
+        15:03:09. Speichern Sie die Werte in Variablen hour, minute, second.\nGeben Sie aus \
+        (12345678 ist nur ein Platzhalter):\n\n12345678 seconds have passed since midnight.\n\
+        12345678 seconds are left until midnight.\nSince I started with the task 12345678 \
+        seconds have passed.\n";
+
+    fn qas_structure() -> String {
+        serde_json::json!({
+            "inputFormat": "no input",
+            "readsInput": false,
+            "outputFormat": "three lines",
+            "examples": [{"input": "", "output": QAS_LINES.join("\n")}],
+            "outputTemplates": QAS_LINES
+                .iter()
+                .map(|l| serde_json::json!({"text": l, "placeholders": ["12345678"]}))
+                .collect::<Vec<_>>(),
+            "compareMode": "lines"
+        })
+        .to_string()
+    }
+
+    fn qas_req() -> GenerateRequest {
+        GenerateRequest {
+            task_text: QAS_TASK.into(),
+            language: "java".into(),
+            compare_mode: None,
+        }
+    }
+
+    fn java_program(word: &str) -> String {
+        format!("```java\npublic class Main {{ /* {word} */ }}\n```")
+    }
+
+    #[test]
+    fn qas_split_template_yields_real_values() {
+        let llm = MockLlm::new({
+            let s = qas_structure();
+            move |r: &ChatRequest, _| {
+                if is_structure(r) {
+                    Ok(s.clone())
+                } else if is_inputs(r) {
+                    Ok(r#"{"inputs": []}"#.into())
+                } else {
+                    Ok(java_program("qas"))
+                }
+            }
+        });
+        let r = generate_with(&llm, qas_req(), 3).unwrap();
+        assert_ne!(
+            r.confidence.level,
+            ConfidenceLevel::Red,
+            "{:?}",
+            r.confidence
+        );
+        assert_eq!(r.stats.solutions_passed, 3);
+        assert_eq!(r.stats.examples_found, 0);
+        assert_eq!(r.stats.examples_discarded, 1);
+        // The three lines are one template again.
+        assert_eq!(r.output_templates.len(), 1, "{:?}", r.output_templates);
+        assert_eq!(r.output_templates[0].text, QAS_LINES.join("\n"));
+        assert_eq!(r.tests.len(), 1);
+        assert_eq!(r.tests[0].name, EMPTY_INPUT_TEST);
+        assert_eq!(r.tests[0].expected, QAS_OUTPUT);
+        assert!(r.reference_solution.is_some());
+    }
+
+    #[test]
+    fn qas_decimal_output_fails_integer_placeholder() {
+        let llm = MockLlm::new({
+            let s = qas_structure();
+            let n = Mutex::new(0usize);
+            move |r: &ChatRequest, _| {
+                if is_structure(r) {
+                    Ok(s.clone())
+                } else if is_inputs(r) {
+                    Ok(r#"{"inputs": []}"#.into())
+                } else {
+                    let mut c = n.lock().unwrap();
+                    *c += 1;
+                    Ok(java_program(if *c == 2 { "qasfloat" } else { "qas" }))
+                }
+            }
+        });
+        let r = generate_with(&llm, qas_req(), 3).unwrap();
+        assert_eq!(r.tests[0].expected, QAS_OUTPUT);
+        assert!((r.tests[0].agreement - 2.0 / 3.0).abs() < 1e-9);
+        assert!(!r.reference_solution.unwrap().contains("qasfloat"));
+        let msg = template::check_output(&r.output_templates, QAS_FLOAT_OUTPUT).unwrap();
+        assert!(msg.contains("Ganzzahl ohne Nachkommastellen"), "{msg}");
     }
 
     #[test]
