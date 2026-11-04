@@ -43,7 +43,9 @@ fn task_block(task_text: &str) -> String {
 
 pub const STRUCTURE_SYSTEM: &str = "You analyse programming exercises whose programs read \
 from standard input and write to standard output. Extract:\n\
-- inputFormat: how the input looks (one or two sentences),\n\
+- inputFormat: how the input looks (one or two sentences; \"no input\" if the program \
+reads nothing),\n\
+- readsInput: true if the program reads standard input, false if it reads nothing,\n\
 - outputFormat: what exactly has to be printed (one or two sentences),\n\
 - examples: every example input/output pair that is printed in the task text, copied \
 character by character. Never invent, compute, complete or reformat examples. If the text \
@@ -64,6 +66,7 @@ pub fn structure_schema() -> Value {
         "type": "object",
         "properties": {
             "inputFormat": { "type": "string" },
+            "readsInput": { "type": "boolean" },
             "outputFormat": { "type": "string" },
             "examples": {
                 "type": "array",
@@ -95,7 +98,14 @@ pub fn structure_schema() -> Value {
             },
             "compareMode": { "type": "string", "enum": ["lines", "tokens", "float"] }
         },
-        "required": ["inputFormat", "outputFormat", "examples", "outputTemplates", "compareMode"]
+        "required": [
+            "inputFormat",
+            "readsInput",
+            "outputFormat",
+            "examples",
+            "outputTemplates",
+            "compareMode"
+        ]
     })
 }
 

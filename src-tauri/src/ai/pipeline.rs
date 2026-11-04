@@ -153,6 +153,8 @@ pub struct GenerateResult {
     pub compare_mode: CompareMode,
     /// Output templates of the task sheet (format check only, never tests).
     pub output_templates: Vec<OutputTemplate>,
+    /// Input format from the structure step (for the variation check).
+    pub input_format: String,
     pub stats: Stats,
 }
 
@@ -580,7 +582,36 @@ pub struct Structure {
     pub output_format: String,
     pub examples: Vec<Example>,
     pub output_templates: Vec<OutputTemplate>,
+    /// Whether the program reads standard input (`None`: not answered).
+    pub reads_input: Option<bool>,
     pub compare_mode: Option<String>,
+}
+
+/// Whether the task reads input: the model's `readsInput`, else the input
+/// format ("keine Eingabe", "none", "no input", empty count as no input).
+/// Unclear means "reads input" (no empty test is forced then).
+pub fn reads_input(s: &Structure) -> bool {
+    if let Some(r) = s.reads_input {
+        return r;
+    }
+    let f = s.input_format.trim().to_lowercase();
+    let none = f.is_empty()
+        || [
+            "none",
+            "no input",
+            "nothing",
+            "n/a",
+            "keine",
+            "kein",
+            "ohne eingabe",
+        ]
+        .iter()
+        .any(|k| f == *k || f.starts_with(&format!("{k} ")) || f.starts_with(&format!("{k}.")))
+        || f.contains("no input")
+        || f.contains("keine eingabe")
+        || f.contains("does not read")
+        || f.contains("reads nothing");
+    !none
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
@@ -1076,15 +1107,15 @@ where
             session.run(example_inputs).await?
         };
         // `example_inputs` are the sheet's examples, possibly followed by the
-        // empty input (output template, see `generate`): every output must be
-        // valid and fit the template, the examples' outputs must match.
+        // forced empty input (output template, see `generate`). The examples'
+        // outputs must be valid, fit the template and match; the forced
+        // empty input never disqualifies a solution (if it fails, the test
+        // is only dropped in the majority vote).
         a.passes = a.example_outputs.len() == example_inputs.len()
-            && a.example_outputs.iter().enumerate().all(|(j, o)| {
+            && examples.iter().zip(&a.example_outputs).all(|(ex, o)| {
                 valid(o)
                     && fits_templates(templates, o)
-                    && examples
-                        .get(j)
-                        .is_none_or(|ex| example_mode.matches(&ex.output, &o.stdout))
+                    && example_mode.matches(&ex.output, &o.stdout)
             });
         Ok(())
     }
@@ -1193,6 +1224,7 @@ pub async fn generate<L: Llm + Sync, E: Executor>(
     // empty input is forced: the solutions run it right away (wrong format
     // = failed solution), its expectation comes from the majority.
     let force_empty = !templates.is_empty()
+        && !reads_input(&structure)
         && !example_inputs
             .iter()
             .any(|i| normalize_for_match(i).is_empty());
@@ -1389,6 +1421,7 @@ pub async fn generate<L: Llm + Sync, E: Executor>(
             suggested_compare_mode: suggested,
             compare_mode: mode,
             output_templates: templates.clone(),
+            input_format: structure.input_format.clone(),
             stats,
         }
     };
@@ -1509,13 +1542,16 @@ pub async fn generate<L: Llm + Sync, E: Executor>(
             .map(|o| o.filter(|o| fits_templates(&templates, o)))
             .collect();
         let from_sheet = j < example_inputs.len();
+        // The forced empty input is only a helper: without a majority it is
+        // dropped silently (not counted as a dropped input).
+        let forced = !from_sheet && j < check_inputs.len();
         let Some((rep, members)) = majority(&mode, &outputs) else {
-            dropped += 1;
+            dropped += usize::from(!forced);
             continue;
         };
         // Strict majority of all surviving solutions.
         if members.len() * 2 <= s {
-            dropped += 1;
+            dropped += usize::from(!forced);
             continue;
         }
         let agreement = members.len() as f64 / s as f64;
@@ -1732,6 +1768,13 @@ mod tests {
             step(&format!("{}\n", n * 3), 0)
         } else if code.contains("plus1") {
             step(&format!("{}\n", n + 1), 0)
+        } else if code.contains("ergebnis") {
+            // Reads a number: crashes without input (EOFError).
+            if input.trim().is_empty() {
+                step("", 1)
+            } else {
+                step(&format!("Ergebnis: {}\n", n * 2), 0)
+            }
         } else if code.contains("secs") {
             step(SECS_OUTPUT, 0)
         } else if code.contains("badfmt") {
@@ -2495,12 +2538,86 @@ mod tests {
             r#"{"inputs": ["", "1"]}"#,
         ));
         let r = generate_with(&llm, template_req(), 3).unwrap();
-        assert_eq!(r.stats.solutions_passed, 2);
+        // The forced empty input never disqualifies a solution, but the
+        // wrong format does not count in the majority vote.
+        assert_eq!(r.stats.solutions_passed, 3);
         assert!(!r.reference_solution.unwrap().contains("badfmt"));
+        assert!((r.tests[0].agreement - 2.0 / 3.0).abs() < 1e-9);
         // The model's empty input is a duplicate of the forced one.
         let names: Vec<&str> = r.tests.iter().map(|t| t.name.as_str()).collect();
         assert_eq!(names, vec![EMPTY_INPUT_TEST, "KI-Test 1"]);
         assert!(r.tests.iter().all(|t| t.expected == SECS_OUTPUT));
+    }
+
+    const INPUT_TEMPLATE_TASK: &str =
+        "Lies eine Zahl n und gib das Doppelte aus.\nAusgabe: Ergebnis: 0 (0 ist ein Platzhalter)\n\
+         Beispiel: Eingabe 21, Ausgabe Ergebnis: 42\n";
+
+    fn input_template_structure(reads_input: Option<bool>) -> String {
+        let mut v = serde_json::json!({
+            "inputFormat": "eine Zahl n",
+            "outputFormat": "Ergebnis: 2n",
+            "examples": [{"input": "21", "output": "Ergebnis: 42"}],
+            "outputTemplates": [{"text": "Ergebnis: 0", "placeholders": ["0"]}],
+            "compareMode": "lines"
+        });
+        if let Some(r) = reads_input {
+            v["readsInput"] = serde_json::json!(r);
+        }
+        v.to_string()
+    }
+
+    #[test]
+    fn task_with_input_and_template_forces_no_empty_test() {
+        for reads in [Some(true), None] {
+            let llm = MockLlm::new(scripted(
+                input_template_structure(reads),
+                vec!["ergebnis"],
+                r#"{"inputs": ["3"]}"#,
+            ));
+            let mut r0 = req(None);
+            r0.task_text = INPUT_TEMPLATE_TASK.into();
+            let r = generate_with(&llm, r0, 3).unwrap();
+            assert_eq!(r.stats.templates_found, 1);
+            assert_eq!(r.stats.solutions_passed, 3, "{reads:?}");
+            assert!(r.tests.iter().all(|t| t.name != EMPTY_INPUT_TEST));
+            assert_eq!(r.tests.len(), 2);
+            assert_eq!(r.confidence.level, ConfidenceLevel::Green);
+        }
+    }
+
+    #[test]
+    fn failing_forced_empty_input_is_only_dropped() {
+        // The model wrongly says "reads no input": the empty test is forced,
+        // every solution crashes on it – they still pass, the test is dropped.
+        let llm = MockLlm::new(scripted(
+            input_template_structure(Some(false)),
+            vec!["ergebnis"],
+            r#"{"inputs": ["3"]}"#,
+        ));
+        let mut r0 = req(None);
+        r0.task_text = INPUT_TEMPLATE_TASK.into();
+        let r = generate_with(&llm, r0, 3).unwrap();
+        assert_eq!(r.stats.solutions_passed, 3);
+        assert!(r.tests.iter().all(|t| t.name != EMPTY_INPUT_TEST));
+        assert_eq!(r.stats.tests_dropped, 0);
+        assert_eq!(r.confidence.level, ConfidenceLevel::Green);
+    }
+
+    #[test]
+    fn reads_input_from_flag_or_format() {
+        let st = |f: &str, r: Option<bool>| Structure {
+            input_format: f.into(),
+            reads_input: r,
+            ..Structure::default()
+        };
+        assert!(reads_input(&st("eine Zahl n", None)));
+        assert!(!reads_input(&st("", None)));
+        assert!(!reads_input(&st("Keine Eingabe.", None)));
+        assert!(!reads_input(&st("None", None)));
+        assert!(!reads_input(&st("The program reads no input.", None)));
+        assert!(!reads_input(&st("eine Zahl n", Some(false))));
+        assert!(reads_input(&st("", Some(true))));
     }
 
     #[test]

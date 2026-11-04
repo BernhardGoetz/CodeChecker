@@ -469,11 +469,16 @@ KI-Lösungen fielen durch, weil keine „12345678“ ausgibt. Jetzt gilt:
   Platzhaltern).
 - Eine Vorlage ist **nie** ein Beispiel oder ein Testfall. Ein von der KI zusätzlich als
   Beispiel gemeldetes Beispiel ohne Eingabe, das zur Vorlage passt, wird verworfen.
-- Die KI-Lösungen bekommen die Vorlage als Formatvorgabe. Eine Lösung, deren Ausgabe nicht
-  zur Vorlage passt, fällt heraus bzw. zählt beim Mehrheitsentscheid nicht mit.
-- Gibt es eine Vorlage, aber keinen Testfall mit leerer Eingabe, wird ein Testfall
-  **„KI-Test (ohne Eingabe)“** erzwungen; seine erwartete Ausgabe entsteht wie bei allen
-  KI-Testfällen durch den Mehrheitsentscheid der Lösungen.
+- Die KI-Lösungen bekommen die Vorlage als Formatvorgabe. Passt die Ausgabe einer Lösung
+  bei einem Beispiel des Blatts nicht zur Vorlage, fällt sie heraus; bei den übrigen
+  Eingaben zählt eine solche Ausgabe beim Mehrheitsentscheid nicht mit.
+- Liest die Aufgabe **keine Eingabe** (laut Strukturschritt der KI) und gibt es eine
+  Vorlage, aber keinen Testfall mit leerer Eingabe, wird ein Testfall **„KI-Test (ohne
+  Eingabe)“** erzwungen; seine erwartete Ausgabe entsteht wie bei allen KI-Testfällen
+  durch den Mehrheitsentscheid der Lösungen. Bei Aufgaben, die eine Eingabe lesen, wird er
+  nicht erzwungen. Scheitern die Lösungen an der leeren Eingabe (z. B. weil die KI sich
+  bei „liest keine Eingabe“ geirrt hat), wird dieser Testfall nur weggelassen – die
+  Lösungen fallen deshalb nicht heraus.
 - Die Konfidenz nennt den Grund „Ausgabevorlage mit Platzhaltern erkannt – sie wird nur
   als Formatprüfung verwendet, nicht als Beispiel.“; die Stufe (Grün/Gelb/Rot) ändert sich
   dadurch nicht.
