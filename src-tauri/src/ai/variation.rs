@@ -74,6 +74,10 @@ pub struct VariationRequest {
     /// The tests of the run (their inputs are used, expectations not).
     #[serde(default)]
     pub tests: Vec<TestCase>,
+    /// Input format from the test generation (`GenerateResult.inputFormat`),
+    /// helps the model write valid inputs.
+    #[serde(default)]
+    pub input_format: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -113,6 +117,9 @@ pub struct VariationResult {
     pub note: Option<String>,
     /// Number of variants (inputs or scenarios) compared.
     pub checked: usize,
+    /// German hints on variants where the student's program crashed or
+    /// timed out: unclear, never counted as a logic error.
+    pub unclear: Vec<String>,
 }
 
 impl VariationResult {
@@ -124,6 +131,7 @@ impl VariationResult {
             explanation_quote: None,
             note: Some(note.into()),
             checked: 0,
+            unclear: Vec::new(),
         }
     }
 }
@@ -732,11 +740,39 @@ impl<E: Executor> Ctx<'_, E> {
         cancellable(self.cancel, s.run(inputs)).await
     }
 
-    /// Whether the student's output is accepted for the reference output.
-    fn accepted(&self, reference: &StepOutput, student: &StepOutput) -> bool {
-        valid(student)
-            && self.mode.matches(&reference.stdout, &student.stdout)
+    /// Runs the reference solution twice. Returns the first outputs and,
+    /// per input, whether the run is usable: both runs valid and equal (a
+    /// program whose output changes between runs – random numbers, the
+    /// clock – cannot serve as reference).
+    async fn run_reference(
+        &self,
+        inputs: &[String],
+    ) -> Result<(Vec<StepOutput>, Vec<bool>), AiError> {
+        let first = self.run(self.reference, inputs).await?;
+        let second = self.run(self.reference, inputs).await?;
+        let stable = first
+            .iter()
+            .zip(&second)
+            .map(|(a, b)| valid(a) && valid(b) && self.mode.matches(&a.stdout, &b.stdout))
+            .collect();
+        Ok((first, stable))
+    }
+
+    /// Compares the student's output with the reference output.
+    fn verdict(&self, reference: &StepOutput, student: &StepOutput) -> Verdict {
+        if student.timed_out {
+            Verdict::Unclear("Zeitüberschreitung")
+        } else if student.exit_code != Some(0) {
+            Verdict::Unclear("Laufzeitfehler")
+        } else if student.stdout_truncated {
+            Verdict::Unclear("Ausgabe abgeschnitten")
+        } else if self.mode.matches(&reference.stdout, &student.stdout)
             && fits_templates(&self.req.output_templates, student)
+        {
+            Verdict::Same
+        } else {
+            Verdict::Differs
+        }
     }
 
     fn finding(
@@ -756,6 +792,60 @@ impl<E: Executor> Ctx<'_, E> {
                 &self.mode.display_text(&student.stdout),
             ),
         }
+    }
+}
+
+/// Result of one comparison of student and reference.
+enum Verdict {
+    Same,
+    /// Clean run, different output: a logic error.
+    Differs,
+    /// The student's program crashed or timed out: unclear (German reason).
+    Unclear(&'static str),
+}
+
+/// Collects the comparisons of a check.
+#[derive(Default)]
+struct Tally {
+    findings: Vec<VariationFinding>,
+    unclear: Vec<String>,
+    /// Comparisons with a clean run of the student's program.
+    clean: usize,
+}
+
+impl Tally {
+    fn add<E: Executor>(
+        &mut self,
+        ctx: &Ctx<'_, E>,
+        description: String,
+        input: &str,
+        reference: &StepOutput,
+        student: &StepOutput,
+    ) {
+        match ctx.verdict(reference, student) {
+            Verdict::Same => self.clean += 1,
+            Verdict::Differs => {
+                self.clean += 1;
+                self.findings
+                    .push(ctx.finding(description, input, reference, student));
+            }
+            Verdict::Unclear(why) => self.unclear.push(format!("{description}: {why}")),
+        }
+    }
+
+    fn finish(self, checked: usize, what: &str) -> VariationResult {
+        if self.findings.is_empty() && self.clean == 0 {
+            let mut r = VariationResult::skipped(format!(
+                "Unklar: Der Code bricht mit veränderten Werten ab oder überschreitet das \
+                 Zeitlimit ({}). Das ist kein Nachweis eines Logikfehlers.",
+                self.unclear.join("; ")
+            ));
+            r.unclear = self.unclear;
+            return r;
+        }
+        let mut r = outcome(self.findings, checked, what);
+        r.unclear = self.unclear;
+        r
     }
 }
 
@@ -781,6 +871,7 @@ fn outcome(findings: Vec<VariationFinding>, checked: usize, what: &str) -> Varia
         explanation: None,
         explanation_quote: None,
         checked,
+        unclear: Vec::new(),
     }
 }
 
@@ -799,7 +890,7 @@ async fn check_inputs<L: Llm + Sync, E: Executor>(
     let answer: Option<InputsAnswer> = ask(
         llm,
         json_request(
-            prompts::inputs_messages(task, "", &existing),
+            prompts::inputs_messages(task, &ctx.req.input_format, &existing),
             prompts::inputs_schema(),
             INPUTS_TEMPERATURE,
         ),
@@ -818,27 +909,26 @@ async fn check_inputs<L: Llm + Sync, E: Executor>(
         Phase::Variation,
         format!("Prüfe mit {} veränderten Eingaben …", inputs.len()),
     ));
-    let reference = ctx.run(ctx.reference, &inputs).await?;
+    let (reference, stable) = ctx.run_reference(&inputs).await?;
     let student = ctx.run(ctx.student, &inputs).await?;
-    let mut findings = Vec::new();
+    let mut tally = Tally::default();
     let mut checked = 0;
-    for ((input, r), s) in inputs.iter().zip(&reference).zip(&student) {
-        // The reference solution must handle the input (else it may be invalid).
-        if !valid(r) || !fits_templates(&ctx.req.output_templates, r) {
+    for (((input, r), s), stable) in inputs.iter().zip(&reference).zip(&student).zip(stable) {
+        // The reference solution must handle the input reproducibly (else
+        // the input may be invalid or the program not deterministic).
+        if !stable || !fits_templates(&ctx.req.output_templates, r) {
             continue;
         }
         checked += 1;
-        if !ctx.accepted(r, s) {
-            findings.push(ctx.finding(format!("Eingabe: {}", preview(input)), input, r, s));
-        }
+        tally.add(ctx, format!("Eingabe: {}", preview(input)), input, r, s);
     }
     if checked == 0 {
         return Ok(VariationResult::skipped(
-            "Die Musterlösung lief auf keiner der zusätzlichen Eingaben fehlerfrei – kein \
-             Vergleich möglich.",
+            "Die Musterlösung lief auf keiner der zusätzlichen Eingaben fehlerfrei und \
+             reproduzierbar – kein Vergleich möglich.",
         ));
     }
-    Ok(outcome(findings, checked, "zusätzliche Eingabe(n)"))
+    Ok(tally.finish(checked, "zusätzliche Eingabe(n)"))
 }
 
 /// Case B: changed start values in both programs.
@@ -877,13 +967,19 @@ async fn check_scenarios<L: Llm + Sync, E: Executor>(
         inputs.push(String::new());
     }
     // Original output of the reference solution (compiled already).
-    let baseline = ctx.run(ctx.reference, &inputs).await?;
+    let (baseline, stable) = ctx.run_reference(&inputs).await?;
     if !baseline.iter().all(valid) {
         return Ok(VariationResult::skipped(
             "Die Musterlösung läuft mit den gegebenen Werten nicht fehlerfrei.",
         ));
     }
-    let mut findings = Vec::new();
+    if !stable.iter().all(|s| *s) {
+        return Ok(VariationResult::skipped(
+            "Die Musterlösung liefert bei gleichen Werten unterschiedliche Ausgaben (z. B. \
+             Zufall oder Uhrzeit) – Variationstest nicht möglich.",
+        ));
+    }
+    let mut tally = Tally::default();
     let mut checked = 0;
     let mut skipped: Vec<String> = Vec::new();
     for (n, changes) in scenarios.iter().enumerate() {
@@ -917,10 +1013,16 @@ async fn check_scenarios<L: Llm + Sync, E: Executor>(
             skipped.push(format!("{description}: Musterlösung nicht übersetzbar"));
             continue;
         }
-        let ref_out = ctx.run(ctx.reference, &inputs).await?;
+        let (ref_out, ref_stable) = ctx.run_reference(&inputs).await?;
         if !ref_out.iter().all(valid) {
             skipped.push(format!(
                 "{description}: Musterlösung läuft nicht fehlerfrei"
+            ));
+            continue;
+        }
+        if !ref_stable.iter().all(|s| *s) {
+            skipped.push(format!(
+                "{description}: Ausgabe der Musterlösung nicht reproduzierbar"
             ));
             continue;
         }
@@ -941,13 +1043,11 @@ async fn check_scenarios<L: Llm + Sync, E: Executor>(
         let stu_out = ctx.run(ctx.student, &inputs).await?;
         checked += 1;
         for ((input, r), s) in inputs.iter().zip(&ref_out).zip(&stu_out) {
-            if !ctx.accepted(r, s) {
-                let mut d = description.clone();
-                if inputs.len() > 1 && !input.trim().is_empty() {
-                    d.push_str(&format!(", Eingabe: {}", preview(input)));
-                }
-                findings.push(ctx.finding(d, input, r, s));
+            let mut d = description.clone();
+            if inputs.len() > 1 && !input.trim().is_empty() {
+                d.push_str(&format!(", Eingabe: {}", preview(input)));
             }
+            tally.add(ctx, d, input, r, s);
         }
     }
     if checked == 0 {
@@ -957,7 +1057,7 @@ async fn check_scenarios<L: Llm + Sync, E: Executor>(
             skipped.join("; ")
         )));
     }
-    Ok(outcome(findings, checked, "Variante(n)"))
+    Ok(tally.finish(checked, "Variante(n)"))
 }
 
 /// The check itself, generic over model and sandbox. `llm` is `None` when
@@ -1307,6 +1407,13 @@ mod tests {
     /// doubles the input, `CONST42` always prints 42.
     fn output_for(code: &str, input: &str) -> StepOutput {
         let v = vars(code);
+        if code.contains("CRASHMORNING") && v.get("hour").is_some_and(|h| *h < 12) {
+            return StepOutput {
+                stderr: "ZeroDivisionError".into(),
+                exit_code: Some(1),
+                ..step("")
+            };
+        }
         if code.contains("SECONDS") {
             let s = v["hour"] * 3600 + v["minute"] * 60 + v["second"];
             let left = if code.contains("86400 % s") {
@@ -1331,6 +1438,7 @@ mod tests {
     struct Counters {
         opened: usize,
         closed: usize,
+        runs: usize,
     }
 
     struct MockExec(Arc<Mutex<Counters>>);
@@ -1346,7 +1454,22 @@ mod tests {
         }
         async fn run(&self, inputs: &[String]) -> Result<Vec<StepOutput>, AiError> {
             let code = self.1.lock().unwrap().clone();
-            Ok(inputs.iter().map(|i| output_for(&code, i)).collect())
+            let runs = {
+                let mut c = self.0.lock().unwrap();
+                c.runs += 1;
+                c.runs
+            };
+            Ok(inputs
+                .iter()
+                .map(|i| {
+                    if code.contains("RANDOM") {
+                        // Output changes from run to run.
+                        step(&format!("{runs}\n"))
+                    } else {
+                        output_for(&code, i)
+                    }
+                })
+                .collect())
         }
         async fn close(self) {
             self.0.lock().unwrap().closed += 1;
@@ -1390,6 +1513,7 @@ mod tests {
                 input: String::new(),
                 expected: String::new(),
             }],
+            input_format: String::new(),
         }
     }
 
@@ -1546,11 +1670,66 @@ mod tests {
     }
 
     #[test]
+    fn non_deterministic_reference_is_skipped() {
+        let model = scenario_model(
+            r#"[{"changes": [{"from": "15", "to": "3"}], "why": "x"}]"#,
+            "x",
+        );
+        let mut req = request(MODULO);
+        req.reference_solution = Some(format!("{REFERENCE}# RANDOM\n"));
+        let (r, _) = run_check(Some(&model), &req);
+        assert_eq!(r.state, VariationState::Skipped, "{r:?}");
+        assert!(r.note.unwrap().contains("unterschiedliche Ausgaben"));
+        // Case A: inputs with changing reference output are not compared.
+        let model = llm(|r: &ChatRequest| {
+            if r.messages[0].content == prompts::INPUTS_SYSTEM {
+                Ok(r#"{"inputs": ["3"]}"#.into())
+            } else {
+                Err(AiError::Http("x".into()))
+            }
+        });
+        let mut req = request("# CONST42\n");
+        req.reference_solution = Some("# RANDOM\n".into());
+        req.tests[0].input = "21\n".into();
+        let (r, _) = run_check(Some(&model), &req);
+        assert_eq!(r.state, VariationState::Skipped, "{r:?}");
+        assert!(r.note.unwrap().contains("reproduzierbar"));
+    }
+
+    #[test]
+    fn student_crash_is_unclear_not_wrong_logic() {
+        let model = scenario_model(
+            r#"[{"changes": [{"from": "15", "to": "3"}], "why": "x"}]"#,
+            "x",
+        );
+        let student = format!("{REFERENCE}# CRASHMORNING\n");
+        let (r, _) = run_check(Some(&model), &request(&student));
+        assert_eq!(r.state, VariationState::Skipped, "{r:?}");
+        assert!(r.findings.is_empty());
+        assert_eq!(
+            r.unclear,
+            vec!["hour = 3 statt 15: Laufzeitfehler".to_string()]
+        );
+        assert!(r.note.unwrap().starts_with("Unklar"));
+        assert!(!model.calls.lock().unwrap().iter().any(is_explain));
+        // Crash in one variant, clean and right in another: ok with a hint.
+        let model = scenario_model(
+            r#"[{"changes": [{"from": "15", "to": "3"}], "why": "x"},
+                {"changes": [{"from": "15", "to": "17"}], "why": "y"}]"#,
+            "x",
+        );
+        let (r, _) = run_check(Some(&model), &request(&student));
+        assert_eq!(r.state, VariationState::Ok, "{r:?}");
+        assert_eq!(r.unclear.len(), 1);
+    }
+
+    #[test]
     fn inputs_case_compares_with_the_reference() {
         let model = llm(|r: &ChatRequest| {
             if r.messages[0].content != prompts::INPUTS_SYSTEM {
                 return Err(AiError::Http("keine Erklärung".into()));
             }
+            assert!(r.messages[1].content.contains("Input format: eine Zahl n"));
             // The test input is named as existing; duplicates and the
             // empty input are dropped.
             assert!(r.messages[1].content.contains("do not repeat"));
@@ -1563,6 +1742,7 @@ mod tests {
             input: "21\n".into(),
             expected: "42\n".into(),
         }];
+        req.input_format = "eine Zahl n".into();
         let (r, _) = run_check(Some(&model), &req);
         // The explanation request fails: the result stays.
         assert_eq!(r.state, VariationState::Failed, "{r:?}");

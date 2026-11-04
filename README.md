@@ -578,10 +578,11 @@ standardmäßig an (die Einstellung wird gemerkt).
 beider Programme in der Sandbox, nie durch die KI (`src-tauri/src/ai/variation.rs`):
 
 - **Aufgaben mit Eingabe** (Testfälle mit nicht leerer Eingabe): Die KI schreibt bis zu 8
-  weitere gültige Eingaben (ohne die vorhandenen). Musterlösung und Code laufen darauf; die
-  Ausgaben werden im eingestellten Vergleichsmodus (und mit der Ausgabevorlage)
-  verglichen. Eingaben, bei denen die Musterlösung selbst abstürzt oder zu lange braucht,
-  werden verworfen.
+  weitere gültige Eingaben (ohne die vorhandenen); dabei bekommt sie das Eingabeformat aus
+  „Testfälle mit KI erzeugen“. Musterlösung und Code laufen darauf; die Ausgaben werden im
+  eingestellten Vergleichsmodus (und mit der Ausgabevorlage) verglichen. Eingaben, bei
+  denen die Musterlösung selbst abstürzt, zu lange braucht oder bei zwei Läufen
+  unterschiedliche Ausgaben liefert, werden verworfen.
 - **Aufgaben ohne Eingabe bzw. mit vorgegebenen Startwerten** (z. B. `hour = 15`,
   `minute = 10`, `second = 30`): Die KI nennt die vorgegebenen Zahlen und schlägt 2–3
   Szenarien vor, z. B. „15 → 3“ oder „15 → 9 und 10 → 45“. Jede Originalzahl muss im
@@ -591,7 +592,15 @@ beider Programme in der Sandbox, nie durch die KI (`src-tauri/src/ai/variation.r
   Kommentare und Zeichenketten bleiben unberührt. Ein Szenario wird übersprungen, wenn
   die Werte nicht in beiden Programmen gleich oft ersetzt werden können (etwa weil der
   Code `15` direkt in einer Formel verwendet) oder wenn sich die Ausgabe der Musterlösung
-  dadurch nicht ändert.
+  dadurch nicht ändert. Die Musterlösung läuft jeweils zweimal (mit den Originalwerten und
+  mit jeder Variante); unterscheiden sich die beiden Ausgaben (z. B. Zufallszahlen oder
+  Uhrzeit), wird die Variante übersprungen bzw. der ganze Test, wenn das schon bei den
+  Originalwerten passiert.
+
+Als Logikfehler zählt nur eine **saubere, abweichende Ausgabe** des Codes. Bricht der Code
+bei einer Variante ab oder überschreitet er das Zeitlimit, ist das kein Befund, sondern
+ein Hinweis „unklar“ (z. B. „hour = 3 statt 15: Laufzeitfehler“). Gibt es nur solche
+Fälle, wird der Variationstest mit diesem Hinweis übersprungen.
 
 **Ergebnis:**
 
@@ -603,7 +612,8 @@ beider Programme in der Sandbox, nie durch die KI (`src-tauri/src/ai/variation.r
   `86400 % seconds` – Modulo statt Subtraktion). Steht das Zitat nicht im Code, wird die
   Erklärung weggelassen. **Die Erklärung ist nur ein Hinweis und entscheidet nichts**; bei
   Code über ca. 6000 Zeichen entfällt sie.
-- **Kein Unterschied:** dezenter Hinweis „Variationstest bestanden“.
+- **Kein Unterschied:** dezenter Hinweis „Variationstest bestanden“, ggf. mit den
+  unklaren Fällen.
 - **Übersprungen:** dezenter Hinweis mit Grund; die Testergebnisse bleiben unverändert.
 
 **Voraussetzungen** – sonst läuft der Test nicht bzw. wird übersprungen:
