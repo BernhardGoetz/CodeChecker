@@ -467,8 +467,13 @@ KI-Lösungen fielen durch, weil keine „12345678“ ausgibt. Jetzt gilt:
   `X`). Eine Vorlage wird nur übernommen, wenn ihr Text wörtlich im Aufgabentext steht
   und jeder Platzhalter darin vorkommt (höchstens 3 Vorlagen mit je höchstens 6
   Platzhaltern).
-- Eine Vorlage ist **nie** ein Beispiel oder ein Testfall. Ein von der KI zusätzlich als
-  Beispiel gemeldetes Beispiel ohne Eingabe, das zur Vorlage passt, wird verworfen.
+- Eine mehrzeilige Vorlage ist **eine** Vorlage. Zerlegt die KI sie trotzdem in eine
+  Vorlage pro Zeile, fügt die App Vorlagen, die im Aufgabentext ganze, direkt
+  aufeinanderfolgende Zeilen sind, wieder zu einer zusammen (in der Reihenfolge des Texts).
+- Eine Vorlage ist **nie** ein Beispiel oder ein Testfall, ein Platzhalter nie eine
+  erwartete Ausgabe: Ein von der KI als Beispiel gemeldetes Beispiel wird verworfen
+  (unabhängig von seiner Eingabe), wenn seine Ausgabe einen Platzhalter als ganzes Wort
+  enthält oder der Vorlage entspricht.
 - Die KI-Lösungen bekommen die Vorlage als Formatvorgabe. Passt die Ausgabe einer Lösung
   bei einem Beispiel des Blatts nicht zur Vorlage, fällt sie heraus; bei den übrigen
   Eingaben zählt eine solche Ausgabe beim Mehrheitsentscheid nicht mit.
@@ -488,8 +493,18 @@ KI-Lösungen fielen durch, weil keine „12345678“ ausgibt. Jetzt gilt:
 Beim **Prüfen** wird jede bestandene Ausgabe zusätzlich mit der Vorlage verglichen
 (`src-tauri/src/runner/template.rs`): Zeile für Zeile, Leerraum am Zeilenrand und
 mehrfache Leerzeichen egal, leere Zeilen am Anfang und Ende egal; die Zeilenzahl muss
-stimmen. Ein Platzhalter steht für einen nicht leeren Wert, ist der Platzhalter eine Zahl,
-muss auch der Wert eine Zahl sein. Platzhalter werden nur als ganze Wörter erkannt
+stimmen. Ein Platzhalter steht für einen nicht leeren Wert. Der Typ ergibt sich aus dem
+Platzhalter selbst:
+
+- nur Ziffern (z. B. `12345678`): eine **Ganzzahl** ohne Nachkommastellen, optional mit
+  Vorzeichen – `54630` passt, `54630.0` oder `5.463e4` nicht (Meldung: „… erwartet eine
+  Ganzzahl ohne Nachkommastellen“). Die KI-Lösungen bekommen dazu den Hinweis, den Wert
+  als ganze Zahl auszugeben;
+- eine Zahl mit Dezimalpunkt (z. B. `0.0`): irgendeine Zahl;
+- alles andere (z. B. `<n>`, `X`): beliebiger Text.
+
+Das Panel „Testfälle mit KI“ nennt den Typ („Platzhalter 12345678 steht für eine Ganzzahl
+(ohne Nachkommastellen)“). Platzhalter werden nur als ganze Wörter erkannt
 (Platzhalter „1“ trifft nicht die „1“ in „12“). Ausgabezeilen über 4 KB passen nie zu
 einer Vorlage (begrenzt die Rechenzeit). Passt die Ausgabe zu keiner Vorlage, lautet
 der Status „Ausgabeformat weicht von Vorlage ab“ mit der betroffenen Zeile und der

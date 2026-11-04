@@ -32,6 +32,19 @@ interface Props {
   onFinished: (failed: boolean) => void;
 }
 
+/** Same rule as placeholder_kind in src-tauri/src/runner/template.rs. */
+function placeholderKind(token: string): "integer" | "decimal" | "text" {
+  if (/^[+-]?\d+$/.test(token)) return "integer";
+  if (/^[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$/.test(token)) return "decimal";
+  return "text";
+}
+
+const PLACEHOLDER_KIND = {
+  integer: "eine Ganzzahl (ohne Nachkommastellen)",
+  decimal: "eine Zahl",
+  text: "einen beliebigen Text",
+} as const;
+
 const LEVEL_TEXT = { green: "Grün", yellow: "Gelb", red: "Rot" } as const;
 const LEVEL_HINT = {
   green: "Hohe Konfidenz: Beispiele des Blatts bestanden, Lösungen einig.",
@@ -219,9 +232,13 @@ export function AiPanel({
                 <button onClick={onDropTemplates}>Vorlage nicht verwenden</button>
               </div>
               <p className="muted">
-                Platzhalter {templates.flatMap((t) => t.placeholders).map((p) => `„${p}“`).join(", ")} stehen für die
-                echten Werte. Beim Prüfen muss die Ausgabe dieses Format haben, sonst lautet das Ergebnis
-                „Ausgabeformat weicht von Vorlage ab“.
+                {[...new Set(templates.flatMap((t) => t.placeholders))].map((p) => (
+                  <span key={p}>
+                    Platzhalter {p} steht für {PLACEHOLDER_KIND[placeholderKind(p)]}.{" "}
+                  </span>
+                ))}
+                Beim Prüfen muss die Ausgabe dieses Format haben, sonst lautet das Ergebnis „Ausgabeformat
+                weicht von Vorlage ab“.
               </p>
               {templates.map((t) => (
                 <pre key={t.text} className="output">
