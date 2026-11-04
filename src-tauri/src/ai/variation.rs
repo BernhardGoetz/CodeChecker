@@ -305,10 +305,31 @@ fn ident_before(b: &[u8], end: usize) -> Option<usize> {
     (s < end && !b[s].is_ascii_digit()).then_some(s)
 }
 
+/// Whether position `s` lies inside unclosed parentheses of the current
+/// block (Java: `for (…)` head, method arguments). Comments and strings
+/// are skipped; `{`/`}` end the search.
+fn inside_parens(b: &[u8], mask: &[bool], s: usize) -> bool {
+    let mut depth = 0usize;
+    for k in (0..s).rev() {
+        if !mask[k] {
+            continue;
+        }
+        match b[k] {
+            b')' => depth += 1,
+            b'(' if depth == 0 => return true,
+            b'(' => depth -= 1,
+            b'{' | b'}' if depth == 0 => return false,
+            _ => {}
+        }
+    }
+    false
+}
+
 /// Checks the left side of a number at `i`: `ident =` (`ident: type =` in
 /// Python) at the start of a statement, or a declaration `[final] type
-/// ident =` (Java, also after `,` in a declaration list). Returns the
-/// variable name.
+/// ident =` (Java, also after `,` in a declaration list), also with
+/// `this.`/`self.`. Never inside parentheses (Java `for` head). Returns
+/// the variable name.
 fn assignment_target(code: &str, mask: &[bool], i: usize, java: bool) -> Option<String> {
     let b = code.as_bytes();
     let p = skip_back_blanks(b, i);
@@ -321,20 +342,30 @@ fn assignment_target(code: &str, mask: &[bool], i: usize, java: bool) -> Option<
     }
     let p = skip_back_blanks(b, eq);
     let mut s = ident_before(b, p)?;
-    let mut ident = &code[s..p];
+    let mut end = p;
     if !java {
         // `x: int = 15`: the word before `=` is the annotation.
         let q = skip_back_blanks(b, s);
         if q > 0 && b[q - 1] == b':' {
-            let r = skip_back_blanks(b, q - 1);
-            s = ident_before(b, r)?;
-            ident = &code[s..r];
+            end = skip_back_blanks(b, q - 1);
+            s = ident_before(b, end)?;
         }
+    }
+    // `this.hour = 15` (Java) / `self.hour = 15` (Python).
+    if s > 0 && b[s - 1] == b'.' {
+        let owner = ident_before(b, s - 1)?;
+        if &code[owner..s - 1] != (if java { "this" } else { "self" }) {
+            return None;
+        }
+        s = owner;
+    }
+    let ident = &code[s..end];
+    if !java {
         let q = skip_back_blanks(b, s);
         let ok = q == 0 || b[q - 1] == b'\n' || b[q - 1] == b'\r' || b[q - 1] == b';';
         return (ok && mask[s]).then(|| ident.to_string());
     }
-    if !mask[s] {
+    if !mask[s] || inside_parens(b, mask, s) {
         return None;
     }
     // Java: look at what precedes the variable (whitespace and comments
@@ -411,13 +442,20 @@ pub fn substitute(code: &str, language: &str, changes: &[Change]) -> Substitutio
             }
             continue;
         }
-        let literal = &code[i..j];
+        // A sign directly before the number belongs to it if the number is
+        // the whole right side (`x = -15`); `y - 15` is no assignment anyway.
+        let start = if i > 0 && b[i - 1] == b'-' && mask[i - 1] {
+            i - 1
+        } else {
+            i
+        };
+        let literal = &code[start..j];
         if let Some(c) = changes.iter().position(|c| c.from == literal) {
             if statement_ends(b, &mask, k, java) {
-                if let Some(ident) = assignment_target(code, &mask, i, java) {
+                if let Some(ident) = assignment_target(code, &mask, start, java) {
                     counts[c] += 1;
                     idents[c].get_or_insert(ident);
-                    replacements.push((i, j, changes[c].to.as_str()));
+                    replacements.push((start, j, changes[c].to.as_str()));
                 }
             }
         }
@@ -453,7 +491,7 @@ The new values must keep the task valid (a valid time of day, an end time after 
 positive amounts, …) and should make a wrong formula give a different result than the right \
 one: for example a time before 12:00 if the given time is in the afternoon, values that are \
 not multiples of each other, no 0 or 1. Only numbers that appear in the task text may be used \
-as from; plain integers or decimals without units.\n\
+as from; plain integers or decimals without units (a negative number with a leading minus).\n\
 Example: the task says \"It is 15:10:30\" → scenarios [{\"changes\": [{\"from\": \"15\", \"to\": \
 \"3\"}], \"why\": \"morning instead of afternoon\"}, {\"changes\": [{\"from\": \"15\", \"to\": \
 \"9\"}, {\"from\": \"10\", \"to\": \"45\"}], \"why\": \"other hour and minute\"}].\n\
@@ -522,8 +560,9 @@ struct ScenarioAnswer {
     scenarios: Vec<RawScenario>,
 }
 
-/// Digits with at most one decimal point inside.
+/// Digits with at most one decimal point inside, optionally negative.
 fn plain_number(s: &str) -> bool {
+    let s = s.strip_prefix('-').unwrap_or(s);
     let (int, frac) = s.split_once('.').unwrap_or((s, "0"));
     !int.is_empty()
         && !frac.is_empty()
@@ -1280,6 +1319,39 @@ mod tests {
         assert_eq!(s.counts, vec![4, 1]);
         assert_eq!(s.idents[0].as_deref(), Some("START"));
         assert_eq!(s.idents[1].as_deref(), Some("minute"));
+    }
+
+    #[test]
+    fn fields_negative_literals_and_for_heads() {
+        let java = "class Main {\n    int hour;\n    void set() {\n        this.hour = 15;\n        \
+                    other.hour = 15;\n        int t = -15;\n        int u = 3 -15;\n        \
+                    for (int i = 0, n = 15; i < n; i++) {}\n        for (i = 0; i < 3; i = 15) {}\n        \
+                    foo(a, b = 15);\n    }\n}\n";
+        let s = substitute(java, "java", &[ch("15", "3"), ch("-15", "-4")]);
+        assert!(s.code.contains("this.hour = 3;"), "{}", s.code);
+        assert!(s.code.contains("other.hour = 15;"));
+        assert!(s.code.contains("int t = -4;"));
+        assert!(s.code.contains("int u = 3 -15;"));
+        assert!(s.code.contains("for (int i = 0, n = 15; i < n; i++)"));
+        assert!(s.code.contains("i = 15) {}"));
+        assert!(s.code.contains("foo(a, b = 15);"));
+        assert_eq!(s.counts, vec![1, 1]);
+        assert_eq!(s.idents[0].as_deref(), Some("this.hour"));
+        assert_eq!(s.idents[1].as_deref(), Some("t"));
+        let py = "class A:\n    def __init__(self):\n        self.hour = 15\n        \
+                  self.temp: int = -15\n        x = -15\n        y = 5 -15\n";
+        let s = substitute(py, "python", &[ch("15", "3"), ch("-15", "-4")]);
+        assert!(s.code.contains("self.hour = 3\n"));
+        assert!(s.code.contains("self.temp: int = -4\n"));
+        assert!(s.code.contains("x = -4\n"));
+        assert!(s.code.contains("y = 5 -15\n"));
+        assert_eq!(s.counts, vec![1, 2]);
+        assert_eq!(s.idents[0].as_deref(), Some("self.hour"));
+        // An unsigned change does not touch a negative literal.
+        let s = substitute("x = -15\n", "python", &[ch("15", "3")]);
+        assert_eq!(s.counts, vec![0]);
+        assert!(plain_number("-15") && plain_number("-1.5") && !plain_number("--1"));
+        assert!(number_in_text("Temperatur -15 Grad", "-15"));
     }
 
     #[test]

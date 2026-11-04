@@ -587,9 +587,11 @@ beider Programme in der Sandbox, nie durch die KI (`src-tauri/src/ai/variation.r
   `minute = 10`, `second = 30`): Die KI nennt die vorgegebenen Zahlen und schlägt 2–3
   Szenarien vor, z. B. „15 → 3“ oder „15 → 9 und 10 → 45“. Jede Originalzahl muss im
   Aufgabentext stehen. Die App ersetzt die Werte selbst, und zwar **nur in einfachen
-  Zuweisungen** wie `hour = 15` (Python, auch `hour: int = 15`) bzw. `int hour = 15;`,
-  `final int hour = 15, minute = 10;` (Java) – in Code und Musterlösung gleichermaßen.
-  Kommentare und Zeichenketten bleiben unberührt. Ein Szenario wird übersprungen, wenn
+  Zuweisungen** wie `hour = 15` (Python, auch `hour: int = 15` und `self.hour = 15`) bzw.
+  `int hour = 15;`, `final int hour = 15, minute = 10;`, `this.hour = 15;` (Java) – in Code
+  und Musterlösung gleichermaßen. Negative Startwerte (`x = -15`) werden als `-15`
+  erkannt. Kommentare und Zeichenketten bleiben unberührt, ebenso Zuweisungen in Klammern
+  (z. B. im Kopf einer Java-`for`-Schleife: `for (int i = 0, n = 15; …)`). Ein Szenario wird übersprungen, wenn
   die Werte nicht in beiden Programmen gleich oft ersetzt werden können (etwa weil der
   Code `15` direkt in einer Formel verwendet) oder wenn sich die Ausgabe der Musterlösung
   dadurch nicht ändert. Die Musterlösung läuft jeweils zweimal (mit den Originalwerten und
@@ -860,8 +862,8 @@ unter `images/`.
   Ausgabevorlage).
 - Ausgabevorlagen erkennt nur die KI; von Hand lässt sich keine Vorlage anlegen.
 - Der Variationstest braucht eine KI-Musterlösung und ersetzt Startwerte nur in einfachen
-  Zuweisungen (`x = 15`, `int x = 15;`), nicht in Formeln, Arrays oder
-  Methodenaufrufen. Er kann einen Fehler übersehen und irrt, wenn die Musterlösung falsch
+  Zuweisungen (`x = 15`, `int x = 15;`, `this.x = 15;`, `self.x = 15`), nicht in Formeln,
+  Arrays, Methodenaufrufen oder Mehrfachzuweisungen wie `a, b = 15, 10`. Er kann einen Fehler übersehen und irrt, wenn die Musterlösung falsch
   ist.
 - Builds sind noch nicht signiert: Windows SmartScreen und macOS Gatekeeper warnen beim
   ersten Start (Windows-Signatur über die SignPath Foundation ist vorbereitet, siehe
