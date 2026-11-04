@@ -5,6 +5,7 @@
 use serde_json::{json, Value};
 
 use super::llama::ChatMessage;
+use crate::runner::template::{OutputTemplate, MAX_PLACEHOLDERS, MAX_TEMPLATES};
 
 /// Upper bound for examples taken from the task sheet.
 pub const MAX_EXAMPLES: usize = 5;
@@ -47,7 +48,12 @@ from standard input and write to standard output. Extract:\n\
 - examples: every example input/output pair that is printed in the task text, copied \
 character by character. Never invent, compute, complete or reformat examples. If the text \
 contains no example, return an empty list. If an example has no input, use an empty \
-string.\n\
+string. Never put an output template (see below) into examples.\n\
+- outputTemplates: output format templates, in which placeholder values stand in for the \
+real values (e.g. \"12345678 seconds have passed\" when the task says 12345678 is only a \
+placeholder, or \"<n>\"/\"X\"). text: the template copied character by character; \
+placeholders: the placeholder tokens exactly as they appear in the text. A template is not \
+an example. Empty list if there is none.\n\
 - compareMode: \"float\" if the output contains decimal numbers where tiny rounding \
 differences are acceptable, \"tokens\" if only the words/numbers matter and spacing or \
 line breaks do not, otherwise \"lines\".\n\
@@ -71,9 +77,25 @@ pub fn structure_schema() -> Value {
                     "required": ["input", "output"]
                 }
             },
+            "outputTemplates": {
+                "type": "array",
+                "maxItems": MAX_TEMPLATES,
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "text": { "type": "string" },
+                        "placeholders": {
+                            "type": "array",
+                            "maxItems": MAX_PLACEHOLDERS,
+                            "items": { "type": "string" }
+                        }
+                    },
+                    "required": ["text", "placeholders"]
+                }
+            },
             "compareMode": { "type": "string", "enum": ["lines", "tokens", "float"] }
         },
-        "required": ["inputFormat", "outputFormat", "examples", "compareMode"]
+        "required": ["inputFormat", "outputFormat", "examples", "outputTemplates", "compareMode"]
     })
 }
 
@@ -91,6 +113,8 @@ pub struct SolutionContext<'a> {
     pub input_format: &'a str,
     pub output_format: &'a str,
     pub examples: &'a [(String, String)],
+    /// Verified output templates (format only, placeholder values).
+    pub output_templates: &'a [OutputTemplate],
 }
 
 pub fn solution_messages(
@@ -119,6 +143,20 @@ pub fn solution_messages(
             i + 1,
             input.trim_end(),
             output.trim_end()
+        ));
+    }
+    for t in ctx.output_templates {
+        let tokens = t
+            .placeholders
+            .iter()
+            .map(|p| format!("`{p}`"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        user.push_str(&format!(
+            "\n\nOutput format template (placeholders, not real values). Placeholders: {tokens}. \
+             Print exactly this format, replace every placeholder by the real value your program \
+             computes, and keep all other text unchanged:\n```\n{}\n```",
+            t.text.trim_end()
         ));
     }
     vec![ChatMessage::system(system), ChatMessage::user(user)]
@@ -317,6 +355,7 @@ mod tests {
             input_format: "Eine Zahl n",
             output_format: "2n",
             examples: &[("3\n".into(), "6\n".into())],
+            output_templates: &[],
         };
         let m = solution_messages("Verdopple n.", "java", &ctx);
         assert!(m[0].content.contains("public class Main"));
@@ -331,6 +370,26 @@ mod tests {
         let i = inputs_messages("x", "n", &["3\n".into()]);
         assert!(i[1].content.contains("do not repeat"));
         assert_eq!(structure_schema()["properties"]["examples"]["maxItems"], 5);
+        assert_eq!(
+            structure_schema()["properties"]["outputTemplates"]["maxItems"],
+            MAX_TEMPLATES
+        );
+        assert!(STRUCTURE_SYSTEM.contains("Never put an output template"));
+        let templates = [OutputTemplate {
+            text: "12345678 seconds have passed.".into(),
+            placeholders: vec!["12345678".into()],
+        }];
+        let ctx = SolutionContext {
+            input_format: "",
+            output_format: "",
+            examples: &[],
+            output_templates: &templates,
+        };
+        let m = solution_messages("t", "python", &ctx);
+        assert!(m[1].content.contains("Placeholders: `12345678`"));
+        assert!(m[1]
+            .content
+            .contains("```\n12345678 seconds have passed.\n```"));
         assert_eq!(inputs_schema()["properties"]["inputs"]["maxItems"], 10);
     }
 }
