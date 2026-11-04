@@ -494,7 +494,16 @@ muss auch der Wert eine Zahl sein. Platzhalter werden nur als ganze Wörter erka
 einer Vorlage (begrenzt die Rechenzeit). Passt die Ausgabe zu keiner Vorlage, lautet
 der Status „Ausgabeformat weicht von Vorlage ab“ mit der betroffenen Zeile und der
 erwarteten Vorlagenzeile. Die Vorlage gilt, bis man sie verwirft, neue KI-Testfälle
-erzeugt oder ein neues Aufgabenblatt importiert.
+erzeugt oder den Aufgabentext ändert (jede Änderung, auch ein neuer Import oder eine
+übernommene KI-Korrektur, macht Vorlage und Musterlösung ungültig, weil sie zu einem
+anderen Text gehören).
+
+**Die Vorlagenprüfung gilt für alle Testfälle**, auch für eigene Randfälle wie
+„Ungültige Eingabe“, bei denen das Programm absichtlich etwas anderes ausgibt. Solche
+Testfälle schlagen dann mit „Ausgabeformat weicht von Vorlage ab“ fehl, obwohl die Ausgabe
+der Erwartung entspricht. Beschreibt die Vorlage nur den Normalfall, im Tab „Testfälle“
+„Vorlage nicht verwenden“ klicken – dann wird nur noch gegen die erwarteten Ausgaben
+geprüft.
 
 **Grenzen** (Recherche §11) – hier ist das Ergebnis höchstens ein Hinweis:
 Aufgaben ohne Beispiele, mehrdeutige Texte, mehrere richtige Ausgaben, GUI/Dateien/
@@ -622,15 +631,18 @@ Fälle, wird der Variationstest mit diesem Hinweis übersprungen.
 
 - Der Code kompiliert und mindestens ein Test ist bestanden.
 - Eine **Musterlösung** in derselben Sprache ist vorhanden, d. h. „Testfälle mit KI
-  erzeugen“ wurde für diese Aufgabe ausgeführt und war nicht rot. Ein neuer Import des
-  Aufgabenblatts verwirft die Musterlösung.
+  erzeugen“ wurde für genau diesen Aufgabentext ausgeführt und war nicht rot. Jede
+  Änderung des Aufgabentexts (auch ein neuer Import) macht die Musterlösung ungültig.
 - Ein KI-Modell ist eingerichtet und die KI ist nicht gerade mit „Testfälle mit KI
   erzeugen“ beschäftigt.
 - Bei Startwerten: Sie stehen als einfache Zuweisungen im Code (siehe oben).
 
 Übersprungen wird außerdem, wenn die KI keine brauchbaren Eingaben oder Szenarien
 liefert, wenn Musterlösung oder Engine Fehler melden oder wenn man abbricht. Ein neues
-„Prüfen“ bricht einen noch laufenden Variationstest ab; dessen Ergebnis wird ignoriert.
+„Prüfen“ (oder „Abbrechen“) bricht nur den laufenden Variationstest ab, das KI-Modell
+bleibt geladen und andere KI-Aufgaben laufen weiter; das alte Ergebnis wird ignoriert.
+Schaltet man den Schalter aus, verschwindet das Ergebnis des Variationstests wieder und
+die Tests zeigen ihren ursprünglichen Status.
 Die Musterlösung ist selbst KI-erzeugt – ist sie falsch, kann auch der Variationstest
 irren. Ein Befund ist deshalb ein starker Hinweis, aber kein Beweis; im Zweifel den Code
 selbst ansehen.
@@ -650,8 +662,10 @@ selbst ansehen.
   (Text nicht als geprüft markiert, kein KI-Modell eingerichtet, Prüfung läuft, …).
 - **Konfidenz Rot oder Gelb:** Testfälle von Hand anlegen bzw. die vorgeschlagenen
   erwarteten Ausgaben prüfen; oft hilft ein klarerer Aufgabentext mit Beispielen.
-- **Alle Tests „Ausgabeformat weicht von Vorlage ab“:** Stimmt die erkannte Vorlage? Falls
-  nicht, im Tab „Testfälle“ „Vorlage nicht verwenden“ klicken und erneut prüfen.
+- **Tests „Ausgabeformat weicht von Vorlage ab“:** Stimmt die erkannte Vorlage, und gilt
+  sie auch für diesen Testfall (Randfälle wie „Ungültige Eingabe“ geben oft etwas anderes
+  aus)? Falls nicht, im Tab „Testfälle“ „Vorlage nicht verwenden“ klicken und erneut
+  prüfen.
 - **Variationstest übersprungen:** Der Hinweis nennt den Grund (keine Musterlösung, kein
   Modell, keine ersetzbaren Werte, …). Der Test lässt sich mit dem Schalter neben „Prüfen“
   abschalten.
@@ -863,8 +877,10 @@ unter `images/`.
 - Ausgabevorlagen erkennt nur die KI; von Hand lässt sich keine Vorlage anlegen.
 - Der Variationstest braucht eine KI-Musterlösung und ersetzt Startwerte nur in einfachen
   Zuweisungen (`x = 15`, `int x = 15;`, `this.x = 15;`, `self.x = 15`), nicht in Formeln,
-  Arrays, Methodenaufrufen oder Mehrfachzuweisungen wie `a, b = 15, 10`. Er kann einen Fehler übersehen und irrt, wenn die Musterlösung falsch
-  ist.
+  Arrays, Methodenaufrufen oder Mehrfachzuweisungen wie `a, b = 15, 10`. Er kann einen
+  Fehler übersehen und irrt, wenn die Musterlösung falsch ist.
+- Die Vorlagenprüfung gilt für alle Testfälle (auch für Randfälle mit anderer Ausgabe);
+  dann „Vorlage nicht verwenden“.
 - Builds sind noch nicht signiert: Windows SmartScreen und macOS Gatekeeper warnen beim
   ersten Start (Windows-Signatur über die SignPath Foundation ist vorbereitet, siehe
   „Code-Signing“; macOS-Signatur und Notarisierung fehlen noch).

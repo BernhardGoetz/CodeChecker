@@ -224,6 +224,7 @@ export function installMock(): void {
             suggestedCompareMode: null,
             compareMode: { kind: "lines", trim: true },
             outputTemplates: [{ text: "Hallo, <Name>!", placeholders: ["<Name>"] }],
+            inputFormat: "Eine Zahl n, danach n Namen (je eine Zeile).",
             stats: { solutionsRequested: 3, solutionsCompiled: 3, solutionsRepaired: 0, solutionsPassed: 3, examplesFound: 1, examplesDiscarded: 0, templatesFound: 1, inputsGenerated: 4, testsDropped: 0, llmCalls: 4, completionTokens: 900, tokensPerSecond: 14.2, durationMs: 72000 },
           };
         case "check_variations": {
@@ -245,6 +246,7 @@ export function installMock(): void {
               explanationQuote: "86400 %",
               note: "1 von 1 Variante(n) liefern ein anderes Ergebnis als die Musterlösung.",
               checked: 1,
+              unclear: [],
             } satisfies VariationResult;
           return {
             state: "ok",
@@ -253,10 +255,13 @@ export function installMock(): void {
             explanationQuote: null,
             note: "2 Variante(n) geprüft – der Code rechnet auch mit veränderten Werten richtig.",
             checked: 2,
+            unclear: [],
           } satisfies VariationResult;
         }
         case "cancel_ai":
           return null;
+        case "cancel_variations":
+          return 1;
         case "update_info":
         case "set_update_interval":
         case "check_for_update":

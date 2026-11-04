@@ -72,11 +72,23 @@ function VariationBlock({
     );
   }
   if (!variation) return null;
+  const unclear =
+    variation.unclear.length > 0 && variation.state !== "skipped" ? (
+      <p className="muted small">
+        Unklar (Code bricht ab oder überschreitet das Zeitlimit, kein Logikfehler-Befund):{" "}
+        {variation.unclear.join("; ")}
+      </p>
+    ) : null;
   if (variation.state === "skipped") {
     return <p className="muted small">Variationstest übersprungen: {variation.note}</p>;
   }
   if (variation.state === "ok") {
-    return <p className="note ok small">Variationstest bestanden: {variation.note}</p>;
+    return (
+      <>
+        <p className="note ok small">Variationstest bestanden: {variation.note}</p>
+        {unclear}
+      </>
+    );
   }
   return (
     <div className="result wrongLogic variation-failed" role="alert">
@@ -103,6 +115,7 @@ function VariationBlock({
           </li>
         ))}
       </ul>
+      {unclear}
       {variation.explanation && (
         <div className="small">
           <span className="muted">Erklärung der KI (nur ein Hinweis, sie entscheidet nichts):</span>{" "}

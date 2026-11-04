@@ -312,6 +312,8 @@ export interface GenerateResult {
   compareMode: CompareMode;
   /** Output templates of the task sheet: format check only, never tests. */
   outputTemplates: OutputTemplate[];
+  /** Input format from the structure step (sent to the variation check). */
+  inputFormat: string;
   stats: GenerateStats;
 }
 
@@ -389,6 +391,8 @@ export interface VariationRequest {
   compareMode?: CompareMode;
   outputTemplates: OutputTemplate[];
   tests: { name: string; input: string; expected: string }[];
+  /** Input format from the test generation (helps the model write valid inputs). */
+  inputFormat: string;
 }
 
 export interface VariationFinding {
@@ -413,17 +417,21 @@ export interface VariationResult {
   note: string | null;
   /** Variants (inputs or scenarios) compared. */
   checked: number;
+  /** Variants where the code crashed or timed out: unclear, no logic error (German). */
+  unclear: string[];
 }
 
 /** Runs the student's code and the reference solution with changed values. */
 export const checkVariations = (request: VariationRequest) =>
   invoke<VariationResult>("check_variations", { request });
+/** Cancels only running variation checks (the model stays loaded). */
+export const cancelVariations = () => invoke<number>("cancel_variations");
 export const onVariationProgress = (cb: (p: AiProgress) => void): Promise<UnlistenFn> =>
   listen<AiProgress>("variation-progress", (e) => cb(e.payload));
 
 /** A "skipped" result created in the frontend (e.g. no reference solution). */
 export function skippedVariation(note: string): VariationResult {
-  return { state: "skipped", findings: [], explanation: null, explanationQuote: null, note, checked: 0 };
+  return { state: "skipped", findings: [], explanation: null, explanationQuote: null, note, checked: 0, unclear: [] };
 }
 
 /**

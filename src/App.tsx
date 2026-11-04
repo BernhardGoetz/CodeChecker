@@ -4,7 +4,7 @@ import {
   ENGINE_NAMES,
   aiStatus,
   applyVariation,
-  cancelAi,
+  cancelVariations,
   checkVariations,
   onVariationProgress,
   skippedVariation,
@@ -117,16 +117,27 @@ export default function App() {
   // "Erkennungsfehler mit KI korrigieren" is running (same model).
   const [fixing, setFixing] = useState(false);
   const [aiNote, setAiNote] = useState<string | null>(null);
-  // Output templates of the task sheet (from the AI): format check in „Prüfen“.
-  const [outputTemplates, setOutputTemplates] = useState<OutputTemplate[]>([]);
-  // Reference solution of the last test generation (for the variation check).
-  const [reference, setReference] = useState<{ code: string; language: string } | null>(null);
+  // Results of the last test generation that belong to the task text it was
+  // made for: output templates (format check in „Prüfen“), reference solution
+  // and input format (variation check). Any change of the task text makes
+  // them inactive (they no longer fit).
+  const [aiData, setAiData] = useState<{
+    taskText: string;
+    templates: OutputTemplate[];
+    reference: { code: string; language: string } | null;
+    inputFormat: string;
+  } | null>(null);
+  const activeAi = aiData !== null && aiData.taskText === task ? aiData : null;
+  const outputTemplates = activeAi?.templates ?? [];
+  const reference = activeAi?.reference ?? null;
   // Variation check after „Prüfen“: switch, result, progress line (null = not running).
   const [variationEnabled, setVariationEnabled] = useState(() => readStored(VARIATION_KEY) !== "off");
   const [variation, setVariation] = useState<VariationResult | null>(null);
   const [variationBusy, setVariationBusy] = useState<string | null>(null);
-  // Run counter: results of outdated runs (a newer „Prüfen“) are ignored.
+  // Run counters: results of outdated runs (a newer „Prüfen“) and of
+  // outdated variation checks (new run, switch turned off) are ignored.
   const runCounter = useRef(0);
+  const variationRun = useRef(0);
   const [running, setRunning] = useState(false);
   const [progress, setProgress] = useState<Progress | null>(null);
   const [report, setReport] = useState<RunReport | null>(null);
@@ -322,8 +333,7 @@ export default function App() {
     setImported(r);
     setTask(r.text);
     // A new task sheet: templates and reference solution of the old one no longer apply.
-    setOutputTemplates([]);
-    setReference(null);
+    setAiData(null);
     setTaskConfirmed(false);
   };
 
@@ -356,10 +366,14 @@ export default function App() {
   // MAX_TESTS. The ref holds the current list (edits during generation).
   const testsRef = useRef(tests);
   testsRef.current = tests;
-  const onAiResult = (r: GenerateResult) => {
+  const onAiResult = (r: GenerateResult, taskText: string) => {
     setAiNote(null);
-    setOutputTemplates(r.outputTemplates ?? []);
-    setReference(r.referenceSolution ? { code: r.referenceSolution, language: languageId } : null);
+    setAiData({
+      taskText,
+      templates: r.outputTemplates ?? [],
+      reference: r.referenceSolution ? { code: r.referenceSolution, language: languageId } : null,
+      inputFormat: r.inputFormat ?? "",
+    });
     if (r.tests.length === 0) return;
     const prev = testsRef.current;
     const room = Math.max(0, MAX_TESTS - prev.length);
@@ -381,15 +395,28 @@ export default function App() {
     ]);
   };
 
+  // Ends a running variation check: only that operation is cancelled (the
+  // model stays loaded); its result is ignored.
+  const stopVariation = () => {
+    variationRun.current++;
+    if (variationBusy !== null) void cancelVariations().catch(() => undefined);
+    setVariationBusy(null);
+  };
+
   const onVariationToggle = (on: boolean) => {
     setVariationEnabled(on);
     writeStored(VARIATION_KEY, on ? "on" : "off");
+    if (!on) {
+      // Back to the plain report: no wrongLogic marks any more.
+      stopVariation();
+      setVariation(null);
+    }
   };
 
   // Variation check after a run (separate from run_tests: the report is
   // shown right away). Only when compiled, at least one test passed, a
   // reference solution exists and the switch is on.
-  const startVariation = (r: RunReport, runId: number, request: Parameters<typeof checkVariations>[0]) => {
+  const startVariation = (r: RunReport, request: Parameters<typeof checkVariations>[0]) => {
     if (!variationEnabled || !r.compileOk || r.passed < 1) return;
     if (!reference) {
       setVariation(
@@ -403,17 +430,18 @@ export default function App() {
       setVariation(skippedVariation("Die Musterlösung ist in einer anderen Sprache geschrieben."));
       return;
     }
+    const runId = ++variationRun.current;
     setVariationBusy("Prüfe mit veränderten Werten …");
     checkVariations(request)
       .then((v) => {
-        if (runId === runCounter.current) setVariation(v);
+        if (runId === variationRun.current) setVariation(v);
       })
       .catch((e) => {
-        if (runId !== runCounter.current || String(e) === CANCELLED) return;
+        if (runId !== variationRun.current || String(e) === CANCELLED) return;
         setVariation(skippedVariation(`Variationstest nicht möglich: ${String(e)}`));
       })
       .finally(() => {
-        if (runId === runCounter.current) setVariationBusy(null);
+        if (runId === variationRun.current) setVariationBusy(null);
       });
   };
 
@@ -421,8 +449,7 @@ export default function App() {
     if (compareMode === null) return;
     const runId = ++runCounter.current;
     // A variation check of the previous run is outdated now.
-    if (variationBusy !== null) void cancelAi();
-    setVariationBusy(null);
+    stopVariation();
     setVariation(null);
     setRunning(true);
     selectTab("result");
@@ -443,7 +470,7 @@ export default function App() {
       });
       if (runId !== runCounter.current) return;
       setReport(r);
-      startVariation(r, runId, {
+      startVariation(r, {
         taskText: task,
         language: languageId,
         studentCode: code,
@@ -451,6 +478,7 @@ export default function App() {
         compareMode,
         outputTemplates,
         tests: testData,
+        inputFormat: activeAi?.inputFormat ?? "",
       });
       // The backend may have started the engine.
       if (docker?.state !== "ok") refreshDocker();
@@ -634,7 +662,7 @@ export default function App() {
                 compareMode={compareMode}
                 onResult={onAiResult}
                 templates={outputTemplates}
-                onDropTemplates={() => setOutputTemplates([])}
+                onDropTemplates={() => setAiData((d) => (d ? { ...d, templates: [] } : d))}
                 onApplyMode={(m) => {
                   setCompareMode(m);
                   setCompareModeKey((k) => k + 1);
@@ -663,7 +691,7 @@ export default function App() {
                 report={shownReport}
                 variation={variation}
                 variationBusy={variationBusy}
-                onCancelVariation={() => void cancelAi()}
+                onCancelVariation={stopVariation}
               />
             )}
             {!report && !running && !error && (

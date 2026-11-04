@@ -19,7 +19,8 @@ interface Props {
   language: string;
   compareMode: CompareMode | null;
   /** Generated tests are appended by the parent. */
-  onResult: (r: GenerateResult) => void;
+  /** taskText: the text the tests were generated for. */
+  onResult: (r: GenerateResult, taskText: string) => void;
   /** Output templates in use (held by the parent, used as format check). */
   templates: OutputTemplate[];
   /** „Vorlage nicht verwenden“. */
@@ -107,13 +108,14 @@ export function AiPanel({
     timer.current = window.setInterval(() => setSeconds(Math.round((Date.now() - started) / 1000)), 1000);
     let failed = false;
     try {
+      const text = taskText;
       const r = await generateTests({
-        taskText,
+        taskText: text,
         language,
         compareMode: compareMode ?? undefined,
       });
       setResult(r);
-      onResult(r);
+      onResult(r, text);
     } catch (e) {
       if (String(e) === CANCELLED) setCancelled(true);
       else {
