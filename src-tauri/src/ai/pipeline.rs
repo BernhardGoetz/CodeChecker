@@ -168,6 +168,8 @@ pub enum Phase {
     Majority,
     /// OCR correction (`ocr_fix`).
     Correction,
+    /// Variation check (`variation`).
+    Variation,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -535,7 +537,7 @@ impl Executor for SandboxExecutor {
 }
 
 /// Runs `f` unless `cancel` fires first.
-async fn cancellable<T>(
+pub(crate) async fn cancellable<T>(
     cancel: &CancellationToken,
     f: impl Future<Output = Result<T, AiError>>,
 ) -> Result<T, AiError> {
@@ -694,8 +696,8 @@ pub fn as_stdin(s: &str) -> String {
 
 #[derive(Deserialize, Default)]
 #[serde(default)]
-struct InputsAnswer {
-    inputs: Vec<String>,
+pub struct InputsAnswer {
+    pub inputs: Vec<String>,
 }
 
 /// Generated inputs: stdin form, no duplicates (also of `existing`), not
@@ -723,7 +725,7 @@ pub fn clean_inputs(raw: &[String], existing: &[String]) -> Vec<String> {
 }
 
 /// A usable run: exited normally, in time, output complete.
-fn valid(o: &StepOutput) -> bool {
+pub fn valid(o: &StepOutput) -> bool {
     o.exit_code == Some(0) && !o.timed_out && !o.stdout_truncated
 }
 
@@ -1557,7 +1559,25 @@ pub async fn generate<L: Llm + Sync, E: Executor>(
     Ok(finish(run, tests, reference, evidence))
 }
 
+/// The AI gate: test generation and the variation check use the model
+/// and the sandbox heavily, so only one of them runs at a time.
 static GENERATING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Holds the AI gate; releases it when dropped.
+pub struct AiGate(());
+
+impl AiGate {
+    /// `None` if test generation or a variation check is running.
+    pub fn try_acquire() -> Option<AiGate> {
+        (!GENERATING.swap(true, AtomicOrdering::SeqCst)).then_some(AiGate(()))
+    }
+}
+
+impl Drop for AiGate {
+    fn drop(&mut self) {
+        GENERATING.store(false, AtomicOrdering::SeqCst);
+    }
+}
 
 /// `generate_tests`: checks the request, makes sure the container engine
 /// runs (before the model is loaded – minutes of model work must not end
@@ -1568,20 +1588,14 @@ pub async fn run(
     cancel: &CancellationToken,
     on_progress: impl Fn(AiProgress) + Send + Sync + 'static,
 ) -> Result<GenerateResult, AiError> {
-    use std::sync::atomic::Ordering;
     let lang = req.validate()?;
-    if GENERATING.swap(true, Ordering::SeqCst) {
+    let Some(_gate) = AiGate::try_acquire() else {
         return Err(AiError::Other(
-            "Es werden bereits Testfälle erzeugt.".into(),
+            "Die KI ist gerade beschäftigt (Testfälle werden erzeugt oder der Code wird mit \
+             veränderten Werten geprüft). Bitte kurz warten."
+                .into(),
         ));
-    }
-    struct Reset;
-    impl Drop for Reset {
-        fn drop(&mut self) {
-            GENERATING.store(false, Ordering::SeqCst);
-        }
-    }
-    let _reset = Reset;
+    };
 
     let model = super::models::selected_model()?;
     let on_progress = Arc::new(on_progress);

@@ -11,6 +11,7 @@ pub mod models;
 pub mod ocr_fix;
 pub mod pipeline;
 pub mod prompts;
+pub mod variation;
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
