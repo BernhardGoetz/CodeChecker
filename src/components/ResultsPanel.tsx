@@ -1,4 +1,4 @@
-import type { RunReport, StepOutput, TestResult, TestStatus } from "../api";
+import type { RunReport, StepOutput, TestResult, TestStatus, VariationResult } from "../api";
 import { DiffView } from "./DiffView";
 import { VisibleWhitespace } from "./VisibleWhitespace";
 
@@ -53,7 +53,79 @@ function TestRow({ t }: { t: TestResult }) {
   );
 }
 
-export function ResultsPanel({ report }: { report: RunReport }) {
+/** Result of the variation check: red block with findings, or a quiet note. */
+function VariationBlock({
+  variation,
+  busy,
+  onCancel,
+}: {
+  variation: VariationResult | null;
+  busy: string | null;
+  onCancel: () => void;
+}) {
+  if (busy !== null) {
+    return (
+      <div className="row small variation-busy">
+        <p className="note busy">{busy}</p>
+        <button onClick={onCancel}>Abbrechen</button>
+      </div>
+    );
+  }
+  if (!variation) return null;
+  if (variation.state === "skipped") {
+    return <p className="muted small">Variationstest übersprungen: {variation.note}</p>;
+  }
+  if (variation.state === "ok") {
+    return <p className="note ok small">Variationstest bestanden: {variation.note}</p>;
+  }
+  return (
+    <div className="result wrongLogic variation-failed" role="alert">
+      <div className="result-head">
+        <span className="status wrongLogic">
+          Logikfehler: Code liefert nur für die gegebenen Werte das richtige Ergebnis
+        </span>
+      </div>
+      {variation.note && <p className="small">{variation.note}</p>}
+      <ul className="variation-findings">
+        {variation.findings.map((f, i) => (
+          <li key={i}>
+            <strong>{f.description}</strong>
+            <div className="variation-compare">
+              <div>
+                <span className="muted small">Erwartet (Musterlösung)</span>
+                <pre className="output">{f.expected}</pre>
+              </div>
+              <div>
+                <span className="muted small">Tatsächlich (dieser Code)</span>
+                <pre className="output">{f.actual}</pre>
+              </div>
+            </div>
+          </li>
+        ))}
+      </ul>
+      {variation.explanation && (
+        <div className="small">
+          <span className="muted">Erklärung der KI (nur ein Hinweis, sie entscheidet nichts):</span>{" "}
+          {variation.explanationQuote && <code>{variation.explanationQuote}</code>}
+          {variation.explanationQuote && " – "}
+          {variation.explanation}
+        </div>
+      )}
+    </div>
+  );
+}
+
+export function ResultsPanel({
+  report,
+  variation = null,
+  variationBusy = null,
+  onCancelVariation = () => undefined,
+}: {
+  report: RunReport;
+  variation?: VariationResult | null;
+  variationBusy?: string | null;
+  onCancelVariation?: () => void;
+}) {
   const allPassed = report.compileOk && report.passed === report.total && report.total > 0;
   return (
     <div className="results">
@@ -71,6 +143,7 @@ export function ResultsPanel({ report }: { report: RunReport }) {
           <p className={allPassed ? "summary ok" : "summary fail"}>
             {report.passed} von {report.total} Tests bestanden
           </p>
+          <VariationBlock variation={variation} busy={variationBusy} onCancel={onCancelVariation} />
           <ol className="result-list">
             {report.tests.map((t) => (
               <TestRow key={t.index} t={t} />

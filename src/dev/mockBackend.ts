@@ -3,7 +3,17 @@
 // import.meta.env.DEV, so it is not part of production builds.
 import type { Channel } from "@tauri-apps/api/core";
 import { mockIPC } from "@tauri-apps/api/mocks";
-import type { AiStatus, ImportResult, InstallProgress, LanguageInfo, RunReport, RunRequest, UpdateInfo } from "../api";
+import type {
+  AiStatus,
+  ImportResult,
+  InstallProgress,
+  LanguageInfo,
+  RunReport,
+  RunRequest,
+  UpdateInfo,
+  VariationRequest,
+  VariationResult,
+} from "../api";
 
 const PY = `def gruss(name: str) -> str:
     return f"Hallo, {name}!"
@@ -216,6 +226,35 @@ export function installMock(): void {
             outputTemplates: [{ text: "Hallo, <Name>!", placeholders: ["<Name>"] }],
             stats: { solutionsRequested: 3, solutionsCompiled: 3, solutionsRepaired: 0, solutionsPassed: 3, examplesFound: 1, examplesDiscarded: 0, templatesFound: 1, inputsGenerated: 4, testsDropped: 0, llmCalls: 4, completionTokens: 900, tokensPerSecond: 14.2, durationMs: 72000 },
           };
+        case "check_variations": {
+          await sleep(900);
+          const code = (a.request as VariationRequest).studentCode;
+          if (code.includes("86400 %"))
+            return {
+              state: "failed",
+              findings: [
+                {
+                  description: "hour = 3 statt 15",
+                  input: "",
+                  expected: "11430 seconds have passed since midnight.\n74970 seconds are left until midnight.\n",
+                  actual: "11430 seconds have passed since midnight.\n6390 seconds are left until midnight.\n",
+                  diff: [],
+                },
+              ],
+              explanation: "Die Sekunden bis Mitternacht werden mit Modulo statt mit einer Subtraktion berechnet; richtig wäre 86400 - Sekunden.",
+              explanationQuote: "86400 %",
+              note: "1 von 1 Variante(n) liefern ein anderes Ergebnis als die Musterlösung.",
+              checked: 1,
+            } satisfies VariationResult;
+          return {
+            state: "ok",
+            findings: [],
+            explanation: null,
+            explanationQuote: null,
+            note: "2 Variante(n) geprüft – der Code rechnet auch mit veränderten Werten richtig.",
+            checked: 2,
+          } satisfies VariationResult;
+        }
         case "cancel_ai":
           return null;
         case "update_info":
