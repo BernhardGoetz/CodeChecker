@@ -3,7 +3,10 @@
 //! the sheet says 12345678 is only a placeholder). Such a template is not
 //! an example – it only fixes the format. [`template_matches`] checks an
 //! output against a template: the fixed text must match, every placeholder
-//! stands for a non-empty value (a number if the placeholder is a number).
+//! stands for a non-empty value: an integer if the placeholder consists of
+//! digits only (`12345678` → `54630`, not `54630.0`), a number if it is a
+//! decimal number, any text otherwise. Templates the model split into one
+//! template per line are joined again ([`verify_templates`]).
 //!
 //! Matching is done line by line (lines trimmed, whitespace runs collapsed,
 //! empty lines at the start and end ignored) with a small backtracking
@@ -23,9 +26,53 @@ pub const MAX_PLACEHOLDERS: usize = 6;
 /// matching time; templates are short lines of text).
 pub const MAX_LINE_BYTES: usize = 4096;
 
-/// Characters a number value may consist of (see [`is_number`]).
-fn number_char(c: char) -> bool {
-    c.is_ascii_digit() || matches!(c, '+' | '-' | '.' | 'e' | 'E')
+/// What a placeholder stands for, derived from the token.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlaceholderKind {
+    /// Digits only (`12345678`): a whole number, optionally signed, without
+    /// decimal point or exponent.
+    Integer,
+    /// Another number (`3.14`): any number (see [`is_number`]).
+    Decimal,
+    /// Anything else (`<n>`, `X`): any non-empty text.
+    Text,
+}
+
+pub fn placeholder_kind(token: &str) -> PlaceholderKind {
+    let digits = token.strip_prefix(['+', '-']).unwrap_or(token);
+    if !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()) {
+        PlaceholderKind::Integer
+    } else if is_number(token) {
+        PlaceholderKind::Decimal
+    } else {
+        PlaceholderKind::Text
+    }
+}
+
+fn is_integer(value: &str) -> bool {
+    placeholder_kind(value) == PlaceholderKind::Integer
+}
+
+impl PlaceholderKind {
+    /// Whether `value` may stand for a placeholder of this kind.
+    fn accepts(self, value: &str) -> bool {
+        match self {
+            PlaceholderKind::Integer => is_integer(value),
+            PlaceholderKind::Decimal => is_number(value),
+            PlaceholderKind::Text => !value.is_empty(),
+        }
+    }
+
+    /// Characters a value of this kind may consist of (`None`: any).
+    fn allows(self, c: char) -> Option<bool> {
+        match self {
+            PlaceholderKind::Integer => Some(c.is_ascii_digit() || matches!(c, '+' | '-')),
+            PlaceholderKind::Decimal => {
+                Some(c.is_ascii_digit() || matches!(c, '+' | '-' | '.' | 'e' | 'E'))
+            }
+            PlaceholderKind::Text => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -56,7 +103,7 @@ fn token_at(s: &str, pos: usize, token: &str) -> bool {
 }
 
 /// Whether `token` occurs in `s` at a word boundary.
-fn contains_token(s: &str, token: &str) -> bool {
+pub fn contains_token(s: &str, token: &str) -> bool {
     s.char_indices().any(|(i, _)| token_at(s, i, token))
 }
 
@@ -65,8 +112,64 @@ fn contains_token(s: &str, token: &str) -> bool {
 /// [`normalize_for_match`]), it has no placeholders, or a placeholder is
 /// empty, contains whitespace or does not occur in the template text. At
 /// most [`MAX_TEMPLATES`], duplicates removed.
+///
+/// Templates that are whole, directly consecutive lines of the task text
+/// are joined into one template in text order (the model sometimes splits
+/// a template of several lines into one template per line; an output of
+/// several lines would then never match).
 pub fn verify_templates(task_text: &str, raw: &[OutputTemplate]) -> (Vec<OutputTemplate>, usize) {
     let text = normalize_for_match(task_text);
+    let (kept, discarded) = accept_templates(&text, raw);
+    let mut merged = merge_consecutive(&text, kept);
+    merged.truncate(MAX_TEMPLATES);
+    (merged, discarded)
+}
+
+/// Line range (first, last; 0-based) of `body` in `text` if it occurs as
+/// whole lines.
+fn line_range(text: &str, body: &str) -> Option<(usize, usize)> {
+    text.match_indices(body).find_map(|(i, _)| {
+        let end = i + body.len();
+        let whole = (i == 0 || text.as_bytes()[i - 1] == b'\n')
+            && (end == text.len() || text.as_bytes()[end] == b'\n');
+        whole.then(|| {
+            let first = text[..i].matches('\n').count();
+            (first, first + body.matches('\n').count())
+        })
+    })
+}
+
+/// Joins templates on directly consecutive lines of the task text (in text
+/// order, placeholders united); others keep their order.
+fn merge_consecutive(text: &str, kept: Vec<OutputTemplate>) -> Vec<OutputTemplate> {
+    let mut located: Vec<(Option<(usize, usize)>, OutputTemplate)> = kept
+        .into_iter()
+        .map(|t| (line_range(text, &t.text), t))
+        .collect();
+    // Located templates in text order first, the others after them.
+    located.sort_by_key(|(r, _)| r.map_or((1, 0), |(a, _)| (0, a)));
+    let mut out: Vec<(Option<(usize, usize)>, OutputTemplate)> = Vec::new();
+    for (range, t) in located {
+        if let (Some((a, b)), Some((Some((_, pb)), prev))) = (range, out.last_mut()) {
+            if a == *pb + 1 {
+                prev.text = format!("{}\n{}", prev.text, t.text);
+                for p in t.placeholders {
+                    if !prev.placeholders.contains(&p) {
+                        prev.placeholders.push(p);
+                    }
+                }
+                *pb = b;
+                continue;
+            }
+        }
+        out.push((range, t));
+    }
+    out.into_iter().map(|(_, t)| t).collect()
+}
+
+/// The templates that pass the checks of [`verify_templates`] (not joined,
+/// not limited) and the number discarded.
+fn accept_templates(text: &str, raw: &[OutputTemplate]) -> (Vec<OutputTemplate>, usize) {
     let mut kept: Vec<OutputTemplate> = Vec::new();
     let mut discarded = 0;
     for t in raw {
@@ -89,7 +192,7 @@ pub fn verify_templates(task_text: &str, raw: &[OutputTemplate]) -> (Vec<OutputT
             discarded += 1;
             continue;
         }
-        if kept.len() < MAX_TEMPLATES && !kept.iter().any(|k| k.text == body) {
+        if !kept.iter().any(|k| k.text == body) {
             kept.push(OutputTemplate {
                 text: body,
                 placeholders: tokens,
@@ -117,9 +220,9 @@ fn lines(s: &str) -> Vec<String> {
 #[derive(Debug, Clone, PartialEq)]
 enum Segment {
     Text(String),
-    /// A placeholder; `numeric`: the value must be a number.
+    /// A placeholder of the given kind.
     Hole {
-        numeric: bool,
+        kind: PlaceholderKind,
     },
 }
 
@@ -135,7 +238,7 @@ fn segments(line: &str, tokens: &[&str]) -> Vec<Segment> {
                 out.push(Segment::Text(std::mem::take(&mut text)));
             }
             out.push(Segment::Hole {
-                numeric: is_number(tok),
+                kind: placeholder_kind(tok),
             });
             pos += tok.len();
         } else {
@@ -169,14 +272,13 @@ fn match_from(
         Segment::Text(t) => {
             s[pos..].starts_with(t.as_str()) && match_from(segs, i + 1, s, pos + t.len(), failed)
         }
-        Segment::Hole { numeric } => {
+        Segment::Hole { kind } => {
             let rest = &s[pos..];
             // A number value only extends over number characters.
-            let limit = if *numeric {
-                pos + rest.find(|c: char| !number_char(c)).unwrap_or(rest.len())
-            } else {
-                s.len()
-            };
+            let limit = pos
+                + rest
+                    .find(|c: char| kind.allows(c) == Some(false))
+                    .unwrap_or(rest.len());
             // The value is not empty: it ends after its first character.
             let first = pos + rest.chars().next().map_or(0, char::len_utf8);
             if first == pos || first > limit {
@@ -196,7 +298,7 @@ fn match_from(
                     }
                 };
                 ends.into_iter().any(|end| {
-                    (!numeric || is_number(&s[pos..end])) && match_from(segs, i + 1, s, end, failed)
+                    kind.accepts(&s[pos..end]) && match_from(segs, i + 1, s, end, failed)
                 })
             }
         }
@@ -208,10 +310,30 @@ fn match_from(
 }
 
 fn line_matches(template_line: &str, tokens: &[&str], line: &str) -> bool {
+    line_matches_with(template_line, tokens, line, false)
+}
+
+/// `relax_integers`: integer placeholders accept any number (to tell the
+/// user that only the decimal places are wrong).
+fn line_matches_with(
+    template_line: &str,
+    tokens: &[&str],
+    line: &str,
+    relax_integers: bool,
+) -> bool {
     if line.len() > MAX_LINE_BYTES {
         return false;
     }
-    let segs = segments(template_line, tokens);
+    let mut segs = segments(template_line, tokens);
+    if relax_integers {
+        for s in &mut segs {
+            if let Segment::Hole { kind } = s {
+                if *kind == PlaceholderKind::Integer {
+                    *kind = PlaceholderKind::Decimal;
+                }
+            }
+        }
+    }
     // Every hole takes at least one byte.
     let min_len: usize = segs
         .iter()
@@ -220,6 +342,16 @@ fn line_matches(template_line: &str, tokens: &[&str], line: &str) -> bool {
             Segment::Hole { .. } => 1,
         })
         .sum();
+    // Cheap pre-check: the fixed texts occur in this order.
+    let mut from = 0;
+    for seg in &segs {
+        if let Segment::Text(t) = seg {
+            match line[from..].find(t.as_str()) {
+                Some(k) => from += k + t.len(),
+                None => return false,
+            }
+        }
+    }
     min_len <= line.len() && match_from(&segs, 0, line, 0, &mut HashSet::new())
 }
 
@@ -267,6 +399,27 @@ pub fn check_output(templates: &[OutputTemplate], output: &str) -> Option<String
     }
     let (t, line) = first?;
     let expected = lines(&t.text);
+    let actual = lines(output);
+    let integers: Vec<String> = t
+        .placeholders
+        .iter()
+        .filter(|p| placeholder_kind(p) == PlaceholderKind::Integer)
+        .map(|p| format!("„{p}“"))
+        .collect();
+    // Only the decimal places are wrong (54630.0 for an integer placeholder)?
+    let decimals_only = !integers.is_empty()
+        && match (expected.get(line - 1), actual.get(line - 1)) {
+            (Some(e), Some(a)) => line_matches_with(e, &sorted_tokens(t), a, true),
+            _ => false,
+        };
+    let integer_hint = if decimals_only {
+        format!(
+            " Platzhalter {} erwartet eine Ganzzahl ohne Nachkommastellen.",
+            integers.join(", ")
+        )
+    } else {
+        String::new()
+    };
     let placeholders = t
         .placeholders
         .iter()
@@ -276,7 +429,7 @@ pub fn check_output(templates: &[OutputTemplate], output: &str) -> Option<String
     Some(match expected.get(line - 1) {
         Some(e) => format!(
             "Ausgabeformat weicht von der Vorlage des Aufgabenblatts ab: Zeile {line} passt nicht \
-             zu „{e}“ (Platzhalter: {placeholders})."
+             zu „{e}“ (Platzhalter: {placeholders}).{integer_hint}"
         ),
         None => format!(
             "Ausgabeformat weicht von der Vorlage des Aufgabenblatts ab: Zeile {line} ist \
@@ -382,10 +535,68 @@ mod tests {
             template_matches(&tpl, "Hallo, A! Du bist viele Jahre alt."),
             Ok(())
         );
-        // Numeric placeholder: negative and decimal numbers are numbers.
-        let tpl = t("Ergebnis: 0", &["0"]);
+        // Decimal placeholder: negative and decimal numbers are numbers.
+        let tpl = t("Ergebnis: 0.0", &["0.0"]);
         assert_eq!(template_matches(&tpl, "Ergebnis: -2.5"), Ok(()));
+        assert_eq!(template_matches(&tpl, "Ergebnis: 3"), Ok(()));
         assert_eq!(template_matches(&tpl, "Ergebnis: zwei"), Err(1));
+        // Integer placeholder: whole numbers only.
+        let tpl = t("Ergebnis: 0", &["0"]);
+        assert_eq!(template_matches(&tpl, "Ergebnis: -25"), Ok(()));
+        assert_eq!(template_matches(&tpl, "Ergebnis: -2.5"), Err(1));
+        assert_eq!(template_matches(&tpl, "Ergebnis: 2e3"), Err(1));
+    }
+
+    #[test]
+    fn placeholder_kinds() {
+        assert_eq!(placeholder_kind("12345678"), PlaceholderKind::Integer);
+        assert_eq!(placeholder_kind("-1"), PlaceholderKind::Integer);
+        assert_eq!(placeholder_kind("3.14"), PlaceholderKind::Decimal);
+        assert_eq!(placeholder_kind("1e5"), PlaceholderKind::Decimal);
+        assert_eq!(placeholder_kind("<n>"), PlaceholderKind::Text);
+        assert_eq!(placeholder_kind("X"), PlaceholderKind::Text);
+        // 54630.0 does not fit an integer placeholder; the message says why.
+        let out = "54630.0 seconds have passed since midnight.\n31770 seconds are left until \
+                   midnight.\nSince I started with the task 441 seconds have passed.";
+        assert_eq!(template_matches(&sheet_template(), out), Err(1));
+        let msg = check_output(&[sheet_template()], out).unwrap();
+        assert!(
+            msg.contains("„12345678“ erwartet eine Ganzzahl ohne Nachkommastellen"),
+            "{msg}"
+        );
+        // Other errors get no integer hint.
+        let msg = check_output(&[sheet_template()], "x\ny\nz").unwrap();
+        assert!(!msg.contains("Ganzzahl"), "{msg}");
+    }
+
+    #[test]
+    fn split_templates_are_joined() {
+        let lines: Vec<OutputTemplate> = sheet_template()
+            .text
+            .lines()
+            .map(|l| t(l, &["12345678"]))
+            .collect();
+        // Given in any order: joined in text order.
+        let shuffled = vec![lines[2].clone(), lines[0].clone(), lines[1].clone()];
+        let (kept, discarded) = verify_templates(SHEET, &shuffled);
+        assert_eq!(discarded, 0);
+        assert_eq!(kept, vec![sheet_template()]);
+        let out = "54630 seconds have passed since midnight.\n31770 seconds are left until \
+                   midnight.\nSince I started with the task 441 seconds have passed.\n";
+        assert_eq!(check_output(&kept, out), None);
+        // Lines that are not consecutive (an empty line between) stay apart.
+        let text = "A: 1\n\nB: 2\nC: 3\n";
+        let (kept, _) = verify_templates(
+            text,
+            &[t("A: 1", &["1"]), t("B: 2", &["2"]), t("C: 3", &["3"])],
+        );
+        assert_eq!(kept, vec![t("A: 1", &["1"]), t("B: 2\nC: 3", &["2", "3"])]);
+        // Parts of a line are not joined.
+        let (kept, _) = verify_templates(
+            "Wert 1 und 2\nSumme 3\n",
+            &[t("Wert 1", &["1"]), t("Summe 3", &["3"])],
+        );
+        assert_eq!(kept.len(), 2);
     }
 
     #[test]
@@ -421,9 +632,13 @@ mod tests {
         assert_eq!(
             segments(&lines(&tpl.text)[0], &sorted_tokens(&tpl)),
             vec![
-                Segment::Hole { numeric: true },
+                Segment::Hole {
+                    kind: PlaceholderKind::Integer
+                },
                 Segment::Text(" und ".into()),
-                Segment::Hole { numeric: true }
+                Segment::Hole {
+                    kind: PlaceholderKind::Integer
+                }
             ]
         );
         assert_eq!(template_matches(&tpl, "5 und 6"), Ok(()));
