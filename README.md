@@ -490,7 +490,8 @@ Beim **Prüfen** wird jede bestandene Ausgabe zusätzlich mit der Vorlage vergli
 mehrfache Leerzeichen egal, leere Zeilen am Anfang und Ende egal; die Zeilenzahl muss
 stimmen. Ein Platzhalter steht für einen nicht leeren Wert, ist der Platzhalter eine Zahl,
 muss auch der Wert eine Zahl sein. Platzhalter werden nur als ganze Wörter erkannt
-(Platzhalter „1“ trifft nicht die „1“ in „12“). Passt die Ausgabe zu keiner Vorlage, lautet
+(Platzhalter „1“ trifft nicht die „1“ in „12“). Ausgabezeilen über 4 KB passen nie zu
+einer Vorlage (begrenzt die Rechenzeit). Passt die Ausgabe zu keiner Vorlage, lautet
 der Status „Ausgabeformat weicht von Vorlage ab“ mit der betroffenen Zeile und der
 erwarteten Vorlagenzeile. Die Vorlage gilt, bis man sie verwirft, neue KI-Testfälle
 erzeugt oder ein neues Aufgabenblatt importiert.

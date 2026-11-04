@@ -19,6 +19,14 @@ use super::compare::{is_number, normalize_for_match, normalize_newlines};
 pub const MAX_TEMPLATES: usize = 3;
 /// Upper bound for placeholders of one template.
 pub const MAX_PLACEHOLDERS: usize = 6;
+/// Output lines longer than this never match a template (bounds the
+/// matching time; templates are short lines of text).
+pub const MAX_LINE_BYTES: usize = 4096;
+
+/// Characters a number value may consist of (see [`is_number`]).
+fn number_char(c: char) -> bool {
+    c.is_ascii_digit() || matches!(c, '+' | '-' | '.' | 'e' | 'E')
+}
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
@@ -161,16 +169,37 @@ fn match_from(
         Segment::Text(t) => {
             s[pos..].starts_with(t.as_str()) && match_from(segs, i + 1, s, pos + t.len(), failed)
         }
-        Segment::Hole { numeric } => s[pos..]
-            .char_indices()
-            .skip(1)
-            .map(|(k, _)| pos + k)
-            .chain(std::iter::once(s.len()))
-            .filter(|&end| end > pos)
-            .any(|end| {
-                let value = &s[pos..end];
-                (!numeric || is_number(value)) && match_from(segs, i + 1, s, end, failed)
-            }),
+        Segment::Hole { numeric } => {
+            let rest = &s[pos..];
+            // A number value only extends over number characters.
+            let limit = if *numeric {
+                pos + rest.find(|c: char| !number_char(c)).unwrap_or(rest.len())
+            } else {
+                s.len()
+            };
+            // The value is not empty: it ends after its first character.
+            let first = pos + rest.chars().next().map_or(0, char::len_utf8);
+            if first == pos || first > limit {
+                false
+            } else {
+                // Possible ends: before the next fixed text, at the end of
+                // the line for a final hole, else every character boundary.
+                let ends: Vec<usize> = match segs.get(i + 1) {
+                    None => vec![s.len()].into_iter().filter(|&e| e <= limit).collect(),
+                    Some(Segment::Text(t)) => s[first..]
+                        .match_indices(t.as_str())
+                        .map(|(k, _)| first + k)
+                        .take_while(|&e| e <= limit)
+                        .collect(),
+                    Some(Segment::Hole { .. }) => {
+                        (first..=limit).filter(|&e| s.is_char_boundary(e)).collect()
+                    }
+                };
+                ends.into_iter().any(|end| {
+                    (!numeric || is_number(&s[pos..end])) && match_from(segs, i + 1, s, end, failed)
+                })
+            }
+        }
     };
     if !ok {
         failed.insert((i, pos));
@@ -179,8 +208,19 @@ fn match_from(
 }
 
 fn line_matches(template_line: &str, tokens: &[&str], line: &str) -> bool {
+    if line.len() > MAX_LINE_BYTES {
+        return false;
+    }
     let segs = segments(template_line, tokens);
-    match_from(&segs, 0, line, 0, &mut HashSet::new())
+    // Every hole takes at least one byte.
+    let min_len: usize = segs
+        .iter()
+        .map(|s| match s {
+            Segment::Text(t) => t.len(),
+            Segment::Hole { .. } => 1,
+        })
+        .sum();
+    min_len <= line.len() && match_from(&segs, 0, line, 0, &mut HashSet::new())
 }
 
 fn sorted_tokens(t: &OutputTemplate) -> Vec<&str> {
@@ -346,6 +386,33 @@ mod tests {
         let tpl = t("Ergebnis: 0", &["0"]);
         assert_eq!(template_matches(&tpl, "Ergebnis: -2.5"), Ok(()));
         assert_eq!(template_matches(&tpl, "Ergebnis: zwei"), Err(1));
+    }
+
+    #[test]
+    fn long_lines_are_fast() {
+        let tpl = t("Wert: 0 und X Ende", &["0", "X"]);
+        let started = std::time::Instant::now();
+        // 64 KB in one line: rejected right away.
+        let huge = format!("Wert: {} und a Ende", "1".repeat(64 * 1024));
+        assert_eq!(template_matches(&tpl, &huge), Err(1));
+        let huge = "x ".repeat(32 * 1024);
+        assert_eq!(template_matches(&tpl, &huge), Err(1));
+        // Close to the limit: still matched, and quickly.
+        let long = format!("Wert: {} und {} Ende", "7".repeat(1500), "b ".repeat(1000));
+        assert!(long.len() <= MAX_LINE_BYTES);
+        assert_eq!(template_matches(&tpl, &long), Ok(()));
+        let long = format!("Wert: {} und {} Endx", "7".repeat(1500), "b ".repeat(1000));
+        assert_eq!(template_matches(&tpl, &long), Err(1));
+        // Adjacent holes over a long line.
+        let adj = t("<a><b>!", &["<a>", "<b>"]);
+        let line = "c".repeat(4000);
+        assert_eq!(template_matches(&adj, &format!("{line}!")), Ok(()));
+        assert_eq!(template_matches(&adj, &format!("{line}?")), Err(1));
+        assert!(
+            started.elapsed() < std::time::Duration::from_millis(500),
+            "{:?}",
+            started.elapsed()
+        );
     }
 
     #[test]
