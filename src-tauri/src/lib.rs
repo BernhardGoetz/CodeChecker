@@ -300,11 +300,18 @@ async fn check_variations(
     app: AppHandle,
     request: ai::variation::VariationRequest,
 ) -> Result<ai::variation::VariationResult, ai::AiError> {
-    let op = ai::Operation::start();
+    let op = ai::Operation::start_kind(ai::OperationKind::Variation);
     ai::variation::run(request, &op.token, move |p| {
         let _ = app.emit(VARIATION_EVENT, p);
     })
     .await
+}
+
+/// Cancels only running variation checks (a new „Prüfen“, or „Abbrechen“
+/// in the result); llama-server and other AI operations keep running.
+#[tauri::command]
+fn cancel_variations() -> usize {
+    ai::cancel_kind(ai::OperationKind::Variation)
 }
 
 /// "Abbrechen" for AI operations: cancels test generation, OCR correction
@@ -424,6 +431,7 @@ pub fn run() {
             warm_up_ai,
             suggest_ocr_fixes,
             check_variations,
+            cancel_variations,
             cancel_ai,
             update_info,
             set_update_interval,

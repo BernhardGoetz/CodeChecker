@@ -1605,7 +1605,24 @@ pub struct AiGate(());
 impl AiGate {
     /// `None` if test generation or a variation check is running.
     pub fn try_acquire() -> Option<AiGate> {
-        (!GENERATING.swap(true, AtomicOrdering::SeqCst)).then_some(AiGate(()))
+        // `then`, not `then_some`: a gate value built eagerly and dropped on
+        // failure would release the gate held by someone else.
+        (!GENERATING.swap(true, AtomicOrdering::SeqCst)).then(|| AiGate(()))
+    }
+
+    /// Like [`AiGate::try_acquire`], but waits up to `wait` for the gate to
+    /// be released (e.g. by a variation check that was just cancelled).
+    pub async fn acquire_within(wait: Duration) -> Option<AiGate> {
+        let started = Instant::now();
+        loop {
+            if let Some(g) = Self::try_acquire() {
+                return Some(g);
+            }
+            if started.elapsed() >= wait {
+                return None;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
     }
 }
 
@@ -2451,6 +2468,24 @@ mod tests {
         assert_eq!(eta_seconds(Phase::Solutions, 3, 3, Some(7.0)), Some(0));
         assert_eq!(eta_seconds(Phase::Structure, 0, 1, Some(10.0)), Some(55));
         assert_eq!(eta_seconds(Phase::Majority, 0, 3, Some(7.0)), None);
+    }
+
+    #[test]
+    fn gate_waits_for_release() {
+        block_on(async {
+            let held = AiGate::try_acquire().expect("gate free");
+            assert!(AiGate::try_acquire().is_none());
+            assert!(AiGate::acquire_within(Duration::from_millis(50))
+                .await
+                .is_none());
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(150)).await;
+                drop(held);
+            });
+            assert!(AiGate::acquire_within(Duration::from_secs(3))
+                .await
+                .is_some());
+        });
     }
 
     #[test]

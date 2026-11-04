@@ -56,6 +56,8 @@ const SCENARIO_TEMPERATURE: f32 = 0.2;
 const INPUTS_TEMPERATURE: f32 = 0.4;
 const EXPLAIN_TEMPERATURE: f32 = 0.1;
 const JSON_MAX_TOKENS: u32 = 768;
+/// How long a variation check waits for the AI gate.
+const GATE_WAIT: std::time::Duration = std::time::Duration::from_secs(3);
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -1079,7 +1081,9 @@ pub async fn run(
     if let Some(reason) = req.skip_reason() {
         return Ok(VariationResult::skipped(reason));
     }
-    let Some(_gate) = AiGate::try_acquire() else {
+    // A check that was just cancelled (new „Prüfen“) releases the gate
+    // shortly after; wait for it a little.
+    let Some(_gate) = AiGate::acquire_within(GATE_WAIT).await else {
         return Ok(VariationResult::skipped(
             "Die KI ist gerade beschäftigt (es werden Testfälle erzeugt) – Variationstest \
              übersprungen.",
