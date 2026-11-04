@@ -323,6 +323,8 @@ main {
 .ai-progress { display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; }
 .ai-progress progress { flex: 1; min-width: 120px; }
 .ai-result { display: flex; flex-direction: column; gap: var(--space-2); }
+.ai-template { display: flex; flex-direction: column; gap: var(--space-2); }
+.ai-template p { margin: 0; }
 .reasons { margin: 0; padding-left: var(--space-4); color: var(--color-text-muted); }
 
 /* Ergebnis */
@@ -350,7 +352,7 @@ main {
 }
 .status::before { content: ""; width: var(--dot-size); height: var(--dot-size); border-radius: var(--radius-full); background: currentColor; }
 .status.passed, .status.conf-green { color: var(--color-success); }
-.status.failed, .status.runtimeError, .status.error, .status.conf-red { color: var(--color-danger); }
+.status.failed, .status.runtimeError, .status.error, .status.formatMismatch, .status.wrongLogic, .status.conf-red { color: var(--color-danger); }
 .status.timeout, .status.conf-yellow { color: var(--color-warning); }
 
 /* Notes and banners: dot + text, no colored backgrounds */

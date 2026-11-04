@@ -8,6 +8,7 @@ import {
   type AiStatus,
   type CompareMode,
   type GenerateResult,
+  type OutputTemplate,
 } from "../api";
 
 interface Props {
@@ -19,6 +20,10 @@ interface Props {
   compareMode: CompareMode | null;
   /** Generated tests are appended by the parent. */
   onResult: (r: GenerateResult) => void;
+  /** Output templates in use (held by the parent, used as format check). */
+  templates: OutputTemplate[];
+  /** „Vorlage nicht verwenden“. */
+  onDropTemplates: () => void;
   onApplyMode: (mode: CompareMode) => void;
   onOpenSetup: () => void;
   onRunningChange: (running: boolean) => void;
@@ -65,6 +70,8 @@ export function AiPanel({
   language,
   compareMode,
   onResult,
+  templates,
+  onDropTemplates,
   onApplyMode,
   onOpenSetup,
   onRunningChange,
@@ -181,7 +188,9 @@ export function AiPanel({
           <p className="small muted">
             {result.tests.length} Testfälle übernommen (mit „KI“ markiert) ·{" "}
             {result.stats.solutionsPassed} von {result.stats.solutionsRequested} Lösungen bestanden ·{" "}
-            {result.stats.examplesFound} Beispiel(e) aus dem Blatt · {Math.round(result.stats.durationMs / 1000)} s
+            {result.stats.examplesFound} Beispiel(e) aus dem Blatt
+            {result.stats.templatesFound > 0 && ` · ${result.stats.templatesFound} Ausgabevorlage(n)`} ·{" "}
+            {Math.round(result.stats.durationMs / 1000)} s
             {result.stats.tokensPerSecond !== null &&
               ` · ${result.stats.tokensPerSecond.toFixed(1).replace(".", ",")} Token/s`}
           </p>
@@ -199,6 +208,24 @@ export function AiPanel({
               >
                 Vorschlag übernehmen
               </button>
+            </div>
+          )}
+          {templates.length > 0 && (
+            <div className="ai-template small">
+              <div className="row">
+                <strong>Ausgabevorlage erkannt</strong>
+                <button onClick={onDropTemplates}>Vorlage nicht verwenden</button>
+              </div>
+              <p className="muted">
+                Platzhalter {templates.flatMap((t) => t.placeholders).map((p) => `„${p}“`).join(", ")} stehen für die
+                echten Werte. Beim Prüfen muss die Ausgabe dieses Format haben, sonst lautet das Ergebnis
+                „Ausgabeformat weicht von Vorlage ab“.
+              </p>
+              {templates.map((t) => (
+                <pre key={t.text} className="output">
+                  {t.text}
+                </pre>
+              ))}
             </div>
           )}
           {result.referenceSolution && (

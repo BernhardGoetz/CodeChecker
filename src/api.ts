@@ -50,7 +50,24 @@ export interface DiffLine {
   finalNewline: boolean;
 }
 
-export type TestStatus = "passed" | "failed" | "timeout" | "runtimeError" | "error";
+export type TestStatus =
+  | "passed"
+  | "failed"
+  | "timeout"
+  | "runtimeError"
+  | "error"
+  /** Matched the expectation, but not the output template of the task sheet. */
+  | "formatMismatch"
+  /** Passed, but the variation check showed it is only right for the given values. */
+  | "wrongLogic";
+
+/** Output template with placeholders (OutputTemplate in src-tauri/src/runner/template.rs). */
+export interface OutputTemplate {
+  /** The template as printed in the task sheet. */
+  text: string;
+  /** Placeholder tokens exactly as they appear in the text. */
+  placeholders: string[];
+}
 
 export interface TestResult {
   index: number;
@@ -105,6 +122,8 @@ export interface RunRequest {
   compareMode?: CompareMode;
   /** Outputs ending with a line break fail (independent of the mode). */
   forbidTrailingNewline?: boolean;
+  /** Passed tests whose output does not fit any template become "formatMismatch". */
+  outputTemplates?: OutputTemplate[];
 }
 
 export const dockerStatus = () => invoke<DockerStatus>("docker_status");
@@ -273,6 +292,8 @@ export interface GenerateStats {
   solutionsPassed: number;
   examplesFound: number;
   examplesDiscarded: number;
+  /** Output templates with placeholders found in the task text. */
+  templatesFound: number;
   inputsGenerated: number;
   testsDropped: number;
   llmCalls: number;
@@ -289,6 +310,8 @@ export interface GenerateResult {
   suggestedCompareMode: CompareMode | null;
   /** Mode used for checking and the majority vote. */
   compareMode: CompareMode;
+  /** Output templates of the task sheet: format check only, never tests. */
+  outputTemplates: OutputTemplate[];
   stats: GenerateStats;
 }
 

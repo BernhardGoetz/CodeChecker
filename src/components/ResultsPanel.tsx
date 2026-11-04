@@ -8,6 +8,8 @@ const LABEL: Record<TestStatus, string> = {
   timeout: "Zeitüberschreitung",
   runtimeError: "Laufzeitfehler",
   error: "Fehler",
+  formatMismatch: "Ausgabeformat weicht von Vorlage ab",
+  wrongLogic: "Nur für die gegebenen Werte richtig",
 };
 
 function Output({ title, text, truncated }: { title: string; text: string; truncated: boolean }) {

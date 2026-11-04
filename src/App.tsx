@@ -27,6 +27,7 @@ import {
   type ImagesReport,
   type ImportResult,
   type LanguageInfo,
+  type OutputTemplate,
   type Progress,
   type RunReport,
   type TestCase,
@@ -107,6 +108,8 @@ export default function App() {
   // "Erkennungsfehler mit KI korrigieren" is running (same model).
   const [fixing, setFixing] = useState(false);
   const [aiNote, setAiNote] = useState<string | null>(null);
+  // Output templates of the task sheet (from the AI): format check in „Prüfen“.
+  const [outputTemplates, setOutputTemplates] = useState<OutputTemplate[]>([]);
   const [running, setRunning] = useState(false);
   const [progress, setProgress] = useState<Progress | null>(null);
   const [report, setReport] = useState<RunReport | null>(null);
@@ -297,6 +300,8 @@ export default function App() {
   const onImported = (r: ImportResult) => {
     setImported(r);
     setTask(r.text);
+    // A new task sheet: templates of the old one no longer apply.
+    setOutputTemplates([]);
     setTaskConfirmed(false);
   };
 
@@ -330,6 +335,7 @@ export default function App() {
   testsRef.current = tests;
   const onAiResult = (r: GenerateResult) => {
     setAiNote(null);
+    setOutputTemplates(r.outputTemplates ?? []);
     if (r.tests.length === 0) return;
     const prev = testsRef.current;
     const room = Math.max(0, MAX_TESTS - prev.length);
@@ -367,6 +373,7 @@ export default function App() {
         trimWhitespace: compareMode.kind === "lines" ? compareMode.trim : true,
         compareMode,
         forbidTrailingNewline,
+        outputTemplates,
       });
       setReport(r);
       // The backend may have started the engine.
@@ -531,6 +538,8 @@ export default function App() {
                 language={languageId}
                 compareMode={compareMode}
                 onResult={onAiResult}
+                templates={outputTemplates}
+                onDropTemplates={() => setOutputTemplates([])}
                 onApplyMode={(m) => {
                   setCompareMode(m);
                   setCompareModeKey((k) => k + 1);

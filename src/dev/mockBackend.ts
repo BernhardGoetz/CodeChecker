@@ -213,7 +213,8 @@ export function installMock(): void {
             confidence: { level: "green", reasons: ["Beide Beispiele des Blatts bestanden.", "3 von 3 Lösungen liefern dieselben Ausgaben."] },
             suggestedCompareMode: null,
             compareMode: { kind: "lines", trim: true },
-            stats: { solutionsRequested: 3, solutionsCompiled: 3, solutionsRepaired: 0, solutionsPassed: 3, examplesFound: 1, examplesDiscarded: 0, inputsGenerated: 4, testsDropped: 0, llmCalls: 4, completionTokens: 900, tokensPerSecond: 14.2, durationMs: 72000 },
+            outputTemplates: [{ text: "Hallo, <Name>!", placeholders: ["<Name>"] }],
+            stats: { solutionsRequested: 3, solutionsCompiled: 3, solutionsRepaired: 0, solutionsPassed: 3, examplesFound: 1, examplesDiscarded: 0, templatesFound: 1, inputsGenerated: 4, testsDropped: 0, llmCalls: 4, completionTokens: 900, tokensPerSecond: 14.2, durationMs: 72000 },
           };
         case "cancel_ai":
           return null;
