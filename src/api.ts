@@ -50,7 +50,24 @@ export interface DiffLine {
   finalNewline: boolean;
 }
 
-export type TestStatus = "passed" | "failed" | "timeout" | "runtimeError" | "error";
+export type TestStatus =
+  | "passed"
+  | "failed"
+  | "timeout"
+  | "runtimeError"
+  | "error"
+  /** Matched the expectation, but not the output template of the task sheet. */
+  | "formatMismatch"
+  /** Passed, but the variation check showed it is only right for the given values. */
+  | "wrongLogic";
+
+/** Output template with placeholders (OutputTemplate in src-tauri/src/runner/template.rs). */
+export interface OutputTemplate {
+  /** The template as printed in the task sheet. */
+  text: string;
+  /** Placeholder tokens exactly as they appear in the text. */
+  placeholders: string[];
+}
 
 export interface TestResult {
   index: number;
@@ -105,6 +122,8 @@ export interface RunRequest {
   compareMode?: CompareMode;
   /** Outputs ending with a line break fail (independent of the mode). */
   forbidTrailingNewline?: boolean;
+  /** Passed tests whose output does not fit any template become "formatMismatch". */
+  outputTemplates?: OutputTemplate[];
 }
 
 export const dockerStatus = () => invoke<DockerStatus>("docker_status");
@@ -273,6 +292,8 @@ export interface GenerateStats {
   solutionsPassed: number;
   examplesFound: number;
   examplesDiscarded: number;
+  /** Output templates with placeholders found in the task text. */
+  templatesFound: number;
   inputsGenerated: number;
   testsDropped: number;
   llmCalls: number;
@@ -289,6 +310,10 @@ export interface GenerateResult {
   suggestedCompareMode: CompareMode | null;
   /** Mode used for checking and the majority vote. */
   compareMode: CompareMode;
+  /** Output templates of the task sheet: format check only, never tests. */
+  outputTemplates: OutputTemplate[];
+  /** Input format from the structure step (sent to the variation check). */
+  inputFormat: string;
   stats: GenerateStats;
 }
 
@@ -299,7 +324,7 @@ export interface GenerateRequest {
 }
 
 export interface AiProgress {
-  phase: "engine" | "model" | "structure" | "solutions" | "inputs" | "majority" | "correction";
+  phase: "engine" | "model" | "structure" | "solutions" | "inputs" | "majority" | "correction" | "variation";
   message: string;
   current: number | null;
   total: number | null;
@@ -353,6 +378,71 @@ export function applyOcrFixes(text: string, fixes: OcrFix[]): string {
     lines[f.line - 1] = line.slice(0, f.start) + f.new + line.slice(f.end);
   }
   return lines.join("\n");
+}
+
+// --- Variation check (src-tauri/src/ai/variation.rs) ---
+
+export interface VariationRequest {
+  taskText: string;
+  language: string;
+  studentCode: string;
+  /** Reference solution from the test generation (required, else skipped). */
+  referenceSolution: string | null;
+  compareMode?: CompareMode;
+  outputTemplates: OutputTemplate[];
+  tests: { name: string; input: string; expected: string }[];
+  /** Input format from the test generation (helps the model write valid inputs). */
+  inputFormat: string;
+}
+
+export interface VariationFinding {
+  /** German, e.g. "hour = 3 statt 15" or "Eingabe: 7". */
+  description: string;
+  input: string;
+  /** Output of the reference solution. */
+  expected: string;
+  /** Output of the student's program. */
+  actual: string;
+  diff: DiffLine[];
+}
+
+export interface VariationResult {
+  state: "ok" | "failed" | "skipped";
+  findings: VariationFinding[];
+  /** The model's explanation (explains only, decides nothing). */
+  explanation: string | null;
+  /** Piece of the student's code the explanation refers to (verified). */
+  explanationQuote: string | null;
+  /** Reason for skipping or what was checked (German). */
+  note: string | null;
+  /** Variants (inputs or scenarios) compared. */
+  checked: number;
+  /** Variants where the code crashed or timed out: unclear, no logic error (German). */
+  unclear: string[];
+}
+
+/** Runs the student's code and the reference solution with changed values. */
+export const checkVariations = (request: VariationRequest) =>
+  invoke<VariationResult>("check_variations", { request });
+/** Cancels only running variation checks (the model stays loaded). */
+export const cancelVariations = () => invoke<number>("cancel_variations");
+export const onVariationProgress = (cb: (p: AiProgress) => void): Promise<UnlistenFn> =>
+  listen<AiProgress>("variation-progress", (e) => cb(e.payload));
+
+/** A "skipped" result created in the frontend (e.g. no reference solution). */
+export function skippedVariation(note: string): VariationResult {
+  return { state: "skipped", findings: [], explanation: null, explanationQuote: null, note, checked: 0, unclear: [] };
+}
+
+/**
+ * Applies a variation result to a report: if the program is only right for
+ * the given values, every passed test becomes "wrongLogic" (counts as not
+ * passed). Other results leave the report unchanged. Pure.
+ */
+export function applyVariation(report: RunReport, result: VariationResult | null): RunReport {
+  if (!result || result.state !== "failed" || !report.compileOk) return report;
+  const tests = report.tests.map((t) => (t.status === "passed" ? { ...t, status: "wrongLogic" as const } : t));
+  return { ...report, tests, passed: tests.filter((t) => t.status === "passed").length };
 }
 
 /** Cancels test generation, OCR correction and model downloads/imports. */

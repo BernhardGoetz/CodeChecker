@@ -32,6 +32,7 @@ use super::prompts::{self, SolutionContext, MAX_EXAMPLES, MAX_INPUTS};
 use super::AiError;
 use crate::engine;
 use crate::runner::compare::{group_outputs, normalize_newlines, CompareMode};
+use crate::runner::template::{self, OutputTemplate};
 use crate::runner::{self, languages, StepOutput};
 
 /// Longest accepted task text (the model context is 8192 tokens).
@@ -44,7 +45,7 @@ pub const SOLUTION_TEMPERATURE: f32 = 0.7;
 const STRUCTURE_TEMPERATURE: f32 = 0.0;
 const INPUTS_TEMPERATURE: f32 = 0.4;
 const RETRY_TEMPERATURE: f32 = 0.3;
-const STRUCTURE_MAX_TOKENS: u32 = 768;
+const STRUCTURE_MAX_TOKENS: u32 = 1024;
 /// The answer ends at the closing code fence, so this only bounds runaways.
 const SOLUTION_MAX_TOKENS: u32 = 1024;
 const INPUTS_MAX_TOKENS: u32 = 1024;
@@ -129,6 +130,8 @@ pub struct Stats {
     pub solutions_passed: usize,
     pub examples_found: usize,
     pub examples_discarded: usize,
+    /// Output templates with placeholders accepted from the task text.
+    pub templates_found: usize,
     pub inputs_generated: usize,
     pub tests_dropped: usize,
     pub llm_calls: usize,
@@ -148,6 +151,10 @@ pub struct GenerateResult {
     pub suggested_compare_mode: Option<CompareMode>,
     /// The mode used for verification and majority vote.
     pub compare_mode: CompareMode,
+    /// Output templates of the task sheet (format check only, never tests).
+    pub output_templates: Vec<OutputTemplate>,
+    /// Input format from the structure step (for the variation check).
+    pub input_format: String,
     pub stats: Stats,
 }
 
@@ -163,6 +170,8 @@ pub enum Phase {
     Majority,
     /// OCR correction (`ocr_fix`).
     Correction,
+    /// Variation check (`variation`).
+    Variation,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -530,7 +539,7 @@ impl Executor for SandboxExecutor {
 }
 
 /// Runs `f` unless `cancel` fires first.
-async fn cancellable<T>(
+pub(crate) async fn cancellable<T>(
     cancel: &CancellationToken,
     f: impl Future<Output = Result<T, AiError>>,
 ) -> Result<T, AiError> {
@@ -572,7 +581,37 @@ pub struct Structure {
     pub input_format: String,
     pub output_format: String,
     pub examples: Vec<Example>,
+    pub output_templates: Vec<OutputTemplate>,
+    /// Whether the program reads standard input (`None`: not answered).
+    pub reads_input: Option<bool>,
     pub compare_mode: Option<String>,
+}
+
+/// Whether the task reads input: the model's `readsInput`, else the input
+/// format ("keine Eingabe", "none", "no input", empty count as no input).
+/// Unclear means "reads input" (no empty test is forced then).
+pub fn reads_input(s: &Structure) -> bool {
+    if let Some(r) = s.reads_input {
+        return r;
+    }
+    let f = s.input_format.trim().to_lowercase();
+    let none = f.is_empty()
+        || [
+            "none",
+            "no input",
+            "nothing",
+            "n/a",
+            "keine",
+            "kein",
+            "ohne eingabe",
+        ]
+        .iter()
+        .any(|k| f == *k || f.starts_with(&format!("{k} ")) || f.starts_with(&format!("{k}.")))
+        || f.contains("no input")
+        || f.contains("keine eingabe")
+        || f.contains("does not read")
+        || f.contains("reads nothing");
+    !none
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
@@ -609,17 +648,7 @@ pub fn suggested_mode(s: &Structure) -> Option<CompareMode> {
     }
 }
 
-/// Text for the "verbatim" check: LF line ends, every line trimmed, no
-/// leading/trailing empty lines.
-pub fn normalize_for_match(s: &str) -> String {
-    normalize_newlines(s)
-        .lines()
-        .map(str::trim)
-        .collect::<Vec<_>>()
-        .join("\n")
-        .trim_matches('\n')
-        .to_string()
-}
+pub use crate::runner::compare::normalize_for_match;
 
 /// An example counts only if its output (non-empty) and its input appear
 /// verbatim in the task text (after [`normalize_for_match`]).
@@ -651,6 +680,51 @@ pub fn verify_examples(task_text: &str, examples: &[Example]) -> (Vec<Example>, 
     (kept, discarded)
 }
 
+/// Safety net against placeholder templates extracted as examples (a
+/// placeholder must never become an expected output). Independent of the
+/// input, an example is dropped if its output
+/// - contains a placeholder token of an accepted template (word boundary),
+/// - or fits a template as a whole.
+///
+/// Returns the kept examples and the number dropped.
+pub fn drop_template_examples(
+    examples: Vec<Example>,
+    templates: &[OutputTemplate],
+) -> (Vec<Example>, usize) {
+    if templates.is_empty() {
+        return (examples, 0);
+    }
+    let before = examples.len();
+    let kept: Vec<Example> = examples
+        .into_iter()
+        .filter(|e| {
+            let has_placeholder = templates
+                .iter()
+                .flat_map(|t| &t.placeholders)
+                .any(|p| template::contains_token(&e.output, p));
+            let is_template = templates
+                .iter()
+                .any(|t| normalize_for_match(&t.text) == normalize_for_match(&e.output));
+            !(has_placeholder || is_template)
+        })
+        .collect();
+    let dropped = before - kept.len();
+    (kept, dropped)
+}
+
+/// Whether an output fits the output templates (always without templates).
+pub fn fits_templates(templates: &[OutputTemplate], o: &StepOutput) -> bool {
+    template::check_output(templates, &o.stdout).is_none()
+}
+
+/// German confidence reason when output templates were found.
+pub const TEMPLATE_REASON: &str = "Ausgabevorlage mit Platzhaltern erkannt – sie wird nur als \
+Formatprüfung verwendet, nicht als Beispiel.";
+
+/// Name of the test with empty input that is added when the task has an
+/// output template but no test without input.
+pub const EMPTY_INPUT_TEST: &str = "KI-Test (ohne Eingabe)";
+
 /// stdin text: LF line ends and a final newline (unless empty).
 pub fn as_stdin(s: &str) -> String {
     let s = normalize_newlines(s);
@@ -663,8 +737,8 @@ pub fn as_stdin(s: &str) -> String {
 
 #[derive(Deserialize, Default)]
 #[serde(default)]
-struct InputsAnswer {
-    inputs: Vec<String>,
+pub struct InputsAnswer {
+    pub inputs: Vec<String>,
 }
 
 /// Generated inputs: stdin form, no duplicates (also of `existing`), not
@@ -692,7 +766,7 @@ pub fn clean_inputs(raw: &[String], existing: &[String]) -> Vec<String> {
 }
 
 /// A usable run: exited normally, in time, output complete.
-fn valid(o: &StepOutput) -> bool {
+pub fn valid(o: &StepOutput) -> bool {
     o.exit_code == Some(0) && !o.timed_out && !o.stdout_truncated
 }
 
@@ -1009,6 +1083,7 @@ where
         examples: &[Example],
         example_mode: &CompareMode,
         example_inputs: &[String],
+        templates: &[OutputTemplate],
     ) -> Result<(), AiError> {
         let answer = a.answer.clone().unwrap_or_default();
         a.failure = None;
@@ -1041,11 +1116,17 @@ where
             self.check()?;
             session.run(example_inputs).await?
         };
-        a.passes = a.example_outputs.len() == examples.len()
-            && examples
-                .iter()
-                .zip(&a.example_outputs)
-                .all(|(ex, o)| valid(o) && example_mode.matches(&ex.output, &o.stdout));
+        // `example_inputs` are the sheet's examples, possibly followed by the
+        // forced empty input (output template, see `generate`). The examples'
+        // outputs must be valid, fit the template and match; the forced
+        // empty input never disqualifies a solution (if it fails, the test
+        // is only dropped in the majority vote).
+        a.passes = a.example_outputs.len() == example_inputs.len()
+            && examples.iter().zip(&a.example_outputs).all(|(ex, o)| {
+                valid(o)
+                    && fits_templates(templates, o)
+                    && example_mode.matches(&ex.output, &o.stdout)
+            });
         Ok(())
     }
 
@@ -1132,10 +1213,14 @@ pub async fn generate<L: Llm + Sync, E: Executor>(
         .await?
         .unwrap_or_default();
     let (examples, discarded) = verify_examples(&req.task_text, &structure.examples);
+    let (templates, _) = template::verify_templates(&req.task_text, &structure.output_templates);
+    // Templates never become examples or tests.
+    let (examples, template_examples) = drop_template_examples(examples, &templates);
     {
         let mut s = run.shared();
         s.stats.examples_found = examples.len();
-        s.stats.examples_discarded = discarded;
+        s.stats.examples_discarded = discarded + template_examples;
+        s.stats.templates_found = templates.len();
     }
     let suggested = suggested_mode(&structure);
     let mode = req.compare_mode.or(suggested).unwrap_or_default();
@@ -1145,6 +1230,19 @@ pub async fn generate<L: Llm + Sync, E: Executor>(
         m => m,
     };
     let example_inputs: Vec<String> = examples.iter().map(|e| as_stdin(&e.input)).collect();
+    // With an output template but no example without input, a test with
+    // empty input is forced: the solutions run it right away (wrong format
+    // = failed solution), its expectation comes from the majority.
+    let force_empty = !templates.is_empty()
+        && !reads_input(&structure)
+        && !example_inputs
+            .iter()
+            .any(|i| normalize_for_match(i).is_empty());
+    let check_inputs: Vec<String> = example_inputs
+        .iter()
+        .cloned()
+        .chain(force_empty.then(String::new))
+        .collect();
     let example_pairs: Vec<(String, String)> = examples
         .iter()
         .map(|e| (e.input.clone(), e.output.clone()))
@@ -1158,6 +1256,7 @@ pub async fn generate<L: Llm + Sync, E: Executor>(
         input_format: &structure.input_format,
         output_format: &structure.output_format,
         examples: &example_pairs,
+        output_templates: &templates,
     };
     let base_messages = prompts::solution_messages(&req.task_text, lang.id, &ctx);
     let n = settings.solutions;
@@ -1170,8 +1269,8 @@ pub async fn generate<L: Llm + Sync, E: Executor>(
     let first_round = (0..n).map(|_| {
         let run = &run;
         let messages = base_messages.clone();
-        let (examples, example_mode, example_inputs, done) =
-            (&examples, &example_mode, &example_inputs, &done);
+        let (examples, example_mode, check_inputs, templates, done) =
+            (&examples, &example_mode, &check_inputs, &templates, &done);
         async move {
             let mut a = Attempt::new(messages.clone());
             let (answer, session) =
@@ -1194,7 +1293,7 @@ pub async fn generate<L: Llm + Sync, E: Executor>(
             }
             if a.fatal.is_none() && a.llm_error.is_none() {
                 if let Err(e) = run
-                    .check_answer(&mut a, examples, example_mode, example_inputs)
+                    .check_answer(&mut a, examples, example_mode, check_inputs, templates)
                     .await
                 {
                     run.record_error(&mut a, e, false);
@@ -1233,8 +1332,8 @@ pub async fn generate<L: Llm + Sync, E: Executor>(
                 .filter(|(_, a)| a.failure.is_some() && a.session.is_some())
                 .map(|(i, a)| {
                     let run = &run;
-                    let (examples, example_mode, example_inputs) =
-                        (&examples, &example_mode, &example_inputs);
+                    let (examples, example_mode, check_inputs, templates) =
+                        (&examples, &example_mode, &check_inputs, &templates);
                     async move {
                         run.progress(
                             Phase::Solutions,
@@ -1254,7 +1353,13 @@ pub async fn generate<L: Llm + Sync, E: Executor>(
                                 a.answer = Some(r.content);
                                 run.shared().stats.solutions_repaired += 1;
                                 if let Err(e) = run
-                                    .check_answer(a, examples, example_mode, example_inputs)
+                                    .check_answer(
+                                        a,
+                                        examples,
+                                        example_mode,
+                                        check_inputs,
+                                        templates,
+                                    )
                                     .await
                                 {
                                     run.record_error(a, e, false);
@@ -1313,7 +1418,10 @@ pub async fn generate<L: Llm + Sync, E: Executor>(
         let mut stats = shared.stats;
         stats.tokens_per_second = (shared.tps_n > 0).then(|| shared.tps_sum / shared.tps_n as f64);
         stats.duration_ms = started.elapsed().as_millis() as u64;
-        let confidence = decide_confidence(&ev);
+        let mut confidence = decide_confidence(&ev);
+        if !templates.is_empty() {
+            confidence.reasons.push(TEMPLATE_REASON.into());
+        }
         // Red: no tests, no reference solution – only the honest message.
         let red = confidence.level == ConfidenceLevel::Red;
         GenerateResult {
@@ -1322,6 +1430,8 @@ pub async fn generate<L: Llm + Sync, E: Executor>(
             confidence,
             suggested_compare_mode: suggested,
             compare_mode: mode,
+            output_templates: templates.clone(),
+            input_format: structure.input_format.clone(),
             stats,
         }
     };
@@ -1338,10 +1448,7 @@ pub async fn generate<L: Llm + Sync, E: Executor>(
 
     // 5. Test inputs (the model writes inputs only).
     let generated = match inputs_answer {
-        Ok(answer) => clean_inputs(
-            &answer.map(|a| a.inputs).unwrap_or_default(),
-            &example_inputs,
-        ),
+        Ok(answer) => clean_inputs(&answer.map(|a| a.inputs).unwrap_or_default(), &check_inputs),
         Err(e) => {
             close_all(survivors.into_iter().map(|s| s.2)).await;
             return Err(e);
@@ -1419,7 +1526,7 @@ pub async fn generate<L: Llm + Sync, E: Executor>(
         return Err(e);
     }
 
-    let all_inputs: Vec<String> = example_inputs
+    let all_inputs: Vec<String> = check_inputs
         .iter()
         .cloned()
         .chain(generated.iter().cloned())
@@ -1438,16 +1545,23 @@ pub async fn generate<L: Llm + Sync, E: Executor>(
     let mut min_agreement: Option<f64> = None;
     let mut dropped = 0;
     for (j, input) in all_inputs.iter().enumerate() {
-        let outputs: Vec<Option<&StepOutput>> =
-            results.iter().map(|r| r.as_ref().map(|o| &o[j])).collect();
+        // Outputs that do not fit the output template count as no output.
+        let outputs: Vec<Option<&StepOutput>> = results
+            .iter()
+            .map(|r| r.as_ref().map(|o| &o[j]))
+            .map(|o| o.filter(|o| fits_templates(&templates, o)))
+            .collect();
         let from_sheet = j < example_inputs.len();
+        // The forced empty input is only a helper: without a majority it is
+        // dropped silently (not counted as a dropped input).
+        let forced = !from_sheet && j < check_inputs.len();
         let Some((rep, members)) = majority(&mode, &outputs) else {
-            dropped += 1;
+            dropped += usize::from(!forced);
             continue;
         };
         // Strict majority of all surviving solutions.
         if members.len() * 2 <= s {
-            dropped += 1;
+            dropped += usize::from(!forced);
             continue;
         }
         let agreement = members.len() as f64 / s as f64;
@@ -1460,8 +1574,10 @@ pub async fn generate<L: Llm + Sync, E: Executor>(
         let expected = outputs[rep].map(|o| o.stdout.clone()).unwrap_or_default();
         let name = if from_sheet {
             format!("Beispiel {} (Blatt)", j + 1)
+        } else if j < check_inputs.len() {
+            EMPTY_INPUT_TEST.to_string()
         } else {
-            format!("KI-Test {}", j + 1 - example_inputs.len())
+            format!("KI-Test {}", j + 1 - check_inputs.len())
         };
         tests.push(GeneratedTest {
             name,
@@ -1489,7 +1605,42 @@ pub async fn generate<L: Llm + Sync, E: Executor>(
     Ok(finish(run, tests, reference, evidence))
 }
 
+/// The AI gate: test generation and the variation check use the model
+/// and the sandbox heavily, so only one of them runs at a time.
 static GENERATING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Holds the AI gate; releases it when dropped.
+pub struct AiGate(());
+
+impl AiGate {
+    /// `None` if test generation or a variation check is running.
+    pub fn try_acquire() -> Option<AiGate> {
+        // `then`, not `then_some`: a gate value built eagerly and dropped on
+        // failure would release the gate held by someone else.
+        (!GENERATING.swap(true, AtomicOrdering::SeqCst)).then(|| AiGate(()))
+    }
+
+    /// Like [`AiGate::try_acquire`], but waits up to `wait` for the gate to
+    /// be released (e.g. by a variation check that was just cancelled).
+    pub async fn acquire_within(wait: Duration) -> Option<AiGate> {
+        let started = Instant::now();
+        loop {
+            if let Some(g) = Self::try_acquire() {
+                return Some(g);
+            }
+            if started.elapsed() >= wait {
+                return None;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
+}
+
+impl Drop for AiGate {
+    fn drop(&mut self) {
+        GENERATING.store(false, AtomicOrdering::SeqCst);
+    }
+}
 
 /// `generate_tests`: checks the request, makes sure the container engine
 /// runs (before the model is loaded – minutes of model work must not end
@@ -1500,20 +1651,14 @@ pub async fn run(
     cancel: &CancellationToken,
     on_progress: impl Fn(AiProgress) + Send + Sync + 'static,
 ) -> Result<GenerateResult, AiError> {
-    use std::sync::atomic::Ordering;
     let lang = req.validate()?;
-    if GENERATING.swap(true, Ordering::SeqCst) {
+    let Some(_gate) = AiGate::try_acquire() else {
         return Err(AiError::Other(
-            "Es werden bereits Testfälle erzeugt.".into(),
+            "Die KI ist gerade beschäftigt (Testfälle werden erzeugt oder der Code wird mit \
+             veränderten Werten geprüft). Bitte kurz warten."
+                .into(),
         ));
-    }
-    struct Reset;
-    impl Drop for Reset {
-        fn drop(&mut self) {
-            GENERATING.store(false, Ordering::SeqCst);
-        }
-    }
-    let _reset = Reset;
+    };
 
     let model = super::models::selected_model()?;
     let on_progress = Arc::new(on_progress);
@@ -1650,6 +1795,21 @@ mod tests {
             step(&format!("{}\n", n * 3), 0)
         } else if code.contains("plus1") {
             step(&format!("{}\n", n + 1), 0)
+        } else if code.contains("ergebnis") {
+            // Reads a number: crashes without input (EOFError).
+            if input.trim().is_empty() {
+                step("", 1)
+            } else {
+                step(&format!("Ergebnis: {}\n", n * 2), 0)
+            }
+        } else if code.contains("qasfloat") {
+            step(QAS_FLOAT_OUTPUT, 0)
+        } else if code.contains("qas") {
+            step(QAS_OUTPUT, 0)
+        } else if code.contains("secs") {
+            step(SECS_OUTPUT, 0)
+        } else if code.contains("badfmt") {
+            step("54630\n31770\n", 0)
         } else if code.contains("float4") {
             step(&format!("{:.4}\n", n as f64 / 3.0), 0)
         } else if code.contains("float6") {
@@ -2325,6 +2485,24 @@ mod tests {
     }
 
     #[test]
+    fn gate_waits_for_release() {
+        block_on(async {
+            let held = AiGate::try_acquire().expect("gate free");
+            assert!(AiGate::try_acquire().is_none());
+            assert!(AiGate::acquire_within(Duration::from_millis(50))
+                .await
+                .is_none());
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(150)).await;
+                drop(held);
+            });
+            assert!(AiGate::acquire_within(Duration::from_secs(3))
+                .await
+                .is_some());
+        });
+    }
+
+    #[test]
     fn repairs_only_without_clear_majority() {
         assert!(!repairs_needed(3, 2));
         assert!(!repairs_needed(5, 3));
@@ -2333,6 +2511,295 @@ mod tests {
         assert!(repairs_needed(2, 1));
         assert!(repairs_needed(1, 1));
         assert!(repairs_needed(3, 0));
+    }
+
+    // --- Output templates ------------------------------------------------------
+
+    const SECS_OUTPUT: &str =
+        "54630 seconds have passed since midnight.\n31770 seconds are left until midnight.\n";
+    const TEMPLATE_TEXT: &str =
+        "12345678 seconds have passed since midnight.\n12345678 seconds are left until midnight.";
+    const TEMPLATE_TASK: &str = "Es ist 15:10:30. Gib aus, wie viele Sekunden seit Mitternacht \
+        vergangen sind und bis Mitternacht fehlen. Ausgabe (12345678 ist nur ein \
+        Platzhalter):\n\n    12345678 seconds have passed since midnight.\n    12345678 seconds \
+        are left until midnight.\n";
+
+    fn template_structure() -> String {
+        serde_json::json!({
+            "inputFormat": "keine Eingabe",
+            "outputFormat": "zwei Zeilen",
+            // The model also puts the template into the examples.
+            "examples": [{"input": "", "output": TEMPLATE_TEXT}],
+            "outputTemplates": [{"text": TEMPLATE_TEXT, "placeholders": ["12345678"]}],
+            "compareMode": "lines"
+        })
+        .to_string()
+    }
+
+    fn template_req() -> GenerateRequest {
+        GenerateRequest {
+            task_text: TEMPLATE_TASK.into(),
+            language: "python".into(),
+            compare_mode: None,
+        }
+    }
+
+    // --- QAS scenario (task 2.2): template split into three one-line ones -----
+
+    const QAS_OUTPUT: &str = "54630 seconds have passed since midnight.\n31770 seconds are left \
+        until midnight.\nSince I started with the task 441 seconds have passed.\n";
+    const QAS_FLOAT_OUTPUT: &str = "54630.0 seconds have passed since midnight.\n31770.0 seconds \
+        are left until midnight.\nSince I started with the task 441.0 seconds have passed.\n";
+    const QAS_LINES: [&str; 3] = [
+        "12345678 seconds have passed since midnight.",
+        "12345678 seconds are left until midnight.",
+        "Since I started with the task 12345678 seconds have passed.",
+    ];
+    const QAS_TASK: &str = "Aufgabe 2.2\nDie Uhrzeit ist 15:10:30, mit der Aufgabe begonnen um \
+        15:03:09. Speichern Sie die Werte in Variablen hour, minute, second.\nGeben Sie aus \
+        (12345678 ist nur ein Platzhalter):\n\n12345678 seconds have passed since midnight.\n\
+        12345678 seconds are left until midnight.\nSince I started with the task 12345678 \
+        seconds have passed.\n";
+
+    fn qas_structure() -> String {
+        serde_json::json!({
+            "inputFormat": "no input",
+            "readsInput": false,
+            "outputFormat": "three lines",
+            "examples": [{"input": "", "output": QAS_LINES.join("\n")}],
+            "outputTemplates": QAS_LINES
+                .iter()
+                .map(|l| serde_json::json!({"text": l, "placeholders": ["12345678"]}))
+                .collect::<Vec<_>>(),
+            "compareMode": "lines"
+        })
+        .to_string()
+    }
+
+    fn qas_req() -> GenerateRequest {
+        GenerateRequest {
+            task_text: QAS_TASK.into(),
+            language: "java".into(),
+            compare_mode: None,
+        }
+    }
+
+    fn java_program(word: &str) -> String {
+        format!("```java\npublic class Main {{ /* {word} */ }}\n```")
+    }
+
+    #[test]
+    fn qas_split_template_yields_real_values() {
+        let llm = MockLlm::new({
+            let s = qas_structure();
+            move |r: &ChatRequest, _| {
+                if is_structure(r) {
+                    Ok(s.clone())
+                } else if is_inputs(r) {
+                    Ok(r#"{"inputs": []}"#.into())
+                } else {
+                    Ok(java_program("qas"))
+                }
+            }
+        });
+        let r = generate_with(&llm, qas_req(), 3).unwrap();
+        assert_ne!(
+            r.confidence.level,
+            ConfidenceLevel::Red,
+            "{:?}",
+            r.confidence
+        );
+        assert_eq!(r.stats.solutions_passed, 3);
+        assert_eq!(r.stats.examples_found, 0);
+        assert_eq!(r.stats.examples_discarded, 1);
+        // The three lines are one template again.
+        assert_eq!(r.output_templates.len(), 1, "{:?}", r.output_templates);
+        assert_eq!(r.output_templates[0].text, QAS_LINES.join("\n"));
+        assert_eq!(r.tests.len(), 1);
+        assert_eq!(r.tests[0].name, EMPTY_INPUT_TEST);
+        assert_eq!(r.tests[0].expected, QAS_OUTPUT);
+        assert!(r.reference_solution.is_some());
+    }
+
+    #[test]
+    fn qas_decimal_output_fails_integer_placeholder() {
+        let llm = MockLlm::new({
+            let s = qas_structure();
+            let n = Mutex::new(0usize);
+            move |r: &ChatRequest, _| {
+                if is_structure(r) {
+                    Ok(s.clone())
+                } else if is_inputs(r) {
+                    Ok(r#"{"inputs": []}"#.into())
+                } else {
+                    let mut c = n.lock().unwrap();
+                    *c += 1;
+                    Ok(java_program(if *c == 2 { "qasfloat" } else { "qas" }))
+                }
+            }
+        });
+        let r = generate_with(&llm, qas_req(), 3).unwrap();
+        assert_eq!(r.tests[0].expected, QAS_OUTPUT);
+        assert!((r.tests[0].agreement - 2.0 / 3.0).abs() < 1e-9);
+        assert!(!r.reference_solution.unwrap().contains("qasfloat"));
+        let msg = template::check_output(&r.output_templates, QAS_FLOAT_OUTPUT).unwrap();
+        assert!(msg.contains("Ganzzahl ohne Nachkommastellen"), "{msg}");
+    }
+
+    #[test]
+    fn placeholder_template_is_no_sheet_example() {
+        let llm = MockLlm::new(scripted(
+            template_structure(),
+            vec!["secs", "secs", "secs"],
+            r#"{"inputs": []}"#,
+        ));
+        let r = generate_with(&llm, template_req(), 3).unwrap();
+        assert_eq!(r.stats.templates_found, 1);
+        assert_eq!(r.stats.examples_found, 0);
+        assert_eq!(r.stats.examples_discarded, 1);
+        // The solutions survive (with the template as example they would fail).
+        assert_eq!(r.stats.solutions_passed, 3);
+        assert_eq!(r.output_templates.len(), 1);
+        assert_eq!(r.output_templates[0].placeholders, vec!["12345678"]);
+        // The empty input is forced; its expectation comes from the majority.
+        assert_eq!(r.tests.len(), 1);
+        assert_eq!(r.tests[0].name, EMPTY_INPUT_TEST);
+        assert_eq!(r.tests[0].input, "");
+        assert_eq!(r.tests[0].expected, SECS_OUTPUT);
+        assert_eq!(r.tests[0].source, TestSource::Generated);
+        assert!(r.tests.iter().all(|t| t.source != TestSource::Sheet));
+        assert!(r.confidence.reasons.iter().any(|x| x == TEMPLATE_REASON));
+        // No examples from the sheet: the level stays yellow as before.
+        assert_eq!(r.confidence.level, ConfidenceLevel::Yellow);
+        // The solution prompt carries the template, not as an example.
+        let calls = llm.calls();
+        let sol = calls
+            .iter()
+            .find(|c| !is_structure(c) && !is_inputs(c))
+            .unwrap();
+        assert!(sol.messages[1].content.contains("Output format template"));
+        assert!(!sol.messages[1].content.contains("Example 1"));
+    }
+
+    #[test]
+    fn solution_with_wrong_format_is_excluded() {
+        let llm = MockLlm::new(scripted(
+            template_structure(),
+            vec!["secs", "badfmt", "secs"],
+            r#"{"inputs": ["", "1"]}"#,
+        ));
+        let r = generate_with(&llm, template_req(), 3).unwrap();
+        // The forced empty input never disqualifies a solution, but the
+        // wrong format does not count in the majority vote.
+        assert_eq!(r.stats.solutions_passed, 3);
+        assert!(!r.reference_solution.unwrap().contains("badfmt"));
+        assert!((r.tests[0].agreement - 2.0 / 3.0).abs() < 1e-9);
+        // The model's empty input is a duplicate of the forced one.
+        let names: Vec<&str> = r.tests.iter().map(|t| t.name.as_str()).collect();
+        assert_eq!(names, vec![EMPTY_INPUT_TEST, "KI-Test 1"]);
+        assert!(r.tests.iter().all(|t| t.expected == SECS_OUTPUT));
+    }
+
+    const INPUT_TEMPLATE_TASK: &str =
+        "Lies eine Zahl n und gib das Doppelte aus.\nAusgabe: Ergebnis: 0 (0 ist ein Platzhalter)\n\
+         Beispiel: Eingabe 21, Ausgabe Ergebnis: 42\n";
+
+    fn input_template_structure(reads_input: Option<bool>) -> String {
+        let mut v = serde_json::json!({
+            "inputFormat": "eine Zahl n",
+            "outputFormat": "Ergebnis: 2n",
+            "examples": [{"input": "21", "output": "Ergebnis: 42"}],
+            "outputTemplates": [{"text": "Ergebnis: 0", "placeholders": ["0"]}],
+            "compareMode": "lines"
+        });
+        if let Some(r) = reads_input {
+            v["readsInput"] = serde_json::json!(r);
+        }
+        v.to_string()
+    }
+
+    #[test]
+    fn task_with_input_and_template_forces_no_empty_test() {
+        for reads in [Some(true), None] {
+            let llm = MockLlm::new(scripted(
+                input_template_structure(reads),
+                vec!["ergebnis"],
+                r#"{"inputs": ["3"]}"#,
+            ));
+            let mut r0 = req(None);
+            r0.task_text = INPUT_TEMPLATE_TASK.into();
+            let r = generate_with(&llm, r0, 3).unwrap();
+            assert_eq!(r.stats.templates_found, 1);
+            assert_eq!(r.stats.solutions_passed, 3, "{reads:?}");
+            assert!(r.tests.iter().all(|t| t.name != EMPTY_INPUT_TEST));
+            assert_eq!(r.tests.len(), 2);
+            assert_eq!(r.confidence.level, ConfidenceLevel::Green);
+        }
+    }
+
+    #[test]
+    fn failing_forced_empty_input_is_only_dropped() {
+        // The model wrongly says "reads no input": the empty test is forced,
+        // every solution crashes on it – they still pass, the test is dropped.
+        let llm = MockLlm::new(scripted(
+            input_template_structure(Some(false)),
+            vec!["ergebnis"],
+            r#"{"inputs": ["3"]}"#,
+        ));
+        let mut r0 = req(None);
+        r0.task_text = INPUT_TEMPLATE_TASK.into();
+        let r = generate_with(&llm, r0, 3).unwrap();
+        assert_eq!(r.stats.solutions_passed, 3);
+        assert!(r.tests.iter().all(|t| t.name != EMPTY_INPUT_TEST));
+        assert_eq!(r.stats.tests_dropped, 0);
+        assert_eq!(r.confidence.level, ConfidenceLevel::Green);
+    }
+
+    #[test]
+    fn reads_input_from_flag_or_format() {
+        let st = |f: &str, r: Option<bool>| Structure {
+            input_format: f.into(),
+            reads_input: r,
+            ..Structure::default()
+        };
+        assert!(reads_input(&st("eine Zahl n", None)));
+        assert!(!reads_input(&st("", None)));
+        assert!(!reads_input(&st("Keine Eingabe.", None)));
+        assert!(!reads_input(&st("None", None)));
+        assert!(!reads_input(&st("The program reads no input.", None)));
+        assert!(!reads_input(&st("eine Zahl n", Some(false))));
+        assert!(reads_input(&st("", Some(true))));
+    }
+
+    #[test]
+    fn no_forced_empty_test_without_templates_or_with_empty_example() {
+        let ex = |i: &str, o: &str| Example {
+            input: i.into(),
+            output: o.into(),
+        };
+        let tpl = OutputTemplate {
+            text: TEMPLATE_TEXT.into(),
+            placeholders: vec!["12345678".into()],
+        };
+        // Only examples without input that fit the template are dropped.
+        let (kept, dropped) = drop_template_examples(
+            vec![ex("", TEMPLATE_TEXT), ex("", "42"), ex("5", SECS_OUTPUT)],
+            std::slice::from_ref(&tpl),
+        );
+        assert_eq!(dropped, 1);
+        assert_eq!(kept.len(), 2);
+        let (kept, dropped) = drop_template_examples(vec![ex("", TEMPLATE_TEXT)], &[]);
+        assert_eq!((kept.len(), dropped), (1, 0));
+        // Without templates, the classic flow has no forced test.
+        let llm = MockLlm::new(scripted(
+            structure_json(&[("21", "42")], "lines"),
+            vec!["double"],
+            r#"{"inputs": ["1"]}"#,
+        ));
+        let r = generate_with(&llm, req(None), 2).unwrap();
+        assert!(r.tests.iter().all(|t| t.name != EMPTY_INPUT_TEST));
+        assert!(r.output_templates.is_empty());
+        assert_eq!(r.stats.templates_found, 0);
     }
 
     // --- Concurrency, sessions, early exit -------------------------------------

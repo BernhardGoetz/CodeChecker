@@ -5,6 +5,9 @@
 use serde_json::{json, Value};
 
 use super::llama::ChatMessage;
+use crate::runner::template::{
+    placeholder_kind, OutputTemplate, PlaceholderKind, MAX_PLACEHOLDERS, MAX_TEMPLATES,
+};
 
 /// Upper bound for examples taken from the task sheet.
 pub const MAX_EXAMPLES: usize = 5;
@@ -42,12 +45,20 @@ fn task_block(task_text: &str) -> String {
 
 pub const STRUCTURE_SYSTEM: &str = "You analyse programming exercises whose programs read \
 from standard input and write to standard output. Extract:\n\
-- inputFormat: how the input looks (one or two sentences),\n\
+- inputFormat: how the input looks (one or two sentences; \"no input\" if the program \
+reads nothing),\n\
+- readsInput: true if the program reads standard input, false if it reads nothing,\n\
 - outputFormat: what exactly has to be printed (one or two sentences),\n\
 - examples: every example input/output pair that is printed in the task text, copied \
 character by character. Never invent, compute, complete or reformat examples. If the text \
 contains no example, return an empty list. If an example has no input, use an empty \
-string.\n\
+string. Never put an output template (see below) into examples.\n\
+- outputTemplates: output format templates, in which placeholder values stand in for the \
+real values (e.g. \"12345678 seconds have passed\" when the task says 12345678 is only a \
+placeholder, or \"<n>\"/\"X\"). text: the template copied character by character; \
+placeholders: the placeholder tokens exactly as they appear in the text. A template spanning \
+several consecutive lines is ONE template; never split it into one template per line. A \
+template is not an example. Empty list if there is none.\n\
 - compareMode: \"float\" if the output contains decimal numbers where tiny rounding \
 differences are acceptable, \"tokens\" if only the words/numbers matter and spacing or \
 line breaks do not, otherwise \"lines\".\n\
@@ -58,6 +69,7 @@ pub fn structure_schema() -> Value {
         "type": "object",
         "properties": {
             "inputFormat": { "type": "string" },
+            "readsInput": { "type": "boolean" },
             "outputFormat": { "type": "string" },
             "examples": {
                 "type": "array",
@@ -71,9 +83,32 @@ pub fn structure_schema() -> Value {
                     "required": ["input", "output"]
                 }
             },
+            "outputTemplates": {
+                "type": "array",
+                "maxItems": MAX_TEMPLATES,
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "text": { "type": "string" },
+                        "placeholders": {
+                            "type": "array",
+                            "maxItems": MAX_PLACEHOLDERS,
+                            "items": { "type": "string" }
+                        }
+                    },
+                    "required": ["text", "placeholders"]
+                }
+            },
             "compareMode": { "type": "string", "enum": ["lines", "tokens", "float"] }
         },
-        "required": ["inputFormat", "outputFormat", "examples", "compareMode"]
+        "required": [
+            "inputFormat",
+            "readsInput",
+            "outputFormat",
+            "examples",
+            "outputTemplates",
+            "compareMode"
+        ]
     })
 }
 
@@ -91,6 +126,8 @@ pub struct SolutionContext<'a> {
     pub input_format: &'a str,
     pub output_format: &'a str,
     pub examples: &'a [(String, String)],
+    /// Verified output templates (format only, placeholder values).
+    pub output_templates: &'a [OutputTemplate],
 }
 
 pub fn solution_messages(
@@ -120,6 +157,28 @@ pub fn solution_messages(
             input.trim_end(),
             output.trim_end()
         ));
+    }
+    for t in ctx.output_templates {
+        let tokens = t
+            .placeholders
+            .iter()
+            .map(|p| format!("`{p}`"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        user.push_str(&format!(
+            "\n\nOutput format template (placeholders, not real values). Placeholders: {tokens}. \
+             Print exactly this format, replace every placeholder by the real value your program \
+             computes, and keep all other text unchanged:\n```\n{}\n```",
+            t.text.trim_end()
+        ));
+        for p in &t.placeholders {
+            if placeholder_kind(p) == PlaceholderKind::Integer {
+                user.push_str(&format!(
+                    "\nPlaceholder `{p}` stands for an integer: print it as a whole number \
+                     without decimal places."
+                ));
+            }
+        }
     }
     vec![ChatMessage::system(system), ChatMessage::user(user)]
 }
@@ -317,6 +376,7 @@ mod tests {
             input_format: "Eine Zahl n",
             output_format: "2n",
             examples: &[("3\n".into(), "6\n".into())],
+            output_templates: &[],
         };
         let m = solution_messages("Verdopple n.", "java", &ctx);
         assert!(m[0].content.contains("public class Main"));
@@ -331,6 +391,31 @@ mod tests {
         let i = inputs_messages("x", "n", &["3\n".into()]);
         assert!(i[1].content.contains("do not repeat"));
         assert_eq!(structure_schema()["properties"]["examples"]["maxItems"], 5);
+        assert_eq!(
+            structure_schema()["properties"]["outputTemplates"]["maxItems"],
+            MAX_TEMPLATES
+        );
+        assert!(STRUCTURE_SYSTEM.contains("Never put an output template"));
+        let templates = [OutputTemplate {
+            text: "12345678 seconds have passed.".into(),
+            placeholders: vec!["12345678".into()],
+        }];
+        let ctx = SolutionContext {
+            input_format: "",
+            output_format: "",
+            examples: &[],
+            output_templates: &templates,
+        };
+        let m = solution_messages("t", "python", &ctx);
+        assert!(m[1].content.contains("Placeholders: `12345678`"));
+        assert!(m[1]
+            .content
+            .contains("```\n12345678 seconds have passed.\n```"));
+        assert!(m[1].content.contains(
+            "Placeholder `12345678` stands for an integer: print it as a whole number without \
+             decimal places."
+        ));
+        assert!(STRUCTURE_SYSTEM.contains("never split it into one template per line"));
         assert_eq!(inputs_schema()["properties"]["inputs"]["maxItems"], 10);
     }
 }

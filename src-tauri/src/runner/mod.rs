@@ -4,6 +4,7 @@ pub mod compare;
 pub mod docker;
 pub mod images;
 pub mod languages;
+pub mod template;
 
 use serde::{Deserialize, Serialize};
 
@@ -12,6 +13,7 @@ use compare::{
     CompareMode, DiffLine,
 };
 use docker::{PullProgress, Sandbox, STDIN_FILE};
+use template::OutputTemplate;
 
 /// Maximum accepted size of source code and of a single test input/expectation.
 pub const MAX_INPUT_BYTES: usize = 1024 * 1024;
@@ -94,6 +96,9 @@ pub struct RunRequest {
     /// the comparison mode and the expected output (default off).
     #[serde(default)]
     pub forbid_trailing_newline: bool,
+    /// Output templates of the task sheet (format check, see `template`).
+    #[serde(default)]
+    pub output_templates: Vec<OutputTemplate>,
 }
 
 impl RunRequest {
@@ -137,6 +142,12 @@ pub enum TestStatus {
     RuntimeError,
     /// The sandbox failed while running this test.
     Error,
+    /// The output matched the expectation, but not the output template of
+    /// the task sheet.
+    FormatMismatch,
+    /// Passed, but the variation check showed that the program is only
+    /// right for the given values (set by the frontend, `check_variations`).
+    WrongLogic,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -498,7 +509,7 @@ async fn run_in_sandbox(
         } else {
             test.name.clone()
         };
-        let result = match run_input(sandbox, lang, &test.input).await {
+        let mut result = match run_input(sandbox, lang, &test.input).await {
             Ok(out) => evaluate(
                 index,
                 name,
@@ -518,9 +529,28 @@ async fn run_in_sandbox(
                 only_trailing_whitespace_differs: false,
             },
         };
+        apply_template_check(&mut result, &req.output_templates);
         results.push(result);
     }
     Ok((compile, true, results))
+}
+
+/// A passed test whose output does not fit the output template(s) of the
+/// task becomes [`TestStatus::FormatMismatch`] with a German message. Pure.
+pub fn apply_template_check(result: &mut TestResult, templates: &[OutputTemplate]) {
+    if result.status != TestStatus::Passed || templates.is_empty() {
+        return;
+    }
+    let Some(out) = &result.output else {
+        return;
+    };
+    if let Some(msg) = template::check_output(templates, &out.stdout) {
+        result.status = TestStatus::FormatMismatch;
+        result.message = Some(match result.message.take() {
+            Some(m) => format!("{msg} {m}"),
+            None => msg,
+        });
+    }
 }
 
 /// Classifies a finished test run. With `forbid_trailing_newline`, an
@@ -719,6 +749,7 @@ mod tests {
             trim_whitespace: true,
             compare_mode: None,
             forbid_trailing_newline: false,
+            output_templates: Vec::new(),
         };
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -937,6 +968,53 @@ mod tests {
         assert!(!r.diff.is_empty());
     }
 
+    #[test]
+    fn template_check_turns_passed_into_format_mismatch() {
+        let tpl = OutputTemplate {
+            text: "Summe: 0".into(),
+            placeholders: vec!["0".into()],
+        };
+        let eval = |stdout: &str, expected: &str| {
+            evaluate(
+                0,
+                "t".into(),
+                out(stdout, Some(0), false),
+                expected,
+                &CompareMode::lines(true),
+                false,
+                py(),
+            )
+        };
+        // Passed, but the format is wrong.
+        let mut r = eval("4\n", "4\n");
+        apply_template_check(&mut r, std::slice::from_ref(&tpl));
+        assert_eq!(r.status, TestStatus::FormatMismatch);
+        assert!(r.message.unwrap().contains("Summe: 0"));
+        // Passed and in the format.
+        let mut r = eval("Summe: 4\n", "Summe: 4\n");
+        apply_template_check(&mut r, std::slice::from_ref(&tpl));
+        assert_eq!(r.status, TestStatus::Passed);
+        // Failed stays failed.
+        let mut r = eval("5\n", "4\n");
+        apply_template_check(&mut r, std::slice::from_ref(&tpl));
+        assert_eq!(r.status, TestStatus::Failed);
+        // No templates: unchanged.
+        let mut r = eval("4\n", "4\n");
+        apply_template_check(&mut r, &[]);
+        assert_eq!(r.status, TestStatus::Passed);
+        let json = serde_json::to_value(TestStatus::FormatMismatch).unwrap();
+        assert_eq!(json, "formatMismatch");
+        assert_eq!(
+            serde_json::to_value(TestStatus::WrongLogic).unwrap(),
+            "wrongLogic"
+        );
+        let req: RunRequest = serde_json::from_str(
+            r#"{"language":"python","code":"","tests":[],"outputTemplates":[{"text":"Summe: 0","placeholders":["0"]}]}"#,
+        )
+        .unwrap();
+        assert_eq!(req.output_templates, vec![tpl]);
+    }
+
     fn block_on<F: std::future::Future>(f: F) -> F::Output {
         tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -957,6 +1035,7 @@ mod tests {
                 rel_tol: 0.0,
             }),
             forbid_trailing_newline: false,
+            output_templates: Vec::new(),
         };
         let msg = block_on(run_submission(req, |_| {}))
             .unwrap_err()

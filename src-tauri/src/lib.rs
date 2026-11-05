@@ -26,6 +26,8 @@ pub const DOCS_EVENT: &str = "docs-progress";
 pub const AI_EVENT: &str = "ai-progress";
 /// Event name for OCR correction progress.
 pub const OCR_FIX_EVENT: &str = "ocr-fix-progress";
+/// Event name for variation check progress.
+pub const VARIATION_EVENT: &str = "variation-progress";
 /// Event name for model download/import progress.
 pub const MODELS_EVENT: &str = "models-progress";
 
@@ -289,6 +291,29 @@ async fn suggest_ocr_fixes(
     .await
 }
 
+/// Variation check after „Prüfen“: runs the student's code and the
+/// reference solution with changed values (inputs or start values) to find
+/// programs that are only right by chance. Problems are a „skipped“ result,
+/// only a cancel is an error. Cancellable via `cancel_ai`.
+#[tauri::command]
+async fn check_variations(
+    app: AppHandle,
+    request: ai::variation::VariationRequest,
+) -> Result<ai::variation::VariationResult, ai::AiError> {
+    let op = ai::Operation::start_kind(ai::OperationKind::Variation);
+    ai::variation::run(request, &op.token, move |p| {
+        let _ = app.emit(VARIATION_EVENT, p);
+    })
+    .await
+}
+
+/// Cancels only running variation checks (a new „Prüfen“, or „Abbrechen“
+/// in the result); llama-server and other AI operations keep running.
+#[tauri::command]
+fn cancel_variations() -> usize {
+    ai::cancel_kind(ai::OperationKind::Variation)
+}
+
 /// "Abbrechen" for AI operations: cancels test generation, OCR correction
 /// and model downloads and stops llama-server (frees its memory immediately).
 #[tauri::command]
@@ -405,6 +430,8 @@ pub fn run() {
             generate_tests,
             warm_up_ai,
             suggest_ocr_fixes,
+            check_variations,
+            cancel_variations,
             cancel_ai,
             update_info,
             set_update_interval,

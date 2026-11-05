@@ -32,6 +32,18 @@ pub fn normalize_output(s: &str, trim: bool) -> String {
     out
 }
 
+/// Text for "verbatim" checks (examples, output templates): LF line ends,
+/// every line trimmed, no leading/trailing empty lines.
+pub fn normalize_for_match(s: &str) -> String {
+    normalize_newlines(s)
+        .lines()
+        .map(str::trim)
+        .collect::<Vec<_>>()
+        .join("\n")
+        .trim_matches('\n')
+        .to_string()
+}
+
 pub fn outputs_match(expected: &str, actual: &str, trim: bool) -> bool {
     normalize_output(expected, trim) == normalize_output(actual, trim)
 }

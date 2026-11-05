@@ -2,18 +2,26 @@
 
 > Veröffentlichung einrichten (Schritt für Schritt): [`docs/VEROEFFENTLICHUNG.md`](docs/VEROEFFENTLICHUNG.md)
 
-Desktop-App (Windows und macOS) für Studierende: Programmieraufgaben **lokal** gegen
-eigene Testfälle prüfen.
+Desktop-App (Windows und macOS) für Lehrkräfte und Studierende: Programmieraufgaben
+**lokal** gegen Testfälle prüfen. Programme lesen von der Standardeingabe (stdin) und
+schreiben auf die Standardausgabe (stdout).
 
-1. Aufgabenstellung einfügen oder als Bild, PDF bzw. Word-Datei hochladen.
-2. Code im Editor schreiben oder eine Quelldatei hochladen (`.py` / `.java`).
-3. Sprache wählen (MVP: **Python 3.12** und **Java 21**).
-4. Testfälle anlegen: Eingabe (stdin) und erwartete Ausgabe (stdout).
-5. **Prüfen** klicken.
+Typischer Ablauf:
 
-Pro Testfall zeigt die App *Bestanden* / *Falsche Ausgabe* / *Zeitüberschreitung* /
-*Laufzeitfehler*, einen Zeilen-Diff (erwartet vs. tatsächlich), stderr sowie
-Kompilierfehler.
+1. **Aufgabe** (Tab „Aufgabe“): Aufgabenstellung einfügen oder als Bild, PDF bzw.
+   Word-Datei hochladen, den erkannten Text prüfen und „Text geprüft und korrigiert“
+   anhaken (siehe „Aufgabenblatt hochladen“).
+2. **Testfälle** (Tab „Testfälle“): von Hand anlegen – Eingabe (stdin) und erwartete
+   Ausgabe (stdout) – oder mit „Testfälle mit KI erzeugen“ vom lokalen KI-Modell
+   vorschlagen lassen (siehe „KI und Texterkennung“).
+3. **Code**: im Editor schreiben oder eine Quelldatei hochladen (`.py` / `.java`) und die
+   Sprache wählen (**Python 3.12** oder **Java 21**).
+4. **Prüfen** klicken. Das Ergebnis erscheint im Tab „Ergebnis“. Ist der Schalter
+   „Auf zufällig richtige Ergebnisse prüfen (Variationstest)“ an, prüft die App danach
+   zusätzlich, ob der Code nur für die Werte der Aufgabe stimmt (siehe „Variationstest“).
+
+Pro Testfall zeigt die App einen Status (siehe „Ergebnisse verstehen“), einen Zeilen-Diff
+(erwartet vs. tatsächlich), stdout, stderr sowie Kompilierfehler.
 
 Der Code wird ausschließlich auf dem eigenen Rechner in einem abgeschotteten
 Docker-Container ausgeführt – es gibt keinen zentralen Server.
@@ -371,6 +379,24 @@ was die erwartete Ausgabe enthält. Die KI-Testfälle übernehmen die Ausgabe de
 unverändert; endet diese selbst mit einem Zeilenumbruch, weist der Testfall-Editor einmalig
 darauf hin.
 
+## Ergebnisse verstehen
+
+Status je Testfall im Tab „Ergebnis“:
+
+| Status | Bedeutung |
+|---|---|
+| **Bestanden** | Ausgabe stimmt im gewählten Vergleichsmodus mit der Erwartung überein. |
+| **Falsche Ausgabe** | Ausgabe weicht ab (Diff darunter); auch bei verbotenem Zeilenumbruch am Ende. |
+| **Zeitüberschreitung** | Zeitlimit überschritten (Python 5 s, Java 8 s), z. B. Endlosschleife oder das Programm wartet auf weitere Eingaben. |
+| **Laufzeitfehler** | Programm endete mit Exit-Code ≠ 0 (Ausnahme, Exit-Code 137 = Speicherlimit 512 MB). |
+| **Fehler** | Die Sandbox selbst ist bei diesem Test ausgefallen. |
+| **Ausgabeformat weicht von Vorlage ab** | Die Ausgabe passt zur Erwartung, aber nicht zur Ausgabevorlage des Aufgabenblatts (siehe „Ausgabevorlagen mit Platzhaltern“). Zählt als nicht bestanden. |
+| **Nur für die gegebenen Werte richtig** | Der Test war bestanden, aber der Variationstest hat gezeigt, dass der Code mit veränderten Werten falsch rechnet. Zählt als nicht bestanden. |
+
+Lässt sich der Code nicht kompilieren, erscheint statt der Testfälle „Kompilierfehler“
+mit der Meldung des Compilers. Über den Testfällen steht „x von y Tests bestanden“; der
+Tab „Ergebnis“ zeigt dieselbe Zahl als Kennzeichen (✓ alle bestanden, ✗ sonst).
+
 ## KI und Texterkennung
 
 „Testfälle mit KI erzeugen“ erstellt aus der geprüften Aufgabenstellung Testfälle – mit
@@ -384,10 +410,11 @@ derselben Sandbox wie beim „Prüfen“.
 
 Ablauf (`src-tauri/src/ai/pipeline.rs`):
 
-1. **Struktur:** Ein-/Ausgabeformat, Beispiele und ein Vorschlag für den Vergleichsmodus
-   (JSON, per JSON-Schema grammatikgebunden). Ein Beispiel zählt nur, wenn Ein- und
-   Ausgabe **wörtlich** im Aufgabentext stehen (Zeilenenden und Leerraum am Zeilenrand
-   egal) – erfundene Beispiele werden verworfen.
+1. **Struktur:** Ein-/Ausgabeformat, Beispiele, Ausgabevorlagen mit Platzhaltern und ein
+   Vorschlag für den Vergleichsmodus (JSON, per JSON-Schema grammatikgebunden). Ein
+   Beispiel zählt nur, wenn Ein- und Ausgabe **wörtlich** im Aufgabentext stehen
+   (Zeilenenden und Leerraum am Zeilenrand egal) – erfundene Beispiele werden verworfen.
+   Ausgabevorlagen werden nie zu Beispielen (siehe unten).
 2. **Lösungen:** 5 (1.5B-Modell) bzw. 3 (7B-Modell) unabhängige Lösungen, Temperatur 0,7,
    **gleichzeitig** erzeugt (llama-server mit einem Slot je Lösung; auf der CPU begrenzt die
    Speicherbandbreite, mehrere Sequenzen kosten kaum mehr als eine). Die Antwort beginnt im
@@ -420,6 +447,78 @@ Die Testfälle werden an die vorhandenen angehängt (höchstens 50 insgesamt), m
 markiert und bleiben bearbeitbar. Die Musterlösung (die Lösung, die am häufigsten mit der
 Mehrheit übereinstimmte) lässt sich aufklappen. Der vorgeschlagene Vergleichsmodus wird
 nur übernommen, wenn man „Vorschlag übernehmen“ klickt; sonst gilt der eingestellte.
+
+### Ausgabevorlagen mit Platzhaltern
+
+Manche Aufgabenblätter zeigen statt eines Beispiels nur das **Format** der Ausgabe, mit
+Platzhaltern für die echten Werte, etwa (im Blatt steht „12345678 ist nur ein
+Platzhalter“):
+
+```
+12345678 seconds have passed since midnight.
+12345678 seconds are left until midnight.
+Since I started with the task 12345678 seconds have passed.
+```
+
+Früher wurde so etwas als Beispiel mit leerer Eingabe übernommen – und alle
+KI-Lösungen fielen durch, weil keine „12345678“ ausgibt. Jetzt gilt:
+
+- Die KI meldet solche Vorlagen getrennt (Text und Platzhalter, z. B. `12345678`, `<n>`,
+  `X`). Eine Vorlage wird nur übernommen, wenn ihr Text wörtlich im Aufgabentext steht
+  und jeder Platzhalter darin vorkommt (höchstens 3 Vorlagen mit je höchstens 6
+  Platzhaltern).
+- Eine mehrzeilige Vorlage ist **eine** Vorlage. Zerlegt die KI sie trotzdem in eine
+  Vorlage pro Zeile, fügt die App Vorlagen, die im Aufgabentext ganze, direkt
+  aufeinanderfolgende Zeilen sind, wieder zu einer zusammen (in der Reihenfolge des Texts).
+- Eine Vorlage ist **nie** ein Beispiel oder ein Testfall, ein Platzhalter nie eine
+  erwartete Ausgabe: Ein von der KI als Beispiel gemeldetes Beispiel wird verworfen
+  (unabhängig von seiner Eingabe), wenn seine Ausgabe einen Platzhalter als ganzes Wort
+  enthält oder der Vorlage entspricht.
+- Die KI-Lösungen bekommen die Vorlage als Formatvorgabe. Passt die Ausgabe einer Lösung
+  bei einem Beispiel des Blatts nicht zur Vorlage, fällt sie heraus; bei den übrigen
+  Eingaben zählt eine solche Ausgabe beim Mehrheitsentscheid nicht mit.
+- Liest die Aufgabe **keine Eingabe** (laut Strukturschritt der KI) und gibt es eine
+  Vorlage, aber keinen Testfall mit leerer Eingabe, wird ein Testfall **„KI-Test (ohne
+  Eingabe)“** erzwungen; seine erwartete Ausgabe entsteht wie bei allen KI-Testfällen
+  durch den Mehrheitsentscheid der Lösungen. Bei Aufgaben, die eine Eingabe lesen, wird er
+  nicht erzwungen. Scheitern die Lösungen an der leeren Eingabe (z. B. weil die KI sich
+  bei „liest keine Eingabe“ geirrt hat), wird dieser Testfall nur weggelassen – die
+  Lösungen fallen deshalb nicht heraus.
+- Die Konfidenz nennt den Grund „Ausgabevorlage mit Platzhaltern erkannt – sie wird nur
+  als Formatprüfung verwendet, nicht als Beispiel.“; die Stufe (Grün/Gelb/Rot) ändert sich
+  dadurch nicht.
+- Im Bereich „Testfälle mit KI“ steht „Ausgabevorlage erkannt“ mit der Vorlage. Mit
+  **„Vorlage nicht verwenden“** wird sie verworfen (z. B. wenn die KI sich geirrt hat).
+
+Beim **Prüfen** wird jede bestandene Ausgabe zusätzlich mit der Vorlage verglichen
+(`src-tauri/src/runner/template.rs`): Zeile für Zeile, Leerraum am Zeilenrand und
+mehrfache Leerzeichen egal, leere Zeilen am Anfang und Ende egal; die Zeilenzahl muss
+stimmen. Ein Platzhalter steht für einen nicht leeren Wert. Der Typ ergibt sich aus dem
+Platzhalter selbst:
+
+- nur Ziffern (z. B. `12345678`): eine **Ganzzahl** ohne Nachkommastellen, optional mit
+  Vorzeichen – `54630` passt, `54630.0` oder `5.463e4` nicht (Meldung: „… erwartet eine
+  Ganzzahl ohne Nachkommastellen“). Die KI-Lösungen bekommen dazu den Hinweis, den Wert
+  als ganze Zahl auszugeben;
+- eine Zahl mit Dezimalpunkt (z. B. `0.0`): irgendeine Zahl;
+- alles andere (z. B. `<n>`, `X`): beliebiger Text.
+
+Das Panel „Testfälle mit KI“ nennt den Typ („Platzhalter 12345678 steht für eine Ganzzahl
+(ohne Nachkommastellen)“). Platzhalter werden nur als ganze Wörter erkannt
+(Platzhalter „1“ trifft nicht die „1“ in „12“). Ausgabezeilen über 4 KB passen nie zu
+einer Vorlage (begrenzt die Rechenzeit). Passt die Ausgabe zu keiner Vorlage, lautet
+der Status „Ausgabeformat weicht von Vorlage ab“ mit der betroffenen Zeile und der
+erwarteten Vorlagenzeile. Die Vorlage gilt, bis man sie verwirft, neue KI-Testfälle
+erzeugt oder den Aufgabentext ändert (jede Änderung, auch ein neuer Import oder eine
+übernommene KI-Korrektur, macht Vorlage und Musterlösung ungültig, weil sie zu einem
+anderen Text gehören).
+
+**Die Vorlagenprüfung gilt für alle Testfälle**, auch für eigene Randfälle wie
+„Ungültige Eingabe“, bei denen das Programm absichtlich etwas anderes ausgibt. Solche
+Testfälle schlagen dann mit „Ausgabeformat weicht von Vorlage ab“ fehl, obwohl die Ausgabe
+der Erwartung entspricht. Beschreibt die Vorlage nur den Normalfall, im Tab „Testfälle“
+„Vorlage nicht verwenden“ klicken – dann wird nur noch gegen die erwarteten Ausgaben
+geprüft.
 
 **Grenzen** (Recherche §11) – hier ist das Ergebnis höchstens ein Hinweis:
 Aufgaben ohne Beispiele, mehrdeutige Texte, mehrere richtige Ausgaben, GUI/Dateien/
@@ -485,6 +584,110 @@ pinnen“ starten und den Pull Request mergen; ohne Pins bricht der Release ab.
 `scripts/fetch-llama-server.sh`), im Installer unter `llama/`. Unter Windows braucht
 llama-server die Visual-C++-Laufzeit; der Release-Installer legt sie bei. Fehlt sie (z. B.
 in lokal gebauten Testversionen), meldet die App das mit Link zum Microsoft-Download.
+
+## Variationstest (zufällig richtige Ergebnisse)
+
+Ein Programm kann für die Werte der Aufgabe zufällig das richtige Ergebnis liefern, obwohl
+die Formel falsch ist. Beispiel: „Sekunden bis Mitternacht“ für 15:10:30 Uhr (54630 s seit
+Mitternacht) als `86400 % sekunden` statt `86400 - sekunden` berechnet – beides ergibt
+31770, weil 54630 größer als 43200 ist. Für 03:10:30 Uhr käme aber 6390 statt 74970
+heraus. Normale Testfälle mit den Werten des Blatts bemerken das nicht.
+
+**Schalter:** „Auf zufällig richtige Ergebnisse prüfen (Variationstest)“ neben „Prüfen“,
+standardmäßig an (die Einstellung wird gemerkt).
+
+**Ablauf:** Das Ergebnis der Prüfung erscheint sofort; danach läuft der Variationstest
+(„Prüfe mit veränderten Werten …“, abbrechbar). Er vergleicht den Code mit der
+**Musterlösung** aus „Testfälle mit KI erzeugen“ – entschieden wird nur durch Ausführen
+beider Programme in der Sandbox, nie durch die KI (`src-tauri/src/ai/variation.rs`):
+
+- **Aufgaben mit Eingabe** (Testfälle mit nicht leerer Eingabe): Die KI schreibt bis zu 8
+  weitere gültige Eingaben (ohne die vorhandenen); dabei bekommt sie das Eingabeformat aus
+  „Testfälle mit KI erzeugen“. Musterlösung und Code laufen darauf; die Ausgaben werden im
+  eingestellten Vergleichsmodus (und mit der Ausgabevorlage) verglichen. Eingaben, bei
+  denen die Musterlösung selbst abstürzt, zu lange braucht oder bei zwei Läufen
+  unterschiedliche Ausgaben liefert, werden verworfen.
+- **Aufgaben ohne Eingabe bzw. mit vorgegebenen Startwerten** (z. B. `hour = 15`,
+  `minute = 10`, `second = 30`): Die KI nennt die vorgegebenen Zahlen und schlägt 2–3
+  Szenarien vor, z. B. „15 → 3“ oder „15 → 9 und 10 → 45“. Jede Originalzahl muss im
+  Aufgabentext stehen. Die App ersetzt die Werte selbst, und zwar **nur in einfachen
+  Zuweisungen** wie `hour = 15` (Python, auch `hour: int = 15` und `self.hour = 15`) bzw.
+  `int hour = 15;`, `final int hour = 15, minute = 10;`, `this.hour = 15;` (Java) – in Code
+  und Musterlösung gleichermaßen. Negative Startwerte (`x = -15`) werden als `-15`
+  erkannt. Kommentare und Zeichenketten bleiben unberührt, ebenso Zuweisungen in Klammern
+  (z. B. im Kopf einer Java-`for`-Schleife: `for (int i = 0, n = 15; …)`). Ein Szenario wird übersprungen, wenn
+  die Werte nicht in beiden Programmen gleich oft ersetzt werden können (etwa weil der
+  Code `15` direkt in einer Formel verwendet) oder wenn sich die Ausgabe der Musterlösung
+  dadurch nicht ändert. Die Musterlösung läuft jeweils zweimal (mit den Originalwerten und
+  mit jeder Variante); unterscheiden sich die beiden Ausgaben (z. B. Zufallszahlen oder
+  Uhrzeit), wird die Variante übersprungen bzw. der ganze Test, wenn das schon bei den
+  Originalwerten passiert.
+
+Als Logikfehler zählt nur eine **saubere, abweichende Ausgabe** des Codes. Bricht der Code
+bei einer Variante ab oder überschreitet er das Zeitlimit, ist das kein Befund, sondern
+ein Hinweis „unklar“ (z. B. „hour = 3 statt 15: Laufzeitfehler“). Gibt es nur solche
+Fälle, wird der Variationstest mit diesem Hinweis übersprungen.
+
+**Ergebnis:**
+
+- **Unterschied gefunden:** roter Block „Logikfehler: Code liefert nur für die gegebenen
+  Werte das richtige Ergebnis“ mit den Befunden (z. B. „hour = 3 statt 15“ bzw. „Eingabe:
+  …“, erwartete Ausgabe der Musterlösung und tatsächliche Ausgabe). Alle bisher bestandenen
+  Tests erhalten den Status **„Nur für die gegebenen Werte richtig“** und zählen als nicht
+  bestanden. Zusätzlich erklärt die KI den Fehler kurz mit einem Zitat aus dem Code (z. B.
+  `86400 % seconds` – Modulo statt Subtraktion). Steht das Zitat nicht im Code, wird die
+  Erklärung weggelassen. **Die Erklärung ist nur ein Hinweis und entscheidet nichts**; bei
+  Code über ca. 6000 Zeichen entfällt sie.
+- **Kein Unterschied:** dezenter Hinweis „Variationstest bestanden“, ggf. mit den
+  unklaren Fällen.
+- **Übersprungen:** dezenter Hinweis mit Grund; die Testergebnisse bleiben unverändert.
+
+**Voraussetzungen** – sonst läuft der Test nicht bzw. wird übersprungen:
+
+- Der Code kompiliert und mindestens ein Test ist bestanden.
+- Eine **Musterlösung** in derselben Sprache ist vorhanden, d. h. „Testfälle mit KI
+  erzeugen“ wurde für genau diesen Aufgabentext ausgeführt und war nicht rot. Jede
+  Änderung des Aufgabentexts (auch ein neuer Import) macht die Musterlösung ungültig.
+- Ein KI-Modell ist eingerichtet und die KI ist nicht gerade mit „Testfälle mit KI
+  erzeugen“ beschäftigt.
+- Bei Startwerten: Sie stehen als einfache Zuweisungen im Code (siehe oben).
+
+Übersprungen wird außerdem, wenn die KI keine brauchbaren Eingaben oder Szenarien
+liefert, wenn Musterlösung oder Engine Fehler melden oder wenn man abbricht. Ein neues
+„Prüfen“ (oder „Abbrechen“) bricht nur den laufenden Variationstest ab, das KI-Modell
+bleibt geladen und andere KI-Aufgaben laufen weiter; das alte Ergebnis wird ignoriert.
+Schaltet man den Schalter aus, verschwindet das Ergebnis des Variationstests wieder und
+die Tests zeigen ihren ursprünglichen Status.
+Die Musterlösung ist selbst KI-erzeugt – ist sie falsch, kann auch der Variationstest
+irren. Ein Befund ist deshalb ein starker Hinweis, aber kein Beweis; im Zweifel den Code
+selbst ansehen.
+
+## Fehlerbehebung
+
+- **„Keine laufende Container-Engine gefunden“ / „… ist installiert, aber nicht
+  gestartet“:** Docker Desktop bzw. Podman starten oder in den Einstellungen die richtige
+  Engine wählen; die Meldung nennt für jeden Verbindungsversuch den Grund (siehe
+  „Engine-Auswahl und automatischer Start“). Unter Windows ggf. Mitglied der Gruppe
+  `docker-users` werden.
+- **„Das Runner-Image für … ist nicht vorhanden“:** Internetverbindung prüfen und
+  Einstellungen → „Images aktualisieren“ klicken oder den Code-Prüfer neu installieren.
+- **Zeitüberschreitung, obwohl das Programm stimmt:** Wartet es auf mehr Eingaben als der
+  Testfall liefert? Die Eingabe muss alle gelesenen Zeilen enthalten.
+- **„Testfälle mit KI erzeugen“ ist ausgegraut:** Der Hinweis daneben nennt den Grund
+  (Text nicht als geprüft markiert, kein KI-Modell eingerichtet, Prüfung läuft, …).
+- **Konfidenz Rot oder Gelb:** Testfälle von Hand anlegen bzw. die vorgeschlagenen
+  erwarteten Ausgaben prüfen; oft hilft ein klarerer Aufgabentext mit Beispielen.
+- **Tests „Ausgabeformat weicht von Vorlage ab“:** Stimmt die erkannte Vorlage, und gilt
+  sie auch für diesen Testfall (Randfälle wie „Ungültige Eingabe“ geben oft etwas anderes
+  aus)? Falls nicht, im Tab „Testfälle“ „Vorlage nicht verwenden“ klicken und erneut
+  prüfen.
+- **Variationstest übersprungen:** Der Hinweis nennt den Grund (keine Musterlösung, kein
+  Modell, keine ersetzbaren Werte, …). Der Test lässt sich mit dem Schalter neben „Prüfen“
+  abschalten.
+- **KI-Laufzeit startet unter Windows nicht:** Es fehlt die Visual-C++-Laufzeit (die App
+  verlinkt den Microsoft-Download).
+- **Keine Texterkennung unter Windows:** Eine Sprache mit Texterkennung installieren
+  (Einstellungen → Zeit und Sprache → Sprache).
 
 ## Entwicklung
 
@@ -620,12 +823,13 @@ src-tauri/src/
                          prepare_images, update_images, import_task_document,
                          ai_status, download_model, import_model, delete_model,
                          select_model, generate_tests, suggest_ocr_fixes,
-                         cancel_ai
+                         check_variations, cancel_ai
   ai/llama.rs            llama-server als Sidecar (Start, /health, Client, Abbruch)
   ai/models.rs           Modellkatalog (catalog.json), Hardware, Download, Import
   ai/pipeline.rs         Testfälle erzeugen: Lösungen, Beispiele, Mehrheit, Konfidenz
   ai/prompts.rs          Prompts, JSON-Schemas, Code aus Antworten extrahieren
   ai/ocr_fix.rs          KI-Korrektur von OCR-Text: Prompt, Plausibilitätsfilter
+  ai/variation.rs        Variationstest: Eingaben/Szenarien, Literalersetzung, Erklärung
   docs/mod.rs            Import von Aufgabenblättern (Bild, PDF, DOCX), Limits
   docs/docx.rs           Text aus word/document.xml
   docs/pdf.rs            Textebene pro Seite, Erkennung gescannter Seiten
@@ -641,6 +845,7 @@ src-tauri/src/
   runner/images.rs       Image-Auflösung: vorhanden → Archiv → GHCR → :dev
   runner/languages.rs    Sprachtabelle (Image, Dateiname, Befehle, Zeitlimits)
   runner/compare.rs      Normalisierung, Zeilen-Diff, Ausgabebegrenzung
+  runner/template.rs     Ausgabevorlagen mit Platzhaltern: Prüfung und Abgleich
 src-tauri/windows/       NSIS-Installer: Template + Hooks (Engine-Auswahl, winget)
 src-tauri/tauri.release.conf.json
                          Release-Overlay: bündelt resources/images/*.tar.gz,
@@ -682,7 +887,15 @@ unter `images/`.
 - Nur Python und Java; Java-Code muss eine Klasse `Main` enthalten (Datei `Main.java`).
 - Testfälle werden manuell eingegeben oder mit der lokalen KI vorgeschlagen (siehe „KI und
   Texterkennung“); keine Speicherung von Aufgaben/Testfällen.
-- Vergleich nur über stdout (Zeilen, Wörter oder Zahlen mit Toleranz).
+- Vergleich nur über stdout (Zeilen, Wörter oder Zahlen mit Toleranz, optional gegen eine
+  Ausgabevorlage).
+- Ausgabevorlagen erkennt nur die KI; von Hand lässt sich keine Vorlage anlegen.
+- Der Variationstest braucht eine KI-Musterlösung und ersetzt Startwerte nur in einfachen
+  Zuweisungen (`x = 15`, `int x = 15;`, `this.x = 15;`, `self.x = 15`), nicht in Formeln,
+  Arrays, Methodenaufrufen oder Mehrfachzuweisungen wie `a, b = 15, 10`. Er kann einen
+  Fehler übersehen und irrt, wenn die Musterlösung falsch ist.
+- Die Vorlagenprüfung gilt für alle Testfälle (auch für Randfälle mit anderer Ausgabe);
+  dann „Vorlage nicht verwenden“.
 - Builds sind noch nicht signiert: Windows SmartScreen und macOS Gatekeeper warnen beim
   ersten Start (Windows-Signatur über die SignPath Foundation ist vorbereitet, siehe
   „Code-Signing“; macOS-Signatur und Notarisierung fehlen noch).
