@@ -49,6 +49,7 @@ async fn run(language: &str, code: &str, tests: Vec<TestCase>) -> RunReport {
             trim_whitespace: true,
             compare_mode: None,
             forbid_trailing_newline: false,
+            output_templates: Vec::new(),
         },
         |_| {},
     )
@@ -200,6 +201,7 @@ async fn tokens_mode_ignores_line_structure() {
         trim_whitespace: true,
         compare_mode: Some(mode),
         forbid_trailing_newline: false,
+        output_templates: Vec::new(),
     };
     let tokens = CompareMode::Tokens {
         case_sensitive: true,
@@ -225,6 +227,7 @@ async fn forbid_trailing_newline_rejects_print() {
         trim_whitespace: true,
         compare_mode: None,
         forbid_trailing_newline: forbid,
+        output_templates: Vec::new(),
     };
     let with_newline = "print('Hallo')\n";
     let without = "print('Hallo', end='')\n";
@@ -417,6 +420,7 @@ async fn missing_override_image_gives_actionable_error() {
             trim_whitespace: true,
             compare_mode: None,
             forbid_trailing_newline: false,
+            output_templates: Vec::new(),
         },
         |_| {},
     )

@@ -8,6 +8,7 @@ import {
   type AiStatus,
   type CompareMode,
   type GenerateResult,
+  type OutputTemplate,
 } from "../api";
 
 interface Props {
@@ -18,13 +19,31 @@ interface Props {
   language: string;
   compareMode: CompareMode | null;
   /** Generated tests are appended by the parent. */
-  onResult: (r: GenerateResult) => void;
+  /** taskText: the text the tests were generated for. */
+  onResult: (r: GenerateResult, taskText: string) => void;
+  /** Output templates in use (held by the parent, used as format check). */
+  templates: OutputTemplate[];
+  /** „Vorlage nicht verwenden“. */
+  onDropTemplates: () => void;
   onApplyMode: (mode: CompareMode) => void;
   onOpenSetup: () => void;
   onRunningChange: (running: boolean) => void;
   /** Called when a generation ended: the backend may have started the engine (or found it gone). */
   onFinished: (failed: boolean) => void;
 }
+
+/** Same rule as placeholder_kind in src-tauri/src/runner/template.rs. */
+function placeholderKind(token: string): "integer" | "decimal" | "text" {
+  if (/^[+-]?\d+$/.test(token)) return "integer";
+  if (/^[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$/.test(token)) return "decimal";
+  return "text";
+}
+
+const PLACEHOLDER_KIND = {
+  integer: "eine Ganzzahl (ohne Nachkommastellen)",
+  decimal: "eine Zahl",
+  text: "einen beliebigen Text",
+} as const;
 
 const LEVEL_TEXT = { green: "Grün", yellow: "Gelb", red: "Rot" } as const;
 const LEVEL_HINT = {
@@ -65,6 +84,8 @@ export function AiPanel({
   language,
   compareMode,
   onResult,
+  templates,
+  onDropTemplates,
   onApplyMode,
   onOpenSetup,
   onRunningChange,
@@ -100,13 +121,14 @@ export function AiPanel({
     timer.current = window.setInterval(() => setSeconds(Math.round((Date.now() - started) / 1000)), 1000);
     let failed = false;
     try {
+      const text = taskText;
       const r = await generateTests({
-        taskText,
+        taskText: text,
         language,
         compareMode: compareMode ?? undefined,
       });
       setResult(r);
-      onResult(r);
+      onResult(r, text);
     } catch (e) {
       if (String(e) === CANCELLED) setCancelled(true);
       else {
@@ -181,7 +203,9 @@ export function AiPanel({
           <p className="small muted">
             {result.tests.length} Testfälle übernommen (mit „KI“ markiert) ·{" "}
             {result.stats.solutionsPassed} von {result.stats.solutionsRequested} Lösungen bestanden ·{" "}
-            {result.stats.examplesFound} Beispiel(e) aus dem Blatt · {Math.round(result.stats.durationMs / 1000)} s
+            {result.stats.examplesFound} Beispiel(e) aus dem Blatt
+            {result.stats.templatesFound > 0 && ` · ${result.stats.templatesFound} Ausgabevorlage(n)`} ·{" "}
+            {Math.round(result.stats.durationMs / 1000)} s
             {result.stats.tokensPerSecond !== null &&
               ` · ${result.stats.tokensPerSecond.toFixed(1).replace(".", ",")} Token/s`}
           </p>
@@ -199,6 +223,28 @@ export function AiPanel({
               >
                 Vorschlag übernehmen
               </button>
+            </div>
+          )}
+          {templates.length > 0 && (
+            <div className="ai-template small">
+              <div className="row">
+                <strong>Ausgabevorlage erkannt</strong>
+                <button onClick={onDropTemplates}>Vorlage nicht verwenden</button>
+              </div>
+              <p className="muted">
+                {[...new Set(templates.flatMap((t) => t.placeholders))].map((p) => (
+                  <span key={p}>
+                    Platzhalter {p} steht für {PLACEHOLDER_KIND[placeholderKind(p)]}.{" "}
+                  </span>
+                ))}
+                Beim Prüfen muss die Ausgabe dieses Format haben, sonst lautet das Ergebnis „Ausgabeformat
+                weicht von Vorlage ab“.
+              </p>
+              {templates.map((t) => (
+                <pre key={t.text} className="output">
+                  {t.text}
+                </pre>
+              ))}
             </div>
           )}
           {result.referenceSolution && (

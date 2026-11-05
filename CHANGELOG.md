@@ -7,6 +7,24 @@ Format nach [Keep a Changelog](https://keepachangelog.com/de/1.1.0/), Versionen 
 
 ## [Unveröffentlicht]
 
+## [1.0.1] - 2026-11-04
+
+### Hinzugefügt
+
+- **Ausgabevorlagen mit Platzhaltern** (z. B. `Summe: {n}`) werden im erwarteten Ergebnis
+  erkannt und nur als Formatprüfung genutzt, nicht als feste Soll-Ausgabe.
+- **Variationstest:** erkennt Code, der nur für die gegebenen Werte zufällig stimmt
+  (etwa fest eingetragene Ergebnisse), indem die Eingaben variiert werden.
+- **Gezielter Abbruch** des Variationstests.
+
+### Behoben
+
+- Fehler im KI-Gate behoben.
+
+### Geändert
+
+- README überarbeitet.
+
 ## [1.0.0] - 2026-11-03
 
 Erste stabile Version.

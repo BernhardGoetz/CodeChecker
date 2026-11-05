@@ -1,0 +1,8 @@
+Code-Prüfer 1.0.1 – neue Prüfungen für Ausgaben und Testfälle.
+
+- Ausgabevorlagen mit Platzhaltern (zum Beispiel "Summe: {n}") werden erkannt und nur als Formatprüfung genutzt.
+- Der Variationstest erkennt Code, der nur zufällig für die gegebenen Werte stimmt, und lässt sich gezielt abbrechen.
+- Ein Fehler im KI-Gate wurde behoben.
+- Die Anleitung (README) ist überarbeitet.
+
+Alle Änderungen stehen auf der Release-Seite auf GitHub.
