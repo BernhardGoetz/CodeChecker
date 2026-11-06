@@ -409,7 +409,11 @@ Bevor ein Katalogeintrag gepinnt ist, kann man Dateien weiterhin über „Datei 
 
 ## 14. Beitragsablauf (Branch und Pull Request)
 
-<!-- AGENT-TODO (Beitragsregeln): Dieses Projekt hat (noch) keine festgeschriebenen Beitragsregeln für externe Mitwirkende. Der folgende Ablauf ist aus den Workflows abgeleitet (Release nur über PRs nach qas, keine Forks). Bitte mit dem Inhaber abstimmen, ob und wie externe Beiträge angenommen werden. Dies ist eine Entscheidung des Inhabers: Kommentar NICHT auflösen; im Abschlussbericht als offene Frage an Bernhard melden. -->
+**Regeln für Beiträge:**
+
+- Externe Beiträge werden nur als **Pull Request** angenommen.
+- Jeder Pull Request wird vor dem Merge vom Maintainer (Rolle Reviewer, siehe [`docs/CODE_SIGNING_POLICY.md`](docs/CODE_SIGNING_POLICY.md)) geprüft, auch Änderungen an Workflows und Skripten.
+- Release-Pull-Requests nach `qas` kommen nur aus Branches dieses Repositorys, nicht aus Forks.
 
 1. **Issue** anlegen oder bestehendes Issue wählen, besonders bei größeren Änderungen vorher kurz abstimmen.
 2. Repository klonen (bzw. als Mitglied einen **Branch** im Repository anlegen), z. B. `feature/<kurzname>` oder `fix/<kurzname>`.
@@ -443,7 +447,7 @@ Bevor ein Katalogeintrag gepinnt ist, kann man Dateien weiterhin über „Datei 
 - **Engine-Auswahl und Verbindung:** Die Engine wird in dieser Reihenfolge bestimmt: (1) `engine.json` im App-Konfigurationsordner (Windows: `%APPDATA%\de.bernhardgoetz.codepruefer\engine.json`, Inhalt z. B. `{"engine": "podman"}`), (2) Registry `HKCU\Software\Code-Pruefer`, Wert `Engine` (vom Installer geschrieben), (3) Standard Docker. Die Umgebungsvariable `DOCKER_HOST` hat Vorrang vor allem (ein `tcp://`- oder `http://`-Endpunkt ist unverschlüsselt; die App zeigt dann eine Warnung). Beim Start (und bei Bedarf vor einer Prüfung) startet die App die gewählte Engine und wartet, bis sie antwortet (alle 2 s, höchstens 120 s): Docker Desktop über `Docker Desktop.exe` bzw. `open -a /Applications/Docker.app`; Podman über `podman machine init` (einmalig) und `podman machine start`. Unter Linux gibt es keinen automatischen Start.
 - **Bekanntes Restrisiko (Windows):** Die Named Pipes `docker_engine` und `podman-machine-default` gibt es nur einmal pro Rechner; die App prüft den Prozess hinter der Pipe nicht. Der Code-Prüfer ist für Einzelplatz-Rechner gedacht. Eine frühere Prüfung (`GetNamedPipeServerProcessId`) wurde wieder entfernt (ungetestet, Nebenwirkungen).
 - **Weitere Restrisiken:** gemeinsamer Kernel der Container (Engine aktuell halten), `image-digests.json` liegt neben den Archiven im Programmordner (Schutz nur durch signierte Installer), Hintergrundprozesse aus Tests bleiben als Zombies bis zum Ende der Prüfung, und ohne Pflicht-Reviewer im Environment `production` kann jeder mit Schreibrecht per PR nach `qas` einen Release auslösen.
-- **Sicherheitslücken** bitte nicht öffentlich als Issue melden, sondern dem Inhaber direkt mitteilen. <!-- AGENT-TODO (Sicherheitskontakt): Kontakt bzw. GitHub-"Security advisories"-Prozess festlegen und hier eintragen (im Repository ist keine SECURITY.md vorhanden). Siehe AGENT-AUFTRAG.md, Aufgabe 7d (optionale SECURITY.md); ohne Entscheidung von Bernhard Kommentar stehen lassen. -->
+- **Sicherheitslücken** bitte nicht öffentlich als Issue melden, sondern vertraulich über GitHub („Private vulnerability reporting“, Reiter Security → „Report a vulnerability“); Einzelheiten in [`SECURITY.md`](SECURITY.md).
 
 ## 16. Weitere Dokumente
 
@@ -452,9 +456,10 @@ Bevor ein Katalogeintrag gepinnt ist, kann man Dateien weiterhin über „Datei 
 | [`docs/RELEASE_QAS.md`](docs/RELEASE_QAS.md) | Release mit QAS-Stufe und Abnahme, GitHub-Einstellungen |
 | [`docs/VEROEFFENTLICHUNG.md`](docs/VEROEFFENTLICHUNG.md) | Veröffentlichung einrichten, Schritt für Schritt |
 | [`docs/RELEASE_SIGNING.md`](docs/RELEASE_SIGNING.md) | Windows-Signatur über die SignPath Foundation |
-| [`docs/CODE_SIGNING_POLICY.md`](docs/CODE_SIGNING_POLICY.md) | Code signing policy mit Rollen und Datenschutz (englisch, verbindlich; Status: Antrag bei der SignPath Foundation) |
+| [`docs/CODE_SIGNING_POLICY.md`](docs/CODE_SIGNING_POLICY.md) | Code signing policy mit Rollen und Datenschutz (englisch, verbindlich; Status: Antrag bei der SignPath Foundation in Vorbereitung) |
 | [`docs/UPDATER.md`](docs/UPDATER.md) | App-Updater: Ablauf, Schlüssel, Einrichtung, Test |
 | [`docs/design/DESIGN.md`](docs/design/DESIGN.md) | Gestaltung: Tokens, Farben, Bausteine, Layout |
 | [`docs/ENTSCHEIDUNGSGRUNDLAGE_lokale-KI-Aufgabenchecker.md`](docs/ENTSCHEIDUNGSGRUNDLAGE_lokale-KI-Aufgabenchecker.md) | Recherche zu lokaler KI, OCR und Testfall-Erzeugung (keine Spezifikation; Abschnitte 8 und 10 gelten für diese App nicht) |
 | [`CHANGELOG.md`](CHANGELOG.md) | Änderungen je Version |
 | [`THIRD_PARTY_NOTICES.txt`](THIRD_PARTY_NOTICES.txt) | Lizenzen mitgelieferter Drittsoftware |
+| [`SECURITY.md`](SECURITY.md) | Sicherheitslücken vertraulich melden |
