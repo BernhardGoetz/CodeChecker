@@ -1,0 +1,5 @@
+Code-Prüfer 1.0.2 – neue Update-Adresse.
+
+- Das Repository heißt jetzt CodeChecker. Update-Adresse und Links in der App zeigen auf den neuen Namen.
+
+Alle Änderungen stehen auf der Release-Seite auf GitHub.

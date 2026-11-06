@@ -1,7 +1,7 @@
 # Veröffentlichung einrichten: Schritt für Schritt
 
 Anleitung für Bernhard (GitHub `bernhardgoetz`, Repository
-`bernhardgoetz/entwicklung-test`, Standard-Branch `main`). Hier steht alles, was einmal
+`bernhardgoetz/codechecker`, Standard-Branch `main`). Hier steht alles, was einmal
 eingerichtet werden muss, und was danach für jede Version zu tun ist. Die Details stehen in
 [`RELEASE_QAS.md`](RELEASE_QAS.md), [`RELEASE_SIGNING.md`](RELEASE_SIGNING.md) und
 [`UPDATER.md`](UPDATER.md). Bei Widersprüchen gilt
@@ -251,7 +251,7 @@ blockiert).
 
 1. [ ] **Antrag** auf <https://signpath.org/> → „Apply“ **(ungeprüft: genaue Felder)**.
        Angeben:
-   - Projekt „Code-Prüfer“, Repository `https://github.com/BernhardGoetz/Entwicklung-test`
+   - Projekt „Code-Prüfer“, Repository `https://github.com/BernhardGoetz/CodeChecker`
      (zugleich Projektseite), Lizenz MIT.
    - Kurzbeschreibung: Desktop-App für Studierende, prüft Programmieraufgaben lokal in
      Containern; Windows-Installer (NSIS) aus GitHub Actions.
@@ -394,9 +394,9 @@ Branch `qas` existiert (aus `main`).
 - [ ] **PR `qas` → `main` mergen** („Create a merge commit“), Branch `qas` dabei **nicht**
       löschen. Danach veröffentlicht `release-main.yml` den Entwurf als „latest“ (von
       Hand ginge: Edit → „Set as the latest release“ → „Publish release“).
-- [ ] Kontrolle: `curl -sL https://github.com/bernhardgoetz/entwicklung-test/releases/latest/download/latest.json`
+- [ ] Kontrolle: `curl -sL https://github.com/bernhardgoetz/codechecker/releases/latest/download/latest.json`
       zeigt die neue Version.
-- [ ] Optional: `gh attestation verify <Datei> --repo bernhardgoetz/entwicklung-test`.
+- [ ] Optional: `gh attestation verify <Datei> --repo bernhardgoetz/codechecker`.
 
 Diese erste Version mit Updater muss jeder einmal von Hand installieren.
 
