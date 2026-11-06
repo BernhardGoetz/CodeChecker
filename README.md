@@ -240,7 +240,7 @@ Jede Prüfung startet einen frischen Container, der danach immer gelöscht wird:
   Versions-Tag `:<version>` der Images setzt erst die Abnahme, und zwar auf den getesteten
   Digest. Die App prüft eingebettete Archive und Downloads gegen
   `image-digests.json`; zum Release gehören `SHA256SUMS.txt` und eine
-  Build-Provenance-Attestierung (`gh attestation verify <Datei> --repo BernhardGoetz/Entwicklung-test`).
+  Build-Provenance-Attestierung (`gh attestation verify <Datei> --repo BernhardGoetz/CodeChecker`).
 
 ### Datenschutz und Netzwerkzugriffe
 

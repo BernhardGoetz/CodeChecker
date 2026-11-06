@@ -10,7 +10,7 @@
       "allow": [
         { "url": "https://www.docker.com/products/docker-desktop/" },
         { "url": "https://podman.io/" },
-        { "url": "https://github.com/bernhardgoetz/entwicklung-test/releases" }
+        { "url": "https://github.com/bernhardgoetz/codechecker/releases" }
       ]
     }
   ]

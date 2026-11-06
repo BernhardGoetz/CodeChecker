@@ -157,7 +157,7 @@ Vorgehen:
 
 Auf <https://signpath.org/> → „Apply“ (Formular). **[ungeprüft: genaue Felder]** Angeben:
 
-- Projektname „Code-Prüfer“, Repository `https://github.com/BernhardGoetz/Entwicklung-test`,
+- Projektname „Code-Prüfer“, Repository `https://github.com/BernhardGoetz/CodeChecker`,
   Projektseite = Repository-URL, Lizenz MIT.
 - Kurzbeschreibung: Desktop-App für Studierende, prüft Programmieraufgaben lokal in
   Containern; Windows-Installer (NSIS) aus GitHub Actions.

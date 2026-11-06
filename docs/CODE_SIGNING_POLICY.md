@@ -1,6 +1,6 @@
 # Code signing policy
 
-Project: **Code-Prüfer** – <https://github.com/BernhardGoetz/Entwicklung-test>
+Project: **Code-Prüfer** – <https://github.com/BernhardGoetz/CodeChecker>
 License: [MIT](../LICENSE)
 
 Free code signing provided by [SignPath.io](https://about.signpath.io/), certificate by
@@ -85,7 +85,7 @@ The only network connections the application makes are:
 - **Update check (installed versions only, can be turned off):** at most once a day
   (default; weekly or never in the settings) and when the user clicks "Jetzt nach Updates
   suchen", the app downloads
-  `https://github.com/bernhardgoetz/entwicklung-test/releases/latest/download/latest.json`
+  `https://github.com/bernhardgoetz/codechecker/releases/latest/download/latest.json`
   over HTTPS, and on "Jetzt aktualisieren" the installer it names from the same GitHub
   release. No user data is sent (GitHub sees the IP address and a generic user agent);
   every update is verified against the project's update signing key before it is

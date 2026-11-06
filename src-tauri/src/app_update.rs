@@ -30,10 +30,10 @@ use tauri_plugin_updater::{Error as UpdaterError, Update, UpdaterExt};
 /// `latest` = the newest published release; GitHub never resolves it to a
 /// draft or pre-release (QAS), see docs/UPDATER.md.
 pub const ENDPOINT: &str =
-    "https://github.com/bernhardgoetz/entwicklung-test/releases/latest/download/latest.json";
+    "https://github.com/bernhardgoetz/codechecker/releases/latest/download/latest.json";
 /// Shown to the portable version (no self-update). Synced with the opener
 /// capability by a test in lib.rs.
-pub const RELEASES_URL: &str = "https://github.com/bernhardgoetz/entwicklung-test/releases";
+pub const RELEASES_URL: &str = "https://github.com/bernhardgoetz/codechecker/releases";
 /// Debug builds only: alternative endpoint for local tests (http allowed).
 pub const ENDPOINT_ENV: &str = "CODE_PRUEFER_UPDATE_ENDPOINT";
 pub const CONFIG_FILE: &str = "updater.json";
