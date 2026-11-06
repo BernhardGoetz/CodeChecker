@@ -24,8 +24,9 @@ Code-Prüfer is a free desktop application for Windows and macOS that checks pro
 5. [So funktioniert das Programm](#5-so-funktioniert-das-programm)
 6. [Bedienung Schritt für Schritt](#6-bedienung-schritt-für-schritt)
 7. [Häufige Probleme und Lösungen](#7-häufige-probleme-und-lösungen)
-8. [Datenschutz in Kürze](#8-datenschutz-in-kürze)
-9. [Weiterentwickeln und Lizenz](#9-weiterentwickeln-und-lizenz)
+8. [Bekannte Einschränkungen und Pläne](#8-bekannte-einschränkungen-und-pläne)
+9. [Datenschutz in Kürze](#9-datenschutz-in-kürze)
+10. [Weiterentwickeln und Lizenz](#10-weiterentwickeln-und-lizenz)
 
 Außerdem: [About (English summary)](#about-english-summary) · [Code signing policy](#code-signing-policy)
 
@@ -400,7 +401,24 @@ Der Code-Prüfer speichert Code, Aufgaben und Testfälle nicht. Kopiere deinen C
 
 ---
 
-## 8. Datenschutz in Kürze
+## 8. Bekannte Einschränkungen und Pläne
+
+- Nur **Python** und **Java**. Die Prüf-Umgebungen enthalten Python 3.15 bzw. Java 24 (Eclipse Temurin), siehe `images/python/Dockerfile` und `images/java/Dockerfile`. Java-Code muss eine Klasse `Main` enthalten (Datei `Main.java`).
+- Aufgaben und Testfälle werden nicht gespeichert (siehe Abschnitt 5, „Was wird gespeichert?“).
+- Verglichen wird nur die Standardausgabe (Zeilen, Wörter oder Zahlen mit Toleranz, optional gegen eine Ausgabevorlage).
+- Ausgabevorlagen erkennt nur die KI; von Hand lässt sich keine Vorlage anlegen. Die Vorlagenprüfung gilt für alle Testfälle, auch für Randfälle mit anderer Ausgabe – dann „Vorlage nicht verwenden“.
+- Der Variationstest braucht eine Musterlösung der KI und ersetzt vorgegebene Werte nur in einfachen Zuweisungen (`x = 15`, `int x = 15;`, `this.x = 15;`, `self.x = 15`), nicht in Formeln, Arrays, Methodenaufrufen oder Mehrfachzuweisungen wie `a, b = 15, 10`. Er kann einen Fehler übersehen und irrt, wenn die Musterlösung falsch ist.
+- Die Programme sind noch nicht signiert: Windows (SmartScreen) und macOS (Gatekeeper) warnen beim ersten Start. Die Windows-Signatur über die SignPath Foundation wird beantragt (siehe [Code signing policy](#code-signing-policy)); macOS-Signatur und Notarisierung fehlen noch.
+- Die portable Windows-Version aktualisiert sich nicht selbst.
+- Der Installer ist groß, weil er die Prüf-Umgebungen enthält (Windows-Installer von Version 1.0.1: rund 200 MB).
+- Es wird eine Container-Engine (Docker Desktop oder Podman) gebraucht; der Windows-Installer kann sie über *winget* nachinstallieren.
+- Texterkennung gibt es nur unter Windows und macOS.
+
+**Geplant für spätere Versionen:** weitere Programmiersprachen (C/C++/C#/JavaScript), ein signierter Aufgabenkatalog und die macOS-Signatur.
+
+---
+
+## 9. Datenschutz in Kürze
 
 - Dein **Code, deine Aufgaben und Testfälle verlassen deinen Rechner nie.**
 - Es gibt **keine Benutzerkonten, keine Telemetrie** (Nutzungsdaten-Sammlung) und **keine Absturzberichte**.
@@ -410,7 +428,7 @@ Der Code-Prüfer speichert Code, Aufgaben und Testfälle nicht. Kopiere deinen C
 
 ---
 
-## 9. Weiterentwickeln und Lizenz
+## 10. Weiterentwickeln und Lizenz
 
 Wenn du am Code-Prüfer mitarbeiten willst (Fehler beheben, neue Programmiersprache oder neues KI-Modell ergänzen, das Programm selbst bauen), findest du alles Nötige in **[`CONTRIBUTING.md`](CONTRIBUTING.md)**.
 
@@ -442,4 +460,4 @@ Gleichzeitig in docs/CODE_SIGNING_POLICY.md den Status von "beantragt" auf "gene
 | Reviewer | [Bernhard Götz](https://github.com/BernhardGoetz) |
 | Approver (gibt jeden Signaturauftrag frei) | [Bernhard Götz](https://github.com/BernhardGoetz) |
 
-**Datenschutz (Privacy policy):** Die App arbeitet lokal, hat keine Konten, keine Telemetrie und sendet weder Code noch Aufgaben oder Testfälle an Dritte. Netzwerkverbindungen gibt es nur für den optionalen Modell-Download (`huggingface.co`), das Laden der Prüf-Umgebungen (`ghcr.io`, über Docker/Podman), die abschaltbare Update-Suche (`github.com`), bei Podman das einmalige Einrichten der Podman-Maschine und auf Nachfrage im Installer die Installation einer Container-Engine über *winget*. Einzelheiten stehen in [Abschnitt 8](#8-datenschutz-in-kürze) und in der [Policy](docs/CODE_SIGNING_POLICY.md).
+**Datenschutz (Privacy policy):** Die App arbeitet lokal, hat keine Konten, keine Telemetrie und sendet weder Code noch Aufgaben oder Testfälle an Dritte. Netzwerkverbindungen gibt es nur für den optionalen Modell-Download (`huggingface.co`), das Laden der Prüf-Umgebungen (`ghcr.io`, über Docker/Podman), die abschaltbare Update-Suche (`github.com`), bei Podman das einmalige Einrichten der Podman-Maschine und auf Nachfrage im Installer die Installation einer Container-Engine über *winget*. Einzelheiten stehen in [Abschnitt 9](#9-datenschutz-in-kürze) und in der [Policy](docs/CODE_SIGNING_POLICY.md).
