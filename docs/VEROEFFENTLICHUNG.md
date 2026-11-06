@@ -175,8 +175,7 @@ variable“.
 | Env `qas` | `SIGNPATH_PROJECT_SLUG` | Variable | Projekt-Slug, z. B. `code-pruefer` | nach 1f |
 | Env `qas` | `SIGNPATH_SIGNING_POLICY_SLUG` | Variable | `test-signing` | nach 1f |
 | Env `qas` | `SIGNPATH_ARTIFACT_CONFIGURATION_SLUG` | Variable | nur wenn die Artefaktkonfiguration nicht Default ist | optional |
-| Env `qas` | `SIGNPATH_SIGN_UPSTREAM` | Variable | `true`, nur nach schriftlicher Zusage der Foundation | optional |
-| Env `release` | dieselben fünf/sechs `SIGNPATH_*` | wie oben | wie oben, aber `SIGNPATH_SIGNING_POLICY_SLUG` = `release-signing` | nach 1f |
+| Env `release` | dieselben vier/fünf `SIGNPATH_*` | wie oben | wie oben, aber `SIGNPATH_SIGNING_POLICY_SLUG` = `release-signing` | nach 1f |
 | Env `qas` | `APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY`, `APPLE_ID`, `APPLE_PASSWORD`, `APPLE_TEAM_ID` | Secrets | siehe 1g | optional |
 
 Regeln, die der Workflow erzwingt:
@@ -188,9 +187,6 @@ Regeln, die der Workflow erzwingt:
 - Der Slug der Test-Policy muss „test“ enthalten. Nur dann akzeptiert der Schritt
   „Signaturen prüfen“ das nicht vertrauenswürdige Testzertifikat. Der Release-Slug darf
   „test“ nicht enthalten.
-- `SIGNPATH_SIGN_UPSTREAM` in `qas` und `release` **gleich** setzen. Sonst unterscheiden
-  sich die Signatur-Manifeste und `promote-windows` bricht beim Vergleich mit dem
-  QAS-Installer ab.
 - `TAURI_UPDATER_PUBKEY` muss eine **Repository**-Variable sein: `build-windows` läuft
   ohne Environment und baut den Schlüssel in die App ein. Secret und Variable beim Updater
   nur zusammen setzen; nur eins von beiden bricht `updater-sign` ab.
@@ -260,10 +256,8 @@ blockiert).
    - Build-System: GitHub Actions, GitHub-hosted Runner, Workflow `release.yml`, Branch
      `qas`.
    - Signiert werden `code-pruefer.exe`, `uninstall.exe` und der Installer.
-   - **Ausdrücklich fragen:** Dürfen die unveränderte llama.cpp-Laufzeit (Release
-     `b11700`, SHA-256 gepinnt in `scripts/fetch-llama-server.sh`) und die NSIS-Plugins
-     mit dem Projektzertifikat signiert werden? Ohne schriftliche Zusage bleiben sie
-     unsigniert.
+   - Fremdbinaries (llama.cpp-Laufzeit, NSIS-Plugins) werden nicht signiert und nicht
+     erfragt.
 2. [ ] **MFA** in SignPath aktivieren, sobald die Einladung da ist (Benutzerprofil).
 3. [ ] **Projekt** anlegen bzw. das angelegte nutzen. Slug merken (z. B. `code-pruefer`)
        → `SIGNPATH_PROJECT_SLUG`. Repository-URL eintragen.
@@ -272,8 +266,7 @@ blockiert).
        dort folgen **(ungeprüft)**.
 5. [ ] **Artifact Configuration** (Project → Artifact Configurations): Inhalt von
        `.signpath/artifact-configurations/default.xml` einfügen, als Default setzen.
-       `with-upstream.xml` nur nach Zusage aus Punkt 1 (dann zusätzlich
-       `SIGNPATH_SIGN_UPSTREAM` = `true` in `qas` und `release`). Kein Default-Slug →
+       Kein Default-Slug →
        Variable `SIGNPATH_ARTIFACT_CONFIGURATION_SLUG`. SignPath liest die Dateien nicht
        aus dem Repository.
 6. [ ] **Signing Policies:**
@@ -296,7 +289,7 @@ Ob SignPath zusätzliche Policy-Dateien im Repository verlangt, ist unbekannt
 **(ungeprüft)**.
 
 Vorarbeit von mir in: `.signpath/artifact-configurations/default.xml`,
-`.signpath/artifact-configurations/with-upstream.xml`, `scripts/signpath-stage.mjs`,
+`scripts/signpath-stage.mjs`,
 `scripts/signpath-round.sh`, `docs/RELEASE_SIGNING.md`, `docs/CODE_SIGNING_POLICY.md`
 (in der README im Abschnitt „Code signing policy“ verlinkt).
 
@@ -339,7 +332,7 @@ Branch `qas` existiert (aus `main`).
     unsigniert“, „Ohne App-Updater“, „Variable TAURI_UPDATER_PUBKEY ist nicht gesetzt“.
   - Mit Test-Signing: Tabelle „Windows: Signaturen im Installer“ im Job
     `bundle-windows`, Status `UnknownError`/`NotTrusted` ist hier normal. In SignPath
-    zwei Signing Requests (drei mit `SIGNPATH_SIGN_UPSTREAM`).
+    zwei Signing Requests.
 - [ ] **Artefakte** (Abschnitt „Artifacts“ des Laufs): u. a. `model-catalog`,
       `windows-unsigned`, `qas-bundle-windows-x64`, `bundle-macos-macos-arm64`,
       `bundle-macos-macos-x64`, `updater-macos-*`, `image-*-amd64/arm64`, `digests-*`.
@@ -382,7 +375,7 @@ Branch `qas` existiert (aus `main`).
 - [ ] **Abnehmen:** „Review deployments“ → `production` → **„Approve and deploy“**.
 - [ ] **SignPath** (falls in `release` eingerichtet): In SignPath jeden Signing Request
       von `promote-windows` prüfen (Repository, Branch, Commit, Lauf) und freigeben, zwei
-      bzw. drei Stück. Jeder wartet höchstens eine Stunde.
+      Stück. Jeder wartet höchstens eine Stunde.
 - [ ] **Zusammenfassung prüfen:** `promote-images` (`:<version> -> sha256:…`),
       `promote-windows` („Vergleich mit dem QAS-Installer“, bei Release-Signing Status
       `Valid`), `updater-sign` (Signaturen), `release` (`latest.json`).
@@ -436,7 +429,6 @@ Diese erste Version mit Updater muss jeder einmal von Hand installieren.
 | `… Signaturfehler` im Schritt „Signaturen prüfen“ | Release-Policy liefert keine gültige Signatur, oder Test-Slug enthält kein „test“, oder eine unbekannte exe/dll ist unsigniert | Policy und Slug prüfen; neue Dateien in `scripts/signpath-stage.mjs` und der Artefaktkonfiguration ergänzen. |
 | Zeitüberschreitung bei „Runde …: bei SignPath signieren“ | Request nicht innerhalb von 3600 s freigegeben | In SignPath freigeben, „Re-run failed jobs“. |
 | `Build artifact … cannot be signed because of build system validation errors` (aus `RELEASE_SIGNING.md`) | Trusted Build System fehlt, Ref des PR-Laufs nicht erlaubt (siehe 1f, Punkt 6), Repository-URL falsch | SignPath-Projekt/Policy korrigieren. |
-| `Release-Installer weicht inhaltlich vom QAS-Installer ab` / `Signatur-Manifeste (app/llama) unterscheiden sich` | z. B. `SIGNPATH_SIGN_UPSTREAM` in `qas` und `release` verschieden | Gleich setzen, neuer QAS-Lauf. |
 | `Nach der letzten Runde ist noch … unsigniert.` | Uninstaller nicht reproduzierbar oder neue Datei | Log der Runde ansehen (`RELEASE_SIGNING.md`, „Fehlerbilder“). |
 | `Updater nur teilweise eingerichtet: …` | Nur Secret oder nur Variable gesetzt | Beide setzen (1e). |
 | Warnung `Updater nicht eingerichtet …` | Weder Secret noch Variable | Gewollt nur ohne Updater; sonst 1e. |
@@ -466,7 +458,6 @@ Diese erste Version mit Updater muss jeder einmal von Hand installieren.
 | `.github/workflows/ci.yml` | CI auf `main`, `qas` und PRs (Build, Tests, Clippy, Docker-Tests) |
 | `.github/workflows/images.yml` | Runner-Images `:edge`/`:sha-…` bei Änderungen unter `images/` |
 | `.signpath/artifact-configurations/default.xml` | SignPath-Artefaktkonfiguration (nur eigene Dateien) |
-| `.signpath/artifact-configurations/with-upstream.xml` | dito, mit llama.cpp und NSIS-Plugins (nur nach Zusage) |
 | `scripts/check-version-unreleased.sh` | prüft, ob `v<version>` noch frei ist |
 | `scripts/pr-head-check.sh` | PR offen, Basis `qas`, kein Fork, Head = getesteter Commit (optional aktuell mit `qas`) |
 | `scripts/release-stage.sh` | Logik von `release-qas.yml` und `release-main.yml` |
@@ -503,8 +494,5 @@ Diese erste Version mit Updater muss jeder einmal von Hand installieren.
 - `SIGNPATH_ARTIFACT_CONFIGURATION_SLUG` wird an SignPath übergeben, zählt aber nicht zu
   den vier Einträgen, die der Workflow auf Vollständigkeit prüft. Ein Tippfehler darin
   fällt erst bei SignPath auf.
-- Die Docs nennen `SIGNPATH_SIGN_UPSTREAM` je Environment, sagen aber nicht, dass der Wert
-  in `qas` und `release` gleich sein muss. Der Vergleichsschritt in `promote-windows`
-  verlangt das.
 - Die Apple-Secrets prüft der Workflow nur über `APPLE_CERTIFICATE`; eine teilweise
   Apple-Einrichtung bricht nicht mit eigener Meldung ab (anders als SignPath und Updater).

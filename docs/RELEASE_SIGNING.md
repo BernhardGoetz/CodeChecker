@@ -20,42 +20,29 @@ Einrichten gegenprüfen.
 | `Code-Pruefer_<version>_x64-setup.exe` (Release-Asset; lokal gebaut `Code-Prüfer_…`) | NSIS-Installer, im Workflow gebaut | SignPath |
 | `code-pruefer.exe` | die App, im Workflow gebaut | SignPath |
 | `uninstall.exe` | von makensis aus `src-tauri/windows/installer.nsi` erzeugt | SignPath |
-| `llama/llama-server.exe`, `llama/*.dll` (ggml, llama, mtmd, libomp) | unverändert aus dem llama.cpp-Release | **nur mit Erlaubnis** (s. u.) |
-| NSIS-Plugins (`System.dll`, `nsDialogs.dll`, `nsExec.dll`, `StartMenu.dll`, `NSISdl.dll`, `nsis_tauri_utils.dll`), zur Laufzeit in `$PLUGINSDIR` entpackt | NSIS bzw. Tauri | **nur mit Erlaubnis** (s. u.) |
+| `llama/llama-server.exe`, `llama/*.dll` (ggml, llama, mtmd, libomp) | unverändert aus dem llama.cpp-Release | nicht signiert (bewusst) |
+| NSIS-Plugins (`System.dll`, `nsDialogs.dll`, `nsExec.dll`, `StartMenu.dll`, `NSISdl.dll`, `nsis_tauri_utils.dll`), zur Laufzeit in `$PLUGINSDIR` entpackt | NSIS bzw. Tauri | nicht signiert (bewusst) |
 | `llama/msvcp140.dll`, `vcruntime140*.dll` | Microsoft, bereits signiert | bleibt Microsoft-signiert |
 
 `WebView2Loader.dll` gibt es im MSVC-Build nicht (statisch gelinkt). **[geprüft]**
 
 ### Fremdbinaries (llama.cpp, NSIS-Plugins)
 
-Die Bedingungen der SignPath Foundation (<https://signpath.org/terms>) erlauben laut
-Suchergebnis-Zusammenfassung nur das Signieren von Software, die das Projekt **aus
-eigenem Quellcode** baut; unsignierte Binaries anderer OSS-Projekte dürfen in signierten
-Paketen (z. B. Installern) enthalten sein, signierte Bibliotheken soll man beim
-Upstream-Projekt erbitten. **[ungeprüft – Wortlaut selbst lesen]**
+Fremdbinaries werden nicht signiert. Die Bedingungen der SignPath Foundation
+(<https://signpath.org/terms>, Abschnitt „Sign your own binaries only“) sagen: „The team
+must only sign software artifacts built from their own source code.“ Unsignierte
+Binaries anderer OSS-Projekte (z. B. DLL-Dateien) dürfen laut demselben Abschnitt in
+signierten Paketen wie Installern enthalten sein. **[Wortlaut am 2026-11-06 auf
+signpath.org/terms nachgelesen]**
 
-Folge: Standardmäßig signiert der Workflow nur die drei eigenen Dateien. Die
-llama.cpp-Laufzeit und die NSIS-Plugins bleiben unsigniert. Smart App Control prüft jede
-geladene exe/dll; unsignierte Dateien ohne Cloud-Reputation kann es blockieren. Mögliche
-Auswirkungen auf Rechnern mit SAC „Ein“:
+Folge: Der Workflow signiert nur die drei eigenen Dateien. Die llama.cpp-Laufzeit und die
+NSIS-Plugins bleiben unsigniert. Smart App Control prüft jede geladene exe/dll;
+unsignierte Dateien ohne Cloud-Reputation kann es blockieren. Mögliche Auswirkungen auf
+Rechnern mit SAC „Ein“:
 
 - Die KI-Funktionen (llama-server) starten nicht. Code-Prüfung ohne KI funktioniert.
 - Der Installer kann scheitern, wenn SAC die NSIS-Plugins in `%TEMP%` blockiert.
   **[ungeprüft]**
-
-Vorgehen:
-
-1. Im Antrag bei der SignPath Foundation konkret fragen, ob die unveränderten
-   NSIS-Plugins und die gepinnte llama.cpp-Laufzeit (Release, SHA-256 in
-   `scripts/fetch-llama-server.sh`) mit dem Projektzertifikat signiert werden dürfen.
-2. Nur bei schriftlicher Zusage: in SignPath die Artefaktkonfiguration
-   `.signpath/artifact-configurations/with-upstream.xml` verwenden und in GitHub die
-   Variable `SIGNPATH_SIGN_UPSTREAM` = `true` setzen. Dann signiert der Workflow auch diese
-   Dateien (drei Signaturaufträge statt zwei).
-3. Ohne Zusage: llama.cpp um signierte Windows-Builds bitten, oder llama.cpp selbst aus
-   dem Quellcode bauen. Laut den Bedingungen sind selbst gebaute, veränderte Fassungen von
-   Upstream-Software nur signierbar, wenn das Upstream-Projekt selbst signierte Builds
-   veröffentlicht. **[ungeprüft]**
 
 ## Ablauf im Workflow
 
@@ -76,11 +63,9 @@ Vorgehen:
      wartet auf die Signatur und lädt das signierte Ergebnis herunter.
   2. Runde 2: Wieder `tauri bundle`. Diesmal setzt das Skript die signierten Fassungen ein
      (Zuordnung über das SHA-256 der unsignierten Datei) und sammelt, was jetzt erst
-     signierbar ist: den Uninstaller, wenn er signierte Plugins enthält, und zuletzt den
+     signierbar ist: den Installer.
+  3. Es gibt zwei Signaturaufträge: (a) `code-pruefer.exe` und Uninstaller, (b) der
      Installer.
-  3. Ohne Fremdbinaries gibt es zwei Signaturaufträge: (a) `code-pruefer.exe` und
-     Uninstaller, (b) der Installer. Mit `SIGNPATH_SIGN_UPSTREAM=true` sind es drei:
-     (a) App, llama-Laufzeit und Plugins, (b) Uninstaller, (c) Installer.
   4. Danach entpackt der Workflow den Installer mit 7-Zip und prüft jede PE-Datei mit
      `Get-AuthenticodeSignature`. Der Job schlägt fehl, wenn eine eigene Datei unsigniert
      ist, wenn eine Signatur ungültig ist (bei Release-Signing) oder wenn eine unbekannte
@@ -122,15 +107,14 @@ Vorgehen:
   Ressourcen (sofern sie nicht schon gültig signiert sind, `signtool verify /pa`), die
   NSIS-Plugins aus `NSISdl.dll`, `StartMenu.dll`, `System.dll`, `nsDialogs.dll` und
   `nsis_tauri_utils.dll`, den Uninstaller und den Installer. Die Ressourcen werden also
-  entgegen älterer Doku sehr wohl angefasst. `nsExec.dll` (für winget in `hooks.nsh`)
-  übergibt Tauri nicht; das Skript nimmt es im Upstream-Modus selbst mit.
+  entgegen älterer Doku sehr wohl angefasst. Die llama-Dateien und NSIS-Plugins legt das
+  Skript nicht zum Signieren ab (Fremdbinaries, siehe oben).
   **[geprüft im Quellcode tauri-bundler 2.10.4]**
 - Dateien, die schon eine Signatur haben (Microsoft-DLLs), sammelt das Skript nie.
-- Der ganze Ablauf (beide Modi) wurde lokal simuliert: Linux-Cross-Build, `tauri bundle`
+- Der ganze Ablauf wurde lokal simuliert: Linux-Cross-Build, `tauri bundle`
   mit `scripts/signpath-stage.mjs`, osslsigncode mit Testzertifikat statt SignPath,
-  danach Prüfung mit 7-Zip. Ergebnis: Ohne Fremdbinaries sind Installer,
-  `code-pruefer.exe` und `uninstall.exe` signiert; mit Fremdbinaries zusätzlich alle
-  llama- und Plugin-DLLs. Unter Windows und mit dem echten SignPath konnte der Ablauf hier
+  danach Prüfung mit 7-Zip. Ergebnis: Installer, `code-pruefer.exe` und `uninstall.exe`
+  sind signiert. Unter Windows und mit dem echten SignPath konnte der Ablauf hier
   **nicht** laufen.
 
 ## Einrichtung – Schritt für Schritt
@@ -163,8 +147,7 @@ Auf <https://signpath.org/> → „Apply“ (Formular). **[ungeprüft: genaue Fe
   Containern; Windows-Installer (NSIS) aus GitHub Actions.
 - Link zur Code-Signing-Policy: `docs/CODE_SIGNING_POLICY.md` (Datenschutz steht dort mit).
 - Build-System: GitHub Actions (GitHub-hosted Runner), Workflow `release.yml`.
-- Was signiert wird: `code-pruefer.exe`, `uninstall.exe`, Installer. **Hier die Frage
-  nach den Fremdbinaries stellen** (llama.cpp-Laufzeit, NSIS-Plugins, siehe oben).
+- Was signiert wird: `code-pruefer.exe`, `uninstall.exe`, Installer.
 - Hinweis: Die Foundation prüft Projekte manuell. Neue oder kleine Projekte ohne
   Verbreitung werden womöglich abgelehnt oder vertröstet. **[ungeprüft]**
 
@@ -178,8 +161,7 @@ Die Foundation legt die Organisation an und lädt Bernhard ein. Dann in SignPath
    Falls SignPath dazu eine GitHub-App-Installation oder ein Token verlangt, der
    Anleitung in SignPath folgen. **[ungeprüft]**
 3. **Artefaktkonfiguration**: Inhalt von `.signpath/artifact-configurations/default.xml`
-   einfügen und als Default setzen. Die Variante `with-upstream.xml` nur nach Zusage
-   (siehe oben). SignPath liest die Datei nicht aus dem Repository, sie liegt dort nur
+   einfügen und als Default setzen. SignPath liest die Datei nicht aus dem Repository, sie liegt dort nur
    versioniert. Hat die Konfiguration nicht den Default-Slug, den Slug als
    GitHub-Variable `SIGNPATH_ARTIFACT_CONFIGURATION_SLUG` setzen.
 4. **Signing Policies**:
@@ -214,8 +196,7 @@ Settings → Environments (vollständige Tabelle in [`RELEASE_QAS.md`](RELEASE_Q
   - **Environment secret** `SIGNPATH_API_TOKEN` = API-Token aus SignPath,
   - **Environment variables**: `SIGNPATH_ORGANIZATION_ID` (Organisations-ID),
     `SIGNPATH_PROJECT_SLUG` (Projekt-Slug), `SIGNPATH_SIGNING_POLICY_SLUG` = `test-signing`,
-    optional `SIGNPATH_ARTIFACT_CONFIGURATION_SLUG` (leer = Default-Konfiguration) und
-    `SIGNPATH_SIGN_UPSTREAM` = `true` (nur nach Zusage, siehe oben).
+    optional `SIGNPATH_ARTIFACT_CONFIGURATION_SLUG` (leer = Default-Konfiguration).
 - Environment **release** (Release-Signing, Job `promote-windows` nach der Abnahme):
   dieselben Namen, aber `SIGNPATH_SIGNING_POLICY_SLUG` = `release-signing`.
 - Environment **production**: nur die Abnahme (Pflicht-Reviewer Bernhard), keine Secrets.
@@ -240,8 +221,8 @@ kann gelöscht werden.
 
 1. Das Environment `release` mit SignPath (`release-signing`) befüllen.
 2. QAS-Lauf starten, testen, abnehmen („Approve and deploy“ in `production`).
-3. Danach in SignPath **jeden** Signing Request von `promote-windows` freigeben: zwei,
-   mit Fremdbinaries drei. Jeder wartet bis zu einer Stunde, dann bricht der Job ab und
+3. Danach in SignPath **jeden** Signing Request von `promote-windows` freigeben: zwei.
+   Jeder wartet bis zu einer Stunde, dann bricht der Job ab und
    kann mit „Re-run failed jobs“ neu gestartet werden.
 4. Der Workflow verlangt jetzt gültige Signaturen (`Valid`). Danach das Entwurfs-Release
    prüfen und veröffentlichen.
@@ -281,6 +262,6 @@ kann gelöscht werden.
 | „SignPath ist nur teilweise eingerichtet“ | Secret bzw. eine der drei Variablen fehlt im Environment `qas` bzw. `release`. |
 | „Build artifact … cannot be signed because of build system validation errors“ | Origin Verification: Trusted Build System nicht verknüpft, Ref nicht in der Policy erlaubt, oder das Repository passt nicht zur Projekt-URL. |
 | Zeitüberschreitung beim Warten | Signing Request in SignPath nicht (rechtzeitig) freigegeben; Job neu starten. |
-| „SignPath lieferte andere Dateien zurück“ / „kam ohne Signatur zurück“ | Die Artefaktkonfiguration passt nicht zu den gesammelten Dateinamen (z. B. Fremdbinaries gesammelt, aber `default.xml` aktiv). |
+| „SignPath lieferte andere Dateien zurück“ / „kam ohne Signatur zurück“ | Die Artefaktkonfiguration passt nicht zu den gesammelten Dateinamen. |
 | „Nach der letzten Runde ist noch … unsigniert“ | Der Uninstaller war zwischen zwei Läufen nicht bitgleich (NSIS-Version gewechselt?) oder eine neue Datei ist hinzugekommen. Log der Runde ansehen. |
 | „unbekannte unsignierte Datei“ | Neue exe/dll in den Ressourcen; Zuordnung in `scripts/signpath-stage.mjs` und Artefaktkonfiguration ergänzen. |

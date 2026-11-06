@@ -143,15 +143,14 @@ weit er war:
 3. **promote-windows:** Nimmt die unsignierten Programmdateien aus `build-windows`. Ihre
    `SHA256SUMS.txt` muss dasselbe SHA-256 haben wie im QAS-Lauf, sonst Abbruch. Dann
    bündelt er sie mit der **Release-Signing**-Policy aus dem Environment `release` neu.
-   Neu gebündelt wird nur, weil die Signatur es erfordert: Uninstaller und Installer
-   betten signierte Dateien ein und müssen deshalb neu erzeugt werden.
+   Neu gebündelt wird nur, weil die Signatur es erfordert: Der Installer bettet die
+   signierten Dateien ein und muss deshalb neu erzeugt werden.
    - **Unterschied zum getesteten QAS-Installer: nur die Signaturen.** Neu signiert sind
-     `code-pruefer.exe` und `uninstall.exe` (und mit `SIGNPATH_SIGN_UPSTREAM` die
-     Fremdbinaries), außerdem ist der Installer selbst neu gebaut und signiert. Der
-     Workflow entpackt beide Installer und vergleicht sie. Die Dateiliste muss gleich
-     sein, jede Datei muss bitgleich sein, außer signierten exe/dll. Bei denen müssen die
-     unsignierten Ausgangsdateien (SHA-256 im Signatur-Manifest) gleich sein. Die
-     Installer-Datei selbst ist nicht bitgleich (neu gepackt, andere Signaturen). Die
+     `code-pruefer.exe` und `uninstall.exe`, außerdem ist der Installer selbst neu
+     gebaut und signiert. Der Workflow entpackt beide Installer und vergleicht sie. Die
+     Dateiliste muss gleich sein, jede Datei muss bitgleich sein, außer signierten
+     exe/dll. Bei denen müssen die unsignierten Ausgangsdateien (SHA-256 im
+     Signatur-Manifest) gleich sein. Die Installer-Datei selbst ist nicht bitgleich (neu gepackt, andere Signaturen). Die
      Liste der neu signierten Dateien steht in der Job-Zusammenfassung.
    - Ist SignPath weder in `qas` noch in `release` eingerichtet, wird der QAS-Installer
      **unverändert** übernommen.
@@ -244,7 +243,7 @@ Settings → Environments:
 
 | Environment | Pflicht-Reviewer | Deployment branches and tags | Secrets / Variablen |
 |---|---|---|---|
-| `qas` | keine | siehe unten **(ungeprüft)** | SignPath **Test-Signing** (`SIGNPATH_API_TOKEN`; `SIGNPATH_ORGANIZATION_ID`, `SIGNPATH_PROJECT_SLUG`, `SIGNPATH_SIGNING_POLICY_SLUG` = `test-signing`, optional `SIGNPATH_ARTIFACT_CONFIGURATION_SLUG`, `SIGNPATH_SIGN_UPSTREAM`), Apple-Secrets (`APPLE_CERTIFICATE`, …) |
+| `qas` | keine | siehe unten **(ungeprüft)** | SignPath **Test-Signing** (`SIGNPATH_API_TOKEN`; `SIGNPATH_ORGANIZATION_ID`, `SIGNPATH_PROJECT_SLUG`, `SIGNPATH_SIGNING_POLICY_SLUG` = `test-signing`, optional `SIGNPATH_ARTIFACT_CONFIGURATION_SLUG`), Apple-Secrets (`APPLE_CERTIFICATE`, …) |
 | `production` | **Bernhard** (Required reviewers); „Prevent self-review“ **aus** lassen, da Bernhard selbst pusht | siehe unten **(ungeprüft)** | keine (nur Freigabe) |
 | `release` | keine (die Freigabe erfolgt über `production`); siehe unten, falls die Branch-Regel entfallen muss | siehe unten **(ungeprüft)** | SignPath **Release-Signing** (dieselben Namen, `SIGNPATH_SIGNING_POLICY_SLUG` = `release-signing`); App-Updater: Secrets `TAURI_SIGNING_PRIVATE_KEY`, `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` ([`UPDATER.md`](UPDATER.md)) |
 
