@@ -50,5 +50,25 @@ Code-Prüfer – Hinweise zu Drittanbieter-Software / Third-party notices
    heruntergeladen oder importiert. Qwen2.5-Coder-3B wird wegen seiner
    nicht-kommerziellen Lizenz bewusst nicht angeboten.
 
+5. NSIS-Plugins (Windows-Installer; zur Laufzeit in $PLUGINSDIR entpackt)
+   System.dll, nsDialogs.dll, nsExec.dll, StartMenu.dll, NSISdl.dll aus
+   NSIS (Nullsoft Scriptable Install System), https://nsis.sourceforge.io/
+   Lizenz: zlib/libpng License
+   nsis_tauri_utils.dll aus https://github.com/tauri-apps/nsis-tauri-utils
+   (vom Tauri-Bundler mitgeliefert). Lizenz: siehe dortiges Repository.
+   Die Plugins werden unverändert übernommen und nicht neu signiert.
+
+6. Runner-Images (im Installer als Archive "images/*.tar.gz")
+   Die Images bauen auf offiziellen Docker-Basis-Images auf
+   (images/python/Dockerfile, images/java/Dockerfile, per Digest gepinnt):
+   - python (Docker Official Image, Debian bookworm "slim"): Python steht
+     unter der Python Software Foundation License Version 2
+     (https://docs.python.org/3/license.html).
+   - eclipse-temurin (Docker Official Image, Ubuntu "noble"): OpenJDK
+     steht unter der GNU GPL v2 with Classpath Exception
+     (https://adoptium.net/).
+   Wie alle Container-Images enthalten sie weitere Software der
+   Basis-Distribution unter deren eigenen Lizenzen.
+
 Die Lizenzen der Rust- und npm-Abhängigkeiten der Anwendung selbst sind in
 Cargo.lock bzw. package-lock.json aufgeführt.
