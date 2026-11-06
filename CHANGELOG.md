@@ -7,6 +7,31 @@ Format nach [Keep a Changelog](https://keepachangelog.com/de/1.1.0/), Versionen 
 
 ## [Unveröffentlicht]
 
+## [1.0.3] - 2026-11-06
+
+### Hinzugefügt
+
+- Neue Einsteiger-Anleitung (README) mit Installation, Bedienung und Fehlerbehebung,
+  einer kurzen englischen Zusammenfassung sowie `CONTRIBUTING.md` für alle, die den
+  Code-Prüfer weiterentwickeln.
+- Abschnitt „Code signing policy“ in der README; die Release-Notizen verlinken die
+  Policy und beschreiben kurz, was der Code-Prüfer tut.
+- `SECURITY.md`: Sicherheitslücken vertraulich über GitHub melden.
+- `THIRD_PARTY_NOTICES.txt` nennt zusätzlich die NSIS-Plugins und die Basis-Images der
+  Runner.
+
+### Geändert
+
+- Die Code signing policy (`docs/CODE_SIGNING_POLICY.md`) ist an die Anforderungen der
+  SignPath Foundation angepasst (Rollen, Datenschutz, Status).
+- Dokumentation zur Veröffentlichung aktualisiert.
+
+### Entfernt
+
+- Die vorbereitete Signierung von Fremdbinaries (llama.cpp-Laufzeit, NSIS-Plugins) über
+  SignPath, samt Artefaktkonfiguration und Workflow-Variable. Signiert werden künftig nur
+  selbst gebaute Windows-Dateien. Für Anwender ändert sich nichts.
+
 ## [1.0.2] - 2026-11-06
 
 ### Geändert
