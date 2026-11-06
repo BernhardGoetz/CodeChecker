@@ -7,6 +7,12 @@ Format nach [Keep a Changelog](https://keepachangelog.com/de/1.1.0/), Versionen 
 
 ## [Unveröffentlicht]
 
+## [1.0.2] - 2026-11-06
+
+### Geändert
+
+- Update-Adresse und Links auf das umbenannte Repository CodeChecker umgestellt.
+
 ## [1.0.1] - 2026-11-04
 
 ### Hinzugefügt
@@ -77,5 +83,6 @@ Erste stabile Version.
   und Notarisierung sind noch nicht eingerichtet); SmartScreen und Gatekeeper warnen beim
   ersten Start.
 
-[Unveröffentlicht]: https://github.com/BernhardGoetz/Entwicklung-test/compare/v1.0.0...HEAD
+[Unveröffentlicht]: https://github.com/BernhardGoetz/CodeChecker/compare/v1.0.2...HEAD
+[1.0.2]: https://github.com/BernhardGoetz/CodeChecker/compare/v1.0.1...v1.0.2
 [1.0.0]: https://github.com/BernhardGoetz/Entwicklung-test/compare/v0.1.0...v1.0.0

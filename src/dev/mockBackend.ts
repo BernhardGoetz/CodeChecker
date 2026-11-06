@@ -121,7 +121,7 @@ function updateMock(param: string) {
     availability: param === "notConfigured" ? "notConfigured" : param === "portable" ? "portable" : "available",
     interval: "daily",
     lastCheck: Date.parse("2026-10-29T08:15:00Z"),
-    releasesUrl: "https://github.com/bernhardgoetz/entwicklung-test/releases",
+    releasesUrl: "https://github.com/bernhardgoetz/codechecker/releases",
   };
   const offer = { version: "1.1.0", currentVersion: "1.0.0", notes: UPDATE_NOTES, date: "2026-10-28T12:00:00Z" };
   return async (cmd: string, a: Record<string, unknown>) => {

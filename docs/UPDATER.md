@@ -13,7 +13,7 @@ Kennzeichnung: **[geprüft]** = im Code/Quelltext nachvollzogen oder lokal getes
 | Was | Wie |
 |---|---|
 | Komponente | offizielles [`tauri-plugin-updater`](https://v2.tauri.app/plugin/updater/) 2.14.0, nur aus Rust benutzt (`src-tauri/src/app_update.rs`). Die Oberfläche bekommt **keine** Updater- oder Prozess-Rechte, sie ruft nur die eigenen Befehle `update_info`, `set_update_interval`, `check_for_update`, `install_update` auf. |
-| Quelle | fest im Code: `https://github.com/bernhardgoetz/entwicklung-test/releases/latest/download/latest.json` (nur HTTPS) |
+| Quelle | fest im Code: `https://github.com/bernhardgoetz/codechecker/releases/latest/download/latest.json` (nur HTTPS) |
 | Prüfung | Jede heruntergeladene Datei wird vor der Installation gegen den öffentlichen Schlüssel geprüft, der in die App eingebaut ist (minisign/Ed25519, Pflicht im Plugin). Zusätzlich `requireSignedVersion`: Die Signatur muss genau die Version nennen, die `latest.json` ankündigt. Eine manipulierte `latest.json` kann also keine alte, gültig signierte Datei als „neue Version“ unterschieben. **[geprüft lokal]** |
 | Zeitpunkt | 5 s nach dem Start und danach stündlich, solange die App läuft. Gefragt wird GitHub aber nur, wenn der gewählte Abstand seit der letzten erfolgreichen Suche vergangen ist: **Täglich** (Standard, 24 h), **Wöchentlich** oder **Nie**. |
 | Speicherort | `updater.json` im Konfigurationsordner der App (Windows `%APPDATA%\de.bernhardgoetz.codepruefer\`, macOS `~/Library/Application Support/de.bernhardgoetz.codepruefer/`): Abstand und Zeitpunkt der letzten erfolgreichen Suche. Kein `localStorage`. |
@@ -55,7 +55,7 @@ gesucht“ und „Jetzt nach Updates suchen“. Sonderfälle:
 - **Portable Windows-Version** (ZIP, ohne `uninstall.exe` neben `code-pruefer.exe`):
   kein Selbst-Update, nur ein Link zur Release-Seite. Die Rechte der Oberfläche
   erlauben genau diese eine zusätzliche URL
-  (`https://github.com/bernhardgoetz/entwicklung-test/releases`,
+  (`https://github.com/bernhardgoetz/codechecker/releases`,
   `capabilities/default.json`, abgeglichen per Test in `lib.rs`).
 
 ### Warum `releases/latest` keine Pre-Releases liefert
@@ -174,7 +174,7 @@ benutzt.
   (`release-main.yml`, [`RELEASE_QAS.md`](RELEASE_QAS.md)). Erst ab dann sieht die App das
   Update. Von Hand veröffentlichen geht auch („Set as the latest release“ angehakt).
 - Kontrolle nach dem Veröffentlichen:
-  `curl -sL https://github.com/bernhardgoetz/entwicklung-test/releases/latest/download/latest.json`
+  `curl -sL https://github.com/bernhardgoetz/codechecker/releases/latest/download/latest.json`
   muss die neue Version zeigen.
 
 ## Testen
@@ -217,7 +217,7 @@ App normal, sucht nicht und zeigt „Updates in dieser Version nicht verfügbar�
 
 Ohne Risiko für die echten Nutzer, auf einem **Fork**:
 
-1. Repository forken (z. B. `bernhardgoetz-test/entwicklung-test`). Im Fork in
+1. Repository forken (z. B. `bernhardgoetz-test/codechecker`). Im Fork in
    `src-tauri/src/app_update.rs` `ENDPOINT` und `RELEASES_URL` auf den Fork ändern
    (`capabilities/default.json` mit, der Test `cargo test` erinnert daran).
 2. Im Fork die Environments wie oben anlegen, mit einem **eigenen Test-Schlüssel**
