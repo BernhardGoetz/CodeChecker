@@ -9,6 +9,12 @@ Dieses Programm ist für Schülerinnen, Schüler und Studierende gedacht (und f�
 
 ---
 
+## About (English summary)
+
+Code-Prüfer is a free desktop application for Windows and macOS that checks programming exercises (Python and Java) locally against test cases: each program runs in an isolated Docker or Podman container without network access, and no code ever leaves the computer. Optional AI features use a local model (llama.cpp) to suggest test cases. The project is open source under the [MIT License](LICENSE); see the [Code signing policy](#code-signing-policy) ([`docs/CODE_SIGNING_POLICY.md`](docs/CODE_SIGNING_POLICY.md)) for what is signed, the team roles and the privacy policy.
+
+---
+
 ## Inhalt
 
 1. [Was ist der Code-Prüfer?](#1-was-ist-der-code-prüfer)
@@ -21,7 +27,7 @@ Dieses Programm ist für Schülerinnen, Schüler und Studierende gedacht (und f�
 8. [Datenschutz in Kürze](#8-datenschutz-in-kürze)
 9. [Weiterentwickeln und Lizenz](#9-weiterentwickeln-und-lizenz)
 
-Außerdem: [Code signing policy](#code-signing-policy)
+Außerdem: [About (English summary)](#about-english-summary) · [Code signing policy](#code-signing-policy)
 
 ---
 
@@ -398,7 +404,7 @@ Der Code-Prüfer speichert Code, Aufgaben und Testfälle nicht. Kopiere deinen C
 
 - Dein **Code, deine Aufgaben und Testfälle verlassen deinen Rechner nie.**
 - Es gibt **keine Benutzerkonten, keine Telemetrie** (Nutzungsdaten-Sammlung) und **keine Absturzberichte**.
-- Das Programm nutzt das Internet nur für: den einmaligen Download des KI-Modells (`huggingface.co`), das Nachladen der Prüf-Umgebungen aus dem Internet (`ghcr.io`, nur falls nötig), die Suche nach Updates (`github.com`, abschaltbar) und – nur auf Nachfrage im Installer – die Installation von Docker Desktop über *winget*.
+- Das Programm nutzt das Internet nur für: den einmaligen Download des KI-Modells (`huggingface.co`), das Nachladen der Prüf-Umgebungen aus dem Internet (`ghcr.io`, nur falls nötig), die Suche nach Updates (`github.com`, abschaltbar), bei Podman das einmalige Einrichten der Podman-Maschine (Podman lädt dabei ein Image herunter) und – nur auf Nachfrage im Installer – die Installation von Docker Desktop bzw. Podman über *winget*.
 - Docker Desktop selbst ist ein Programm eines anderen Herstellers und kann nach seinen eigenen Einstellungen Verbindungen aufbauen.
 - Die verbindliche (englische) Fassung steht im Abschnitt „Privacy policy“ der [Code signing policy](docs/CODE_SIGNING_POLICY.md).
 
@@ -410,7 +416,7 @@ Wenn du am Code-Prüfer mitarbeiten willst (Fehler beheben, neue Programmierspra
 
 **Lizenz:** [MIT-Lizenz](LICENSE), © 2026 Bernhard Götz. Du darfst das Programm frei nutzen, verändern und weitergeben. Die mitgelieferte Drittsoftware (u. a. llama.cpp) steht in [`THIRD_PARTY_NOTICES.txt`](THIRD_PARTY_NOTICES.txt).
 
-**Weitere Dokumente:** [`CHANGELOG.md`](CHANGELOG.md) (Änderungen je Version), [`docs/UPDATER.md`](docs/UPDATER.md) (Wie Updates funktionieren), [Code signing policy](#code-signing-policy) ([`docs/CODE_SIGNING_POLICY.md`](docs/CODE_SIGNING_POLICY.md)).
+**Weitere Dokumente:** [`CHANGELOG.md`](CHANGELOG.md) (Änderungen je Version), [`docs/UPDATER.md`](docs/UPDATER.md) (Wie Updates funktionieren), [Code signing policy](#code-signing-policy) ([`docs/CODE_SIGNING_POLICY.md`](docs/CODE_SIGNING_POLICY.md)), [`SECURITY.md`](SECURITY.md) (Sicherheitslücken vertraulich melden).
 
 ---
 
@@ -436,4 +442,4 @@ Gleichzeitig in docs/CODE_SIGNING_POLICY.md den Status von "beantragt" auf "gene
 | Reviewer | [Bernhard Götz](https://github.com/BernhardGoetz) |
 | Approver (gibt jeden Signaturauftrag frei) | [Bernhard Götz](https://github.com/BernhardGoetz) |
 
-**Datenschutz (Privacy policy):** Die App arbeitet lokal, hat keine Konten, keine Telemetrie und sendet weder Code noch Aufgaben oder Testfälle an Dritte. Netzwerkverbindungen gibt es nur für den optionalen Modell-Download (`huggingface.co`), das Laden der Prüf-Umgebungen (`ghcr.io`, über Docker/Podman), die abschaltbare Update-Suche (`github.com`) und auf Nachfrage im Installer die Installation einer Container-Engine über *winget*. Einzelheiten stehen in [Abschnitt 8](#8-datenschutz-in-kürze) und in der [Policy](docs/CODE_SIGNING_POLICY.md).
+**Datenschutz (Privacy policy):** Die App arbeitet lokal, hat keine Konten, keine Telemetrie und sendet weder Code noch Aufgaben oder Testfälle an Dritte. Netzwerkverbindungen gibt es nur für den optionalen Modell-Download (`huggingface.co`), das Laden der Prüf-Umgebungen (`ghcr.io`, über Docker/Podman), die abschaltbare Update-Suche (`github.com`), bei Podman das einmalige Einrichten der Podman-Maschine und auf Nachfrage im Installer die Installation einer Container-Engine über *winget*. Einzelheiten stehen in [Abschnitt 8](#8-datenschutz-in-kürze) und in der [Policy](docs/CODE_SIGNING_POLICY.md).
