@@ -143,7 +143,7 @@ Vorgehen:
   Unter den Rust-Abhängigkeiten sind einige MPL-2.0 (cssparser, selectors, option-ext,
   dtoa-short; Copyleft auf Dateiebene, unverändert genutzt). Das ist verträglich.
 - Code-Signing-Policy mit Rollen, Datenschutzerklärung und Hinweis:
-  [`docs/CODE_SIGNING_POLICY.md`](CODE_SIGNING_POLICY.md), verlinkt aus der README (die
+  [`docs/CODE_SIGNING_POLICY.md`](CODE_SIGNING_POLICY.md), verlinkt aus der README, Abschnitt „Code signing policy“ (die
   Projektseite ist das GitHub-Repository).
 - Das Repository muss **öffentlich** sein.
 

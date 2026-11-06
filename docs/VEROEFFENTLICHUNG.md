@@ -98,7 +98,7 @@ ersten Lauf automatisch **ohne** Schutzregeln an (siehe Abschnitt 5).
       Image-Download und „Images aktualisieren“ in der App nicht.
 
 Vorarbeit von mir in: `.github/workflows/*.yml` (`permissions: {}` auf Workflow-Ebene,
-Rechte je Job), README-Abschnitt „Nötige GitHub-Einstellungen“.
+Rechte je Job), `CONTRIBUTING.md` Abschnitt 10 („Einmalige GitHub-Einstellungen“).
 
 ### b. Rulesets für Branch `qas` und Tags `v*`
 
@@ -136,7 +136,8 @@ PR-Ablaufs“).
       Actions“ in die Bypass-Liste **(ungeprüft: ob „GitHub Actions“ dort auswählbar
       ist)**.
 
-Vorarbeit von mir in: `docs/RELEASE_QAS.md` („Nötige GitHub-Einstellungen“), README.
+Vorarbeit von mir in: `docs/RELEASE_QAS.md` („Nötige GitHub-Einstellungen“), `CONTRIBUTING.md` Abschnitt 10
+(„Einmalige GitHub-Einstellungen“).
 
 ### c. Environments, Secrets und Variablen
 
@@ -297,7 +298,7 @@ Ob SignPath zusätzliche Policy-Dateien im Repository verlangt, ist unbekannt
 Vorarbeit von mir in: `.signpath/artifact-configurations/default.xml`,
 `.signpath/artifact-configurations/with-upstream.xml`, `scripts/signpath-stage.mjs`,
 `scripts/signpath-round.sh`, `docs/RELEASE_SIGNING.md`, `docs/CODE_SIGNING_POLICY.md`
-(in der README verlinkt).
+(in der README im Abschnitt „Code signing policy“ verlinkt).
 
 ### g. Optional: macOS signieren und notarisieren
 

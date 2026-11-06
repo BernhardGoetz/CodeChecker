@@ -1,944 +1,439 @@
 # Code-Prüfer
 
-> Veröffentlichung einrichten (Schritt für Schritt): [`docs/VEROEFFENTLICHUNG.md`](docs/VEROEFFENTLICHUNG.md)
+**Programmieraufgaben automatisch und sicher auf dem eigenen Computer prüfen.**
 
-Desktop-App (Windows und macOS) für Lehrkräfte und Studierende: Programmieraufgaben
-**lokal** gegen Testfälle prüfen. Programme lesen von der Standardeingabe (stdin) und
-schreiben auf die Standardausgabe (stdout).
+Dieses Programm ist für Schülerinnen, Schüler und Studierende gedacht (und für Lehrkräfte). Du schreibst ein kleines Programm in **Python** oder **Java**, der Code-Prüfer testet es – und sagt dir, ob es richtig arbeitet.
 
-Typischer Ablauf:
+> Du willst das Programm nur **benutzen**? Dann bist du hier richtig.
+> Du willst es **weiterentwickeln**? Dann lies [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
-1. **Aufgabe** (Tab „Aufgabe“): Aufgabenstellung einfügen oder als Bild, PDF bzw.
-   Word-Datei hochladen, den erkannten Text prüfen und „Text geprüft und korrigiert“
-   anhaken (siehe „Aufgabenblatt hochladen“).
-2. **Testfälle** (Tab „Testfälle“): von Hand anlegen – Eingabe (stdin) und erwartete
-   Ausgabe (stdout) – oder mit „Testfälle mit KI erzeugen“ vom lokalen KI-Modell
-   vorschlagen lassen (siehe „KI und Texterkennung“).
-3. **Code**: im Editor schreiben oder eine Quelldatei hochladen (`.py` / `.java`) und die
-   Sprache wählen (**Python 3.12** oder **Java 21**).
-4. **Prüfen** klicken. Das Ergebnis erscheint im Tab „Ergebnis“. Ist der Schalter
-   „Auf zufällig richtige Ergebnisse prüfen (Variationstest)“ an, prüft die App danach
-   zusätzlich, ob der Code nur für die Werte der Aufgabe stimmt (siehe „Variationstest“).
+---
 
-Pro Testfall zeigt die App einen Status (siehe „Ergebnisse verstehen“), einen Zeilen-Diff
-(erwartet vs. tatsächlich), stdout, stderr sowie Kompilierfehler.
+## Inhalt
 
-Der Code wird ausschließlich auf dem eigenen Rechner in einem abgeschotteten
-Docker-Container ausgeführt – es gibt keinen zentralen Server.
+1. [Was ist der Code-Prüfer?](#1-was-ist-der-code-prüfer)
+2. [Was du brauchst (Systemvoraussetzungen)](#2-was-du-brauchst-systemvoraussetzungen)
+3. [Installation Schritt für Schritt](#3-installation-schritt-für-schritt)
+4. [Erster Start](#4-erster-start)
+5. [So funktioniert das Programm](#5-so-funktioniert-das-programm)
+6. [Bedienung Schritt für Schritt](#6-bedienung-schritt-für-schritt)
+7. [Häufige Probleme und Lösungen](#7-häufige-probleme-und-lösungen)
+8. [Datenschutz in Kürze](#8-datenschutz-in-kürze)
+9. [Weiterentwickeln und Lizenz](#9-weiterentwickeln-und-lizenz)
 
-## Voraussetzungen
+Außerdem: [Code signing policy](#code-signing-policy)
 
-Eine Docker-kompatible Container-Engine wird benötigt:
+---
 
-- [Docker Desktop](https://www.docker.com/products/docker-desktop/) – kostenlos für
-  private Nutzung/Bildung – bitte Lizenzbedingungen selbst prüfen.
-- oder [Podman](https://podman.io/) (Open Source). Unter macOS/Windows läuft Podman in
-  einer „Podman-Maschine“ (unter Windows auf Basis von WSL2).
+## 1. Was ist der Code-Prüfer?
 
-### Windows-Installer
+Stell dir vor, du bekommst im Unterricht diese Aufgabe: *„Lies eine Zahl ein und gib das Doppelte aus.“* Du schreibst ein Programm. Aber stimmt es auch? Normalerweise muss jemand es von Hand ausprobieren.
 
-Der Installer (`Code-Pruefer_<version>_x64-setup.exe` im Release, lokal gebaut
-`Code-Prüfer_<version>_x64-setup.exe`) ist deutschsprachig und fragt auf
-der Seite **„Container-Engine“**, ob Docker Desktop (Standard) oder Podman verwendet
-werden soll. Ist die gewählte Engine nicht installiert, bietet er an, sie über `winget`
-zu installieren (`Docker.DockerDesktop` bzw. `RedHat.Podman` aus der Quelle `winget`;
-Windows fragt nach Administratorrechten, ggf. ist ein Neustart nötig). `winget` wird dabei
-nur über den absoluten Pfad `%LOCALAPPDATA%\Microsoft\WindowsApps\winget.exe` gestartet,
-nie als bloßes `winget` (das Windows sonst auch neben dem Installer, z. B. im
-Download-Ordner, suchen würde). Ohne `winget` wird die offizielle Download-Seite geöffnet. Schlägt die Installation der Engine fehl, wird der Code-Prüfer
-trotzdem installiert. Bei stiller/passiver Installation (`/S`, `/P`) wird nichts gefragt
-und nichts nachinstalliert.
+Der Code-Prüfer macht das für dich:
 
-Umsetzung: `src-tauri/windows/hooks.nsh` (Installer-Hooks mit Auswahlseite und
-winget-Aufruf) und `src-tauri/windows/installer.nsi` – das unveränderte Tauri-Template
-(tauri-cli 2.12.4) mit **einer** Ergänzung vor der Installationsseite, die die Seite aus
-`hooks.nsh` einfügt. Bei einem Update der Tauri-CLI das Template neu kopieren und diese
-Stelle (`CODE_PRUEFER_CUSTOM_PAGES`) wieder einfügen.
+- Du gibst deinen **Code** ein (oder lädst eine Datei hoch).
+- Du legst **Testfälle** an. Ein Testfall besteht aus einer **Eingabe** („Das tippt jemand ein“) und der **erwarteten Ausgabe** („Das soll das Programm antworten“).
+- Du drückst auf **„Prüfen“**. Der Code-Prüfer startet dein Programm mit jeder Eingabe und vergleicht die Antwort mit dem, was erwartet wird.
+- Du siehst pro Testfall: **bestanden** oder nicht – und bei Fehlern genau, was anders war.
+
+Das Programm läuft **komplett auf deinem Computer**. Es gibt keinen Server im Internet, an den dein Code geschickt wird.
+
+Außerdem gibt es optionale **KI-Funktionen** (KI = „künstliche Intelligenz“). Die KI läuft ebenfalls nur auf deinem Computer. Sie kann zum Beispiel:
+
+- aus einem Aufgabenblatt **Testfälle vorschlagen**,
+- Fehler korrigieren, wenn ein **eingescanntes Aufgabenblatt** nicht sauber gelesen wurde.
+
+Die KI ist nur eine Hilfe. Ob dein Code richtig ist, entscheidet immer das **tatsächliche Ausführen** deines Programms – nie die KI.
+
+---
+
+## 2. Was du brauchst (Systemvoraussetzungen)
+
+| Was | Details |
+|---|---|
+| **Betriebssystem** | **Windows**: ein aktuelles Windows 10 oder 11 (64 Bit). Der Code-Prüfer nutzt zum Lesen von Bildern und PDF-Dateien Funktionen, die Windows selbst mitbringt (`Windows.Media.Ocr` für die Texterkennung und `Windows.Data.Pdf` für PDF-Seiten). Dein Windows muss diese Funktionen haben; eine bestimmte Build-Nummer ist im Programm nicht festgelegt. **macOS**: ebenfalls aktuell. Dort nutzt das Programm die Apple-Funktionen *Vision* (Texterkennung) und *PDFKit* (PDF-Seiten). Es gibt Installationsdateien für Apple Silicon und Intel-Macs. |
+| **Prozessor** | Muss **Virtualisierung** unterstützen (nur Windows, siehe Abschnitt 3). Fast alle Prozessoren der letzten Jahre können das. |
+| **Container-Programm** | **Docker Desktop** (empfohlen) oder **Podman**. Unter Windows kann der Installer des Code-Prüfers die gewählte Engine für dich installieren. |
+| **Arbeitsspeicher (RAM)** | Mindestens **8 GB**, bzw. so viel, dass dein Betriebssystem auch mit Docker/Podman im Hintergrund noch flüssig läuft. Für die **KI-Funktionen** gilt zusätzlich die Tabelle unten: Unter 12 GB RAM schlägt die App das kleine Modell vor, ab 12 GB das große. Unter 6 GB RAM warnt die App, dass es knapp wird. |
+| **Speicherplatz** | Etwa **10 GB** frei (Code-Prüfer mit den Java-/Python-Umgebungen, Docker Desktop bzw. Podman und ein KI-Modell von ca. 1,2 GB oder 4,4 GB). |
+| **Internet** | Nur zum Installieren, zum Herunterladen des KI-Modells und für Updates. Zum Prüfen von Code brauchst du **kein** Internet. |
+
+**Welches KI-Modell passt zu meinem Rechner?**
+
+| Dein Arbeitsspeicher | Vorschlag der App | Dateigröße | Dauer pro Aufgabe (Schätzung der Entwickler, nicht auf Schul-PCs gemessen) |
+|---|---|---|---|
+| unter 12 GB | Qwen2.5-Coder 1.5B (klein, schneller, etwas schwächer) | ca. 1,2 GB | ca. 1–4 Minuten |
+| ab 12 GB | Qwen2.5-Coder 7B (größer, besser, langsamer) | ca. 4,4 GB | ca. 4–10 Minuten |
+
+Hat dein Prozessor kein sogenanntes *AVX2* (eine Rechenfunktion), warnt dich die App: Die KI ist dann sehr langsam. Die KI ist freiwillig – ohne sie funktioniert das Prüfen trotzdem.
+
+---
+
+## 3. Installation Schritt für Schritt
+
+Zuerst ein paar Begriffe, damit du weißt, wozu das alles nötig ist:
+
+- **Container:** Eine Art „Mini-Computer im Computer“. Er ist von deinem echten Windows (bzw. macOS) streng abgetrennt. Der Code-Prüfer startet dein Programm *darin*. Dein Programm kann so nichts auf deinem Rechner kaputt machen und hat kein Internet.
+- **Container-Engine:** Das Programm, das solche Container verwaltet und startet. Der Code-Prüfer unterstützt zwei: **Docker Desktop** (empfohlen, die Voreinstellung) und **Podman**.
+- **Virtualisierung:** Eine Fähigkeit deines Prozessors, „virtuelle“ Computer zu betreiben. Docker und Podman brauchen sie. Sie kann im Windows oder im **BIOS/UEFI** (dem Grundprogramm deines Computers, das vor Windows startet) ausgeschaltet sein.
+- **WSL 2:** „Windows-Subsystem für Linux, Version 2“. Eine Windows-Funktion, auf der Docker Desktop und Podman unter Windows aufbauen.
+- **Admin-Rechte:** Für einige Schritte brauchst du Administratorrechte. Auf einem Schulrechner darfst du das vielleicht nicht – frag dann deine IT-Betreuung.
+
+**Gute Nachricht:** Du musst Docker oder Podman **nicht vorher selbst installieren**. Der Installer des Code-Prüfers übernimmt das auf Wunsch für dich (Windows, siehe Schritt 1).
+
+### Windows
+
+#### Schritt 1: Den Code-Prüfer installieren (mit Container-Engine)
+
+1. Öffne die Download-Seite (die sogenannte **Releases-Seite** auf GitHub): <https://github.com/BernhardGoetz/CodeChecker/releases>
+2. Nimm das **neueste Release** (ganz oben, **nicht** eines, das „QAS“ im Namen trägt – das sind Testversionen).
+3. Lade unter **„Assets“** die Windows-Datei herunter. Sie heißt so: `Code-Pruefer_<Version>_x64-setup.exe` (statt `<Version>` steht eine Zahl wie `1.0.1`).
+4. Starte die heruntergeladene Datei.
+5. **Windows-Warnung „Der Computer wurde durch Windows geschützt“ (SmartScreen):** Der Windows-Installer ist **zurzeit noch nicht signiert** (die kostenlose Signierung über die SignPath Foundation wird beantragt, siehe [Code signing policy](#code-signing-policy)). Deshalb zeigt Windows diese Meldung, weil es die Installationsdatei noch nicht kennt.
+   - Klicke auf **„Weitere Informationen“**.
+   - Dann erscheint der Knopf **„Trotzdem ausführen“**. Klicke darauf.
+   - Mach das bitte **nur**, wenn du die Datei selbst von der oben genannten GitHub-Seite geladen hast.
+6. Der Installer ist auf Deutsch. Du siehst eine Seite **„Container-Engine“**. Wähle:
+   - **Docker Desktop (empfohlen)** – die Voreinstellung. Kostenlos für private Nutzung und Bildung; lies die Lizenzbedingungen bitte selbst.
+   - **Podman** – eine Open-Source-Alternative. Die „Podman-Maschine“ wird erst beim ersten Start des Code-Prüfers eingerichtet.
+
+   Beide brauchen unter Windows WSL 2. Die Engine kann später in der App umgestellt werden.
+7. Klicke dich durch den Installer. **Ist die gewählte Engine noch nicht installiert**, fragt dich der Installer am Ende, ob er sie jetzt automatisch installieren soll (über *winget*, den Windows-Paketmanager). Antworte mit **„Ja“**:
+   - Windows fragt nach **Administratorrechten**. Die Installation kann einige Minuten dauern und einen **Neustart** erfordern. Starte den Computer neu, wenn Windows das verlangt.
+   - Steht *winget* auf deinem Rechner nicht zur Verfügung, oder schlägt die Installation fehl, kann der Installer stattdessen die offizielle Download-Seite öffnen (<https://www.docker.com/products/docker-desktop/> bzw. <https://podman.io/>). Dann installierst du die Engine von Hand. Der Code-Prüfer selbst wird trotzdem installiert.
+   - Bei „Nein“ wird nichts installiert, du kannst die Engine später selbst nachholen.
+   - Läuft der Installer „still“ oder „passiv“ (z. B. bei einem Update aus der App), wird nichts gefragt und nichts nachinstalliert.
+
+Der Code-Prüfer wird für deinen Windows-Benutzer installiert.
+
+#### Schritt 2: Was beim ersten Start passiert
+
+Starte den **Code-Prüfer**. Er sucht die gewählte Engine und **startet sie selbst** (Docker Desktop bzw. Podman), wenn sie nicht läuft; dabei wartet er bis zu zwei Minuten. Es kann beim allerersten Mal trotzdem Handarbeit nötig sein:
+
+**Docker Desktop (erster Start):**
+
+1. Falls Docker Desktop nicht von selbst aufgeht: Starte es über das Startmenü.
+2. Beim ersten Start musst du die **Lizenzbedingungen akzeptieren**.
+3. Eine **Anmeldung (Konto) kannst du überspringen** (z. B. mit „Skip“ oder „Continue without signing in“).
+4. Warte, bis in Docker Desktop **„Engine running“** (grünes Symbol) steht. Das kann beim ersten Mal eine Weile dauern.
+5. **Test, ob alles klappt** (optional): Öffne PowerShell und tippe:
+
+   ```powershell
+   docker run hello-world
+   ```
+
+   Wenn alles stimmt, erscheint unter anderem **„Hello from Docker!“**. (Dafür braucht der Rechner einmalig Internet.)
+6. Zurück im Code-Prüfer: oben muss **„Docker Desktop … läuft“** stehen (sonst „Erneut prüfen“ klicken).
+
+**Podman (erster Start):**
+
+- Gibt es noch keine „Podman-Maschine“ (eine kleine virtuelle Linux-Umgebung, in der Podman arbeitet), richtet der Code-Prüfer sie **einmalig selbst ein** (`podman machine init`) und startet sie dann (`podman machine start`). Dabei wird ein Image heruntergeladen – das braucht **Internet** und kann **einige Minuten** dauern (einige hundert MB).
+- Unter Windows braucht Podman WSL 2. Schlägt die Einrichtung fehl, nennt die App dasselbe: In einer **PowerShell als Administrator** `wsl --install` ausführen, danach neu starten.
+
+**Wenn Docker/Podman nicht starten – Fehlersuche in dieser Reihenfolge:**
+
+Typisch beim ersten Start von Docker Desktop: Es zeigt eine Meldung wie **„Virtualization support not detected“** (sinngemäß: Virtualisierung ist nicht aktiv) und blendet einen Befehl für die Eingabeaufforderung (CMD) ein.
+
+**Fix 1 – Windows-Hypervisor einschalten (zuerst versuchen):**
+
+1. Klicke auf Start, tippe **cmd**, mache einen Rechtsklick auf „Eingabeaufforderung“ und wähle **„Als Administrator ausführen“**.
+2. Tippe diesen Befehl und drücke Enter:
+
+   ```bat
+   bcdedit /set hypervisorlaunchtype auto
+   ```
+3. **Starte den Computer neu**, danach Docker Desktop erneut starten.
+
+
+**Fix 2 – Virtualisierung im BIOS/UEFI einschalten (Rückfallebene):** Der Befehl aus Fix 1 schaltet nur den Hypervisor **in Windows** ein. Ist die **Hardware-Virtualisierung im BIOS/UEFI ausgeschaltet**, hilft der Befehl allein **nicht**. Dann musst du sie dort aktivieren:
+
+*Erst prüfen, ob sie schon an ist:*
+
+1. Drücke `Strg` + `Umschalt` + `Esc` (Task-Manager; ggf. unten links „Mehr Details“).
+2. Klicke links auf **„Leistung“** und dann auf **„CPU“**.
+3. Rechts unten steht **„Virtualisierung:“**. Steht dort **„Aktiviert“**, ist die Hardware-Virtualisierung in Ordnung (dann liegt es eher an Fix 1 oder an WSL, siehe Fix 3). Steht dort **„Deaktiviert“**, mache weiter:
+
+*Im BIOS/UEFI einschalten:*
+
+1. Speichere alles; der Computer wird gleich neu gestartet.
+2. Starte **ins BIOS/UEFI**:
+   - **Weg 1 (über Windows):** *Einstellungen* → **System** → **Wiederherstellung** → bei „Erweiterter Start“ **„Jetzt neu starten“** → **Problembehandlung** → **Erweiterte Optionen** → **UEFI-Firmwareeinstellungen** → **Neu starten**.
+   - **Weg 2 (Taste beim Start):** Neu starten und beim Hersteller-Logo mehrfach eine Taste drücken, typisch `Entf`, `F2`, `F10`, `F12` oder `Esc` (steht meist kurz auf dem Startbildschirm).
+3. Suche die Virtualisierungs-Option (oft unter *Advanced*, *CPU Configuration* oder *Security*):
+   - **Intel:** „Intel Virtualization Technology“ / „Intel VT-x“ / „VT-x“
+   - **AMD:** „SVM Mode“ / „SVM“ / „AMD-V“
+4. Stelle sie auf **Enabled**, **speichern und beenden** (meist `F10`), der Computer startet neu.
+5. Prüfe im Task-Manager noch einmal: Jetzt muss **„Aktiviert“** stehen.
+
+Tipp: Jedes BIOS sieht anders aus. Suche im Internet nach *„Virtualisierung aktivieren“* plus der Modellbezeichnung deines Computers.
+
+**Fix 3 – WSL 2 einrichten oder aktualisieren:**
+
+1. PowerShell **als Administrator** öffnen (Rechtsklick auf „Windows PowerShell“ → „Als Administrator ausführen“).
+2. Ausführen:
+
+   ```powershell
+   wsl --install
+   ```
+
+   Danach **neu starten**, wenn Windows es verlangt. Falls ein Linux-Fenster (meist „Ubuntu“) nach Benutzername und Passwort fragt: eintragen und merken.
+3. Zur Sicherheit aktualisieren:
+
+   ```powershell
+   wsl --update
+   ```
+
+`wsl --install` schaltet auch die nötigen Windows-Funktionen ein, vor allem **„Virtual Machine Platform“** und das „Windows-Subsystem für Linux“. Von Hand geht das so: Start → `optionalfeatures` eintippen → diese beiden Häkchen setzen → neu starten.
+
+**Typische Fehlermeldungen** (der genaue Wortlaut kann je nach Docker-Version abweichen):
+
+| Meldung | Lösung |
+|---|---|
+| **„Virtualization support not detected“** (oder: „Hardware assisted virtualization … must be enabled in the BIOS“) | Fix 1, danach Fix 2 (BIOS/UEFI). |
+| **„WSL 2 installation is incomplete“** oder „WSL needs updating“ | Fix 3: `wsl --install` und `wsl --update`, neu starten. |
+| Docker Desktop hängt bei „Starting the Docker Engine …“ | Geduld (mehrere Minuten). Sonst: Docker Desktop beenden, Computer neu starten, Docker Desktop erneut starten, `wsl --update` ausführen. |
+| „Access denied“ / „Zugriff verweigert“ (in Docker oder im Code-Prüfer) | Dein Windows-Benutzer muss Mitglied der Gruppe **„docker-users“** sein (ein Administrator kann das unter *Computerverwaltung → Lokale Benutzer und Gruppen → Gruppen → docker-users* einstellen). Danach abmelden und neu anmelden. |
+| Die Engine lässt sich gar nicht installieren | Schulrechner sind oft gesperrt. Frag deine IT-Betreuung, ob Docker Desktop bzw. Podman erlaubt ist. |
 
 ### macOS
 
-Die DMGs (`*_aarch64.dmg` für Apple Silicon, `*_x64.dmg` für Intel) sind noch nicht
-signiert/notarisiert. Gatekeeper blockiert deshalb den ersten Start: im Finder
-Rechtsklick auf „Code-Prüfer“ → **Öffnen** → „Öffnen“ bestätigen. Alternativ im
-Terminal: `xattr -dr com.apple.quarantine "/Applications/Code-Prüfer.app"`.
+Es gibt Installationsdateien für **Apple Silicon** (`…_aarch64.dmg`) und **Intel-Macs** (`…_x64.dmg`) auf der [Releases-Seite](https://github.com/BernhardGoetz/CodeChecker/releases). Einen BIOS-Schritt gibt es auf dem Mac nicht.
 
-### Updates
+1. **Container-Engine installieren:** Hier installiert **der Code-Prüfer nichts nach** (der Engine-Auswahl-Schritt gehört zum Windows-Installer). Installiere vorher **Docker Desktop für Mac** (<https://www.docker.com/products/docker-desktop/>) oder **Podman** (<https://podman.io/>). Docker Desktop erwartet die App unter `/Applications/Docker.app`.
+2. **Code-Prüfer installieren:** DMG öffnen und „Code-Prüfer“ in den Ordner „Programme“ ziehen.
+3. **Erster Start:** Die Mac-Version ist noch **nicht signiert**; macOS blockiert den ersten Start. Im Finder mit **Rechtsklick** auf „Code-Prüfer“ → **„Öffnen“** → noch einmal **„Öffnen“** bestätigen. (Alternativ im Terminal: `xattr -dr com.apple.quarantine "/Applications/Code-Prüfer.app"`.)
+4. **Engine:** Der Code-Prüfer startet Docker Desktop bzw. Podman beim Start selbst. Docker Desktop: beim ersten Start Lizenzbedingungen akzeptieren, warten bis „Engine running“. Podman: Die „Podman-Maschine“ wird beim ersten Start einmalig eingerichtet (`podman machine init`, Internet nötig, einige Minuten); den `podman`-Befehl findet die App auch unter `/opt/podman/bin`, `/opt/homebrew/bin` und `/usr/local/bin`.
 
-Installierte Versionen (Windows-Installer, macOS) suchen beim Start und danach höchstens
-einmal täglich (einstellbar: täglich, wöchentlich, nie) nach einer neuen Version auf
-GitHub. Angeboten werden nur **veröffentlichte** Releases, nie QAS-Pre-Releases oder
-Entwürfe. Der Dialog „Update verfügbar“ zeigt Version und Versionshinweise; „Jetzt
-aktualisieren“ lädt das Update, prüft seine Signatur, installiert es (Windows: Installer
-ohne Rückfragen) und startet neu, „Später“ fragt bei der nächsten fälligen Suche wieder.
-Während einer Prüfung oder KI-Aufgabe wartet der Dialog. Einstellungen → **Updates**:
-Abstand, letzte Suche, „Jetzt nach Updates suchen“. Die portable Windows-Version
-aktualisiert sich nicht selbst (Link zur Release-Seite); Builds ohne Update-Schlüssel
-zeigen „Updates in dieser Version nicht verfügbar“. Funktionsweise, Schlüssel und
-Einrichtung: [`docs/UPDATER.md`](docs/UPDATER.md).
 
-### Engine-Auswahl und automatischer Start
+### Linux
 
-Die gewählte Engine wird so ermittelt (erste Quelle gewinnt):
+Für Linux gibt es keine fertigen Installer. Es gibt auch keine Texterkennung und keinen automatischen Start der Engine; Entwicklerinnen und Entwickler finden Hinweise in [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
-1. `engine.json` im App-Konfigurationsordner (Windows:
-   `%APPDATA%\de.bernhardgoetz.codepruefer\engine.json`, Inhalt z. B.
-   `{"engine": "podman"}`) – wird geschrieben, wenn man die Engine in der App umstellt
-   (Zahnrad oben rechts → „Einstellungen“ → „Container-Engine“);
-2. Registry `HKCU\Software\Code-Pruefer`, Wert `Engine` (`docker` | `podman`) – wird
-   vom Installer geschrieben;
-3. Standard: Docker.
+---
 
-Beim Start der App (bzw. wenn die Prüfung ergibt, dass die Engine nicht läuft) startet
-der Code-Prüfer die gewählte Engine und wartet, bis sie antwortet (alle 2 s, max. 120 s):
+## 4. Erster Start
 
-- **Docker Desktop:** `Docker Desktop.exe` wird gestartet (macOS:
-  `open -a /Applications/Docker.app`; Socket `~/.docker/run/docker.sock`).
-- **Podman:** existiert noch keine Maschine, wird einmalig `podman machine init`
-  ausgeführt (lädt ein VM-Image, kann einige Minuten dauern), danach
-  `podman machine start`. Unter Windows verbindet sich die App über die Named Pipe, die
-  `podman machine inspect` meldet (Standard: `\\.\pipe\podman-machine-default`), unter
-  macOS über den Socket der Maschine (`podman machine inspect`, Podman 5:
-  `$TMPDIR/podman/podman-machine-default-api.sock`). Der `podman`-Befehl wird auch ohne
-  PATH unter `/opt/podman/bin`, `/opt/homebrew/bin` und `/usr/local/bin` gefunden.
-- **Linux:** kein automatischer Start (Systemdienst) – bitte Docker bzw. Podman selbst
-  starten.
+Starte den **Code-Prüfer** über das Startmenü. Oben im Fenster siehst du ein kleines Statuslämpchen mit Text zur **Container-Engine** (Docker Desktop oder Podman, je nachdem, was du gewählt hast).
 
-Die Engine wird nicht mit Windows gestartet, sondern nur mit dem Code-Prüfer.
+### Die Engine wird erkannt
 
-Die App erkennt die Engine automatisch (Docker-Socket, Docker-Desktop-Socket unter
-`~/.docker/run/docker.sock`, Podman-Sockets, Named Pipes `docker_engine` und
-`podman-machine-default` unter Windows); die Endpunkte der gewählten Engine werden
-zuerst probiert. Mit der Umgebungsvariable `DOCKER_HOST` (z. B.
-`unix:///pfad/zum/podman.sock` oder `npipe:////./pipe/podman-machine-default`) lässt
-sich der Endpunkt explizit festlegen; sie hat Vorrang vor der Engine-Auswahl. Ein
-`tcp://`- oder `http://`-Endpunkt ist immer unverschlüsselt und ohne Anmeldung (die App
-unterstützt kein TLS); dafür zeigt das Hauptfenster unter der Kopfzeile eine Warnung.
+Der Code-Prüfer sucht beim Start selbst nach der gewählten Engine (Einzelheiten zum allerersten Start stehen in Abschnitt 3, Schritt 2):
 
-Klappt die Verbindung nicht, nennt die Fehlermeldung für **jeden** probierten Endpunkt
-den letzten Grund, z. B. `npipe:////./pipe/docker_engine: HTTP 500: …` (die Engine
-antwortet mit einem Fehler, bei Docker Desktop typisch für eine nicht gestartete VM),
-`Zeitüberschreitung (keine Antwort innerhalb von 10 s)`, `Endpunkt nicht vorhanden – die
-Engine läuft nicht (…)` oder `Zugriff verweigert …` (Windows: Gruppe `docker-users`).
-Dieselbe Angabe steht als „Verbindungsversuch: …“ im Hinweis „… ist installiert, aber
-nicht gestartet“ und am Ende der Meldung, wenn der automatische Start nicht hilft.
+- **„Docker Desktop … läuft“** (grünes Lämpchen): Alles gut.
+- **„Docker Desktop ist nicht gestartet“** (bzw. „Podman …“, gelb): Der Code-Prüfer versucht, die Engine **von selbst zu starten** und wartet bis zu zwei Minuten. Du kannst auch oben auf **„Docker Desktop starten“** (bzw. „Podman starten“) klicken oder sie selbst öffnen und dann **„Erneut prüfen“** drücken.
+- **„Keine Container-Engine gefunden“** (rot): Die Engine ist nicht installiert (oder der Code-Prüfer findet sie nicht). Unter der Kopfzeile erscheint ein Hinweis mit Download-Link. → Installiere Docker Desktop oder Podman (siehe [Abschnitt 3](#3-installation-schritt-für-schritt)); unter Windows geht das über den Installer des Code-Prüfers.
 
-### Runner-Images (Python, Java)
+### Die Prüf-Umgebungen für Python und Java
 
-Release-Installer enthalten die Runner-Images als komprimierte Archive
-(`images/code-pruefer-<sprache>-<arch>.tar.gz` im Ressourcenordner der App). Sobald die
-Engine läuft, lädt die App fehlende Images automatisch in die **gewählte** Engine
-(Docker und Podman verwenden dasselbe Image-Format, aber getrennte Image-Speicher) – ganz
-ohne Internet und ohne manuelles `docker build`. Fortschritt wird neben „Prüfen“ und in den
-Einstellungen angezeigt.
+Der Code-Prüfer bringt „Bauanleitungen“ für die Container (sogenannte **Images**) für Python und Java gleich im Installationspaket mit. Beim ersten Start mit laufendem Docker lädt er sie automatisch in Docker. Dafür brauchst du **kein Internet**. Der Fortschritt steht neben dem Knopf „Prüfen“. Solange das läuft, ist „Prüfen“ kurz gesperrt.
 
-Reihenfolge, wenn eine Sprache verwendet wird (`src-tauri/src/runner/images.rs`):
+### KI-Modell einrichten (freiwillig)
 
-1. nur Debug-Builds: Umgebungsvariable `CODE_PRUEFER_PYTHON_IMAGE` /
-   `CODE_PRUEFER_JAVA_IMAGE` (exklusiv: lokal vorhanden, sonst Download);
-2. das gepinnte Image `ghcr.io/bernhardgoetz/code-pruefer-<sprache>:<App-Version>` ist in
-   der Engine bereits vorhanden;
-3. Laden aus dem mitgelieferten Archiv (Engine-API `POST /images/load`, auch von Podman
-   unterstützt; das Archiv wird von der App entpackt und als Tar gestreamt). Trägt das
-   geladene Image einen anderen Namen, wird nur das Image mit der erwarteten Image-ID bzw.
-   dem passenden Namen (`code-pruefer-<sprache>`) auf die erwartete Referenz getaggt;
-4. Download von GHCR;
-5. nur Debug-Builds: lokal gebautes `code-pruefer-<sprache>:dev`;
-6. sonst eine deutsche Fehlermeldung mit Lösungsweg.
+Das brauchst du nur, wenn du die KI-Funktionen nutzen willst (Testfälle erzeugen lassen, Texterkennungsfehler korrigieren lassen). Zum Prüfen von Code ist die KI **nicht** nötig.
 
-Release-Builds (`npm run tauri build`, Installer) beachten weder die Umgebungsvariablen
-noch `:dev`-Images; sie verwenden nur die eingebetteten bzw. veröffentlichten Images.
+1. Klicke oben rechts auf das **Zahnrad** (Einstellungen) und dann bei „KI-Modell“ auf **„KI-Modell verwalten …“**. (Alternativ: im Tab „Testfälle“ auf **„KI-Modell einrichten …“** klicken.)
+2. Du siehst eine Liste mit zwei Modellen. Das für deinen Rechner passende trägt das Kennzeichen **„empfohlen“**. Oben steht, wie viel Arbeitsspeicher dein Rechner hat.
+3. Klicke beim empfohlenen Modell auf **„Herunterladen“**. Ein Fortschrittsbalken zeigt den Download. Der Download wird auf Korrektheit geprüft (Prüfsumme). Bricht er ab, kannst du ihn mit **„Download fortsetzen“** weiterführen.
+4. Wenn das Modell fertig ist, klicke auf **„Auswählen“**. Es erscheint das Kennzeichen **„ausgewählt“**.
 
-**Prüfsummen (`images/image-digests.json`):** Builds mit eingebetteten Images enthalten
-zusätzlich diese Datei (erzeugt von `scripts/export-image-archives.sh`). Sie enthält je
-Sprache und Architektur die SHA-256 des Archivs und die Image-IDs (Manifest- und
-Config-Digest), bei Release-Builds außerdem den Registry-Digest des gepushten Images. Ist
-sie vorhanden,
+Ab jetzt läuft die KI ohne Internet. Der Download kommt von `huggingface.co` (eine bekannte Plattform für KI-Modelle).
 
-- gilt ein bereits vorhandenes Image unter dem gepinnten Tag nur, wenn seine ID (bzw. sein
-  Registry-Digest) dort steht – sonst wird es aus dem Archiv ersetzt;
-- wird die SHA-256 des Archivs vor dem Laden geprüft und die Image-ID nach dem Laden; bei
-  Abweichung erscheint eine deutsche Fehlermeldung und das Image wird wieder entfernt;
-- lädt die App per `ghcr.io/…/code-pruefer-<sprache>@sha256:…` statt per Tag. Ohne
-  Registry-Digest (lokaler Build, Images nie gepusht) gibt es keinen Download, und
-  „Images aktualisieren“ meldet, dass die mitgelieferten Images weiter verwendet werden.
+**Kein Internet am Lernrechner?** Dann lade die Modelldatei (`.gguf`) auf einem anderen Rechner herunter, kopiere sie per USB-Stick und nutze in der Modellverwaltung **„Weitere Optionen (ohne Internet)“ → „Datei importieren …“**. Die App sagt dir dort genau, welche Datei sie erwartet und wo du sie findest.
 
-Fehlt die Datei (Entwicklungs- und CI-Builds ohne eingebettete Images), gilt das bisherige
-Verhalten: Vertrauen über den Tag, Download per Tag.
+---
 
-Die Architektur des Archivs richtet sich nach der Engine (`amd64` / `arm64`, ersatzweise
-nach dem Rechner: `x86_64` → `amd64`, `aarch64` → `arm64`).
+## 5. So funktioniert das Programm
 
-**„Images aktualisieren“** (Zahnrad → „Einstellungen“ → „Container-Engine“) lädt die gepinnten Images dieser
-App-Version erneut von GHCR. Schlägt das fehl (offline, Registry nicht erreichbar), bleiben
-die vorhandenen Images nutzbar.
+### Der Weg vom Code zum Ergebnis
 
-Ressourcenordner: Windows (Installer und portable Version) = Ordner der `code-pruefer.exe`,
-also `<Programmordner>\images\…`; macOS = `Code-Prüfer.app/Contents/Resources/images/`.
+```mermaid
+flowchart TD
+    A["Du schreibst Code<br/>(Python oder Java)"] --> B["Du legst Testfälle an:<br/>Eingabe + erwartete Ausgabe"]
+    B --> C["Du klickst auf 'Prüfen'"]
+    C --> D["Der Code-Prüfer startet<br/>einen frischen Container in Docker"]
+    D --> E["Code wird in den Container kopiert<br/>und ggf. übersetzt (Java) bzw. auf Syntax geprüft (Python)"]
+    E --> F["Für jeden Testfall:<br/>Programm starten, Eingabe senden,<br/>Ausgabe auffangen"]
+    F --> G["Ausgabe mit der Erwartung vergleichen<br/>(nach dem gewählten Vergleichsmodus)"]
+    G --> H["Container wird gelöscht"]
+    H --> I["Ergebnis: bestanden / falsche Ausgabe /<br/>Zeitüberschreitung / Laufzeitfehler"]
+    I -.optional.-> J["Variationstest:<br/>Läuft der Code auch mit anderen Werten richtig?"]
+```
 
-## Sicherheit der Ausführung
+### Die einzelnen Bausteine
 
-Jede Prüfung startet einen frischen Container, der danach immer gelöscht wird:
+**Code, Eingabe und Ausgabe.** Die Programme lesen ihre Eingaben von der **Standardeingabe** („stdin“, bei Python z. B. `input()`) und schreiben ihre Ergebnisse auf die **Standardausgabe** („stdout“, bei Python z. B. `print()`). Genau das testet der Code-Prüfer: Eingabe rein, Ausgabe raus, vergleichen.
 
-- kein Netzwerk, read-only Root-Dateisystem, `tmpfs` für `/work` und `/tmp` (je 64 MB)
-- 512 MB RAM ohne Swap, 1 CPU, max. 64 Prozesse, max. Dateigröße 16 MB
-- nicht-root (UID 1000), alle Capabilities entfernt, `no-new-privileges`
-- Zeitlimit pro Test: Python 5 s, Java 8 s; Kompilieren 30 s. Ein Programm, das seine
-  Ausgabe schließt, aber weiterläuft, gilt nach Ablauf des Limits als Zeitüberschreitung
-- nach jedem Test (und dem Kompilieren) werden alle übrigen Prozesse des Sandbox-Benutzers
-  beendet (`kill -9 -1`), damit nichts im Hintergrund in den nächsten Test hineinläuft
-- höchstens 50 Testfälle pro Prüfung
-- stdout/stderr werden nach 64 KB abgeschnitten (wird angezeigt)
-- übrig gebliebene Container (Label `de.code-pruefer.sandbox`, z. B. nach einem Absturz)
-  werden beim Start und vor jeder Prüfung entfernt: eigene sofort, die anderer bzw.
-  abgestürzter App-Instanzen nach 15 Minuten; beim Beenden der App ihre eigenen
+**Docker-Container als Sicherheitsraum.** Jede Prüfung bekommt einen **frischen Container**, der danach immer gelöscht wird. Darin gilt:
+- **kein Netzwerk** und das Dateisystem kann nicht verändert werden (nur ein kleiner Arbeitsbereich im Arbeitsspeicher),
+- nur 512 MB Arbeitsspeicher, 1 Prozessorkern und höchstens 64 Prozesse,
+- **Zeitlimit pro Test:** Python 5 Sekunden, Java 8 Sekunden (Kompilieren: 30 Sekunden). Eine Endlosschleife wird also abgebrochen.
+- Der Code läuft ohne besondere Rechte (kein Administrator).
 
-## Sicherheit
+So kann auch fremder oder fehlerhafter Code deinen Rechner nicht beschädigen.
 
-### Bedrohungsmodell
+**Python und Java.** Für jede Programmiersprache gibt es ein eigenes Container-Paket (Image). Bei Java muss die Hauptklasse **`Main`** heißen (die Datei wird intern als `Main.java` gespeichert), sonst gibt es einen Hinweis.
 
-- **Geprüfter Code ist nicht vertrauenswürdig** (eigener oder fremder Code, z. B. aus
-  einem Forum). Er läuft nur im Container (siehe oben): ohne Netzwerk, ohne Rechte, mit
-  Ressourcen-Limits, ohne Zugriff auf Dateien des Rechners.
-- **Die App selbst und die Container-Engine sind vertrauenswürdig.** Wer die Engine
-  steuern kann (Docker-Socket, Named Pipe, `DOCKER_HOST`), hat faktisch
-  Administratorrechte – das gilt unabhängig vom Code-Prüfer.
-- **Named Pipes unter Windows** (`docker_engine`, `podman-machine-default`) gibt es nur
-  einmal pro Rechner, für alle angemeldeten Benutzer. Ein anderer angemeldeter Benutzer
-  könnte eine solche Pipe vor der Engine anlegen und so Code und Ergebnisse sehen bzw.
-  fälschen. **Akzeptiertes Restrisiko:** Die App prüft den Prozess hinter der Pipe nicht
-  (mehr). Eine solche Prüfung (`GetNamedPipeServerProcessId`, Audit 2/I2) war kurz
-  eingebaut, wurde aber wieder entfernt: Sie war auf echtem Windows nie getestet, öffnete
-  die Pipe vor jeder Verbindung zusätzlich ohne Identifikations-Einschränkung (der
-  Pipe-Server hätte sich als der Benutzer ausgeben können) und fiel zeitlich mit dem
-  Fehlerbericht „Prüfen und KI: Container-Engine nicht erreichbar“ unter Docker Desktop
-  und Podman zusammen. Die eigentliche Verbindung (bollard/tokio) öffnet die Pipe mit
-  `SECURITY_IDENTIFICATION`, der Server kann den Benutzer also nicht imitieren. Das
-  Szenario setzt einen zweiten, gleichzeitig angemeldeten und böswilligen Benutzer auf
-  demselben Rechner voraus; der Code-Prüfer ist für Einzelplatz-Rechner gedacht.
-  Gegenmaßnahme bei geteilten Rechnern: die Engine starten, bevor sich andere Benutzer
-  anmelden.
-- **Aufgabenblätter und Modelldateien sind nicht vertrauenswürdig** (Mitschüler,
-  Lernplattform, gefälschte Mail). Dokumente (PDF, Bilder, DOCX) werden in einem eigenen,
-  begrenzten Hilfsprozess gelesen (dieselbe Exe mit verstecktem Argument; 1,5 GB
-  Arbeitsspeicher, Zeitlimit, begrenzte Ausgabe; Windows: Job-Objekt). Vorher werden
-  PDFs auf Dekompressionsbomben und sich selbst enthaltende Grafikobjekte geprüft und
-  Bilder anhand ihres Headers auf ihre Größe. Bricht der Hilfsprozess ab, meldet die App
-  „Das PDF konnte nicht sicher gelesen werden …“ und läuft weiter
-  (`src-tauri/src/docs/worker.rs`, `pdf_guard.rs`). Importierte `.gguf`-Dateien werden
-  vor dem Laden auf plausible Metadaten geprüft; Modelle ohne geprüfte Prüfsumme laufen
-  mit der eingebauten ChatML-Vorlage statt der Vorlage aus der Datei.
-- **Lokale KI-Laufzeit:** llama-server lauscht nur auf `127.0.0.1`, der zufällige
-  API-Schlüssel steht in seiner Umgebung (nicht in der Kommandozeile), und vor der ersten
-  Anfrage prüft die App per zufälligem Modellnamen (`--alias`), dass sie wirklich mit
-  ihrem eigenen Server spricht. Stürzt die App ab, beendet Windows den Server über ein
-  Job-Objekt; unter macOS/Linux beendet ihn der nächste App-Start (Pid-Datei, nur nach
-  Prüfung der Exe).
-- **Lieferkette:** Runner-Images und Installer entstehen ausschließlich im
-  Release-Workflow für Pull Requests nach `qas` (QAS-Lauf, danach manuelle Abnahme). Basis-Images
-  und GitHub-Actions sind per Digest bzw. Commit-SHA gepinnt (Updates über Dependabot,
-  7 Tage Wartezeit), Release-Jobs laufen ohne Caches und mit minimalen Token-Rechten. Den
-  Versions-Tag `:<version>` der Images setzt erst die Abnahme, und zwar auf den getesteten
-  Digest. Die App prüft eingebettete Archive und Downloads gegen
-  `image-digests.json`; zum Release gehören `SHA256SUMS.txt` und eine
-  Build-Provenance-Attestierung (`gh attestation verify <Datei> --repo BernhardGoetz/CodeChecker`).
+**Testfälle.** Du kannst bis zu **50 Testfälle** pro Prüfung anlegen, von Hand oder mit der KI. Ein Testfall besteht aus Name, Eingabe und erwarteter Ausgabe.
 
-### Datenschutz und Netzwerkzugriffe
+**Vergleichsmodi.** Wie streng soll die Ausgabe mit der Erwartung verglichen werden? Du wählst über den Testfällen bei **„Vergleich:“**:
 
-Die App hat keine Konten, keine Telemetrie, keine Absturzberichte und sendet weder Code
-noch Aufgaben, Testfälle oder andere Daten an den Autor oder an Dritte. Netzwerk nutzt sie
-nur hier (abgeglichen mit dem Code):
+| Modus | Bedeutung |
+|---|---|
+| **Zeilen (exakt)** (Standard) | Zeile für Zeile gleich. Leerzeichen am Zeilenende und leere Zeilen ganz am Ende werden ignoriert (abschaltbar). |
+| **Wörter (Leerraum egal)** | Nur die Wörter zählen. Leerzeichen, Tabs und Zeilenumbrüche sind egal. Groß-/Kleinschreibung zählt. |
+| **Zahlen mit Toleranz** | Wie „Wörter“, aber Zahlen dürfen leicht abweichen (z. B. `0.3333334` statt `0.3333333`). Die erlaubte Abweichung stellst du als „Toleranz“ ein (Voreinstellung `1e-6`, also 0,000001). Alles, was keine Zahl ist, muss exakt passen. |
 
-| Wann | Wohin | Was |
-|---|---|---|
-| „Herunterladen“ eines KI-Modells | `huggingface.co` (und CDN `*.huggingface.co`, `*.hf.co`) | nur HTTPS, gepinnte Datei, SHA-256 geprüft (`src-tauri/src/ai/models.rs`) |
-| Runner-Images fehlen bzw. „Images aktualisieren“ | `ghcr.io`, über Docker/Podman | Pull der gepinnten Images (`runner/images.rs`) |
-| Update-Suche (nur Installer-Version, abschaltbar) | `github.com` (`releases/latest/download/latest.json`, beim Update der Installer) | signaturgeprüft (`app_update.rs`, [`docs/UPDATER.md`](docs/UPDATER.md)) |
-| Podman gewählt und von der App gestartet, erstes Mal | über Podman: Download des Podman-VM-Images (`podman machine init`, Server des Podman-Projekts) | einmalig, einige hundert MB (`engine.rs`) |
-| Windows-Installer, nur auf Nachfrage | über winget: Microsoft-winget-Quelle und Download von Docker Desktop bzw. Podman beim Hersteller | nur wenn die Engine fehlt und „Ja“ gewählt wird (`windows/hooks.nsh`) |
-| Klick auf Download-/Release-Links | Browser: docker.com, podman.io, GitHub-Release-Seite | nur diese drei Adressen (Capability) |
+Zusätzlich gibt es die Option **„Zeilenumbruch am Ende verbieten“**: Dann gilt eine Ausgabe, die mit einem Zeilenumbruch endet (z. B. durch `println` oder `print()`), als nicht bestanden – egal, was erwartet wird.
 
-Alles andere bleibt lokal: die Container-Engine (Socket bzw. Named Pipe), llama-server
-auf `127.0.0.1` (startet mit `--offline`), die Container laufen **ohne Netzwerk**. Docker
-Desktop und Podman selbst können nach ihren eigenen Einstellungen Verbindungen zu ihren
-Herstellern aufbauen (z. B. Update-Prüfung); das liegt außerhalb des Code-Prüfers.
-
-### Restrisiken
-
-- Container teilen sich den Kernel der Engine-VM (WSL2 bzw. Podman-/Docker-VM); eine
-  Kernel-Lücke könnte aus der Sandbox ausbrechen (bis in die VM, nicht direkt auf
-  Windows/macOS). Gegenmaßnahme: Engine aktuell halten.
-- Installer und App sind (noch) nicht signiert; SmartScreen/Gatekeeper warnen, und die
-  Echtheit lässt sich nur über `SHA256SUMS.txt` und die Attestierung prüfen.
-  Die Windows-Signatur über die SignPath Foundation ist vorbereitet (siehe
-  „Code-Signing“), die macOS-Signatur ebenfalls (siehe unten).
-- `image-digests.json` liegt neben den Archiven im Programmordner. Wer dort schreiben
-  kann, kann beides austauschen; die Prüfung schützt vor beschädigten und einzeln
-  ausgetauschten Archiven sowie vor fremden Images unter dem gepinnten Tag, nicht vor
-  einem manipulierten Installationsordner (Abhilfe: signierte Installer).
-- Prozesse, die ein Test im Hintergrund startet, werden beendet, bleiben aber bis zum
-  Ende der Prüfung als Zombie-Prozess im Container (zählen zum Limit von 64 Prozessen).
-- Ohne Pflicht-Reviewer im Environment `production` kann jeder mit Schreibrecht auf das
-  Repository über einen PR nach `qas` einen Release auslösen; ein PR kann auch die
-  Workflow-Datei ändern (`pull_request` nutzt die Fassung des PRs). Vor der Abnahme die
-  Änderungen an `.github/` und `scripts/` prüfen (siehe nächster Abschnitt).
-
-### Nötige GitHub-Einstellungen (einmalig, durch den Repository-Inhaber)
-
-1. **Environments `qas`, `production` und `release`** anlegen (Settings → Environments),
-   „Deployment branches and tags“ passend zu PR-Läufen nach `qas` (GitHub prüft
-   `refs/pull/<n>/merge`, siehe [`docs/RELEASE_QAS.md`](docs/RELEASE_QAS.md)). In `production` ist Bernhard
-   „Required reviewer“ (QAS-Abnahme). Die Apple-Secrets (`APPLE_CERTIFICATE`, …) und die
-   SignPath-Einträge für Test-Signing kommen nach `qas`, die SignPath-Einträge für
-   Release-Signing nach `release`, jeweils als **Environment-Secrets** bzw.
-   **Environment-Variablen** und nicht im Repository. Genaue Tabelle:
-   [`docs/RELEASE_QAS.md`](docs/RELEASE_QAS.md); SignPath:
-   [`docs/RELEASE_SIGNING.md`](docs/RELEASE_SIGNING.md).
-2. **Branches `qas` und `main` schützen** (Ruleset: Änderungen nur per Pull Request, nur
-   Merge-Commits, kein Squash/Rebase; keine Force-Pushes).
-   **Tag-Schutz:** Settings → Rules → Rulesets → New tag ruleset, Ziel `v*`, „Restrict
-   updates“ und „Restrict deletions“. Die Tags `v*` legt der Workflow selbst an, deshalb
-   entweder „Restrict creations“ weglassen oder „GitHub Actions“ als Bypass eintragen.
-3. **Actions darf PRs anlegen:** Settings → Actions → General → „Allow GitHub Actions to
-   create and approve pull requests“ (für den PR `qas` → `main`, `release-qas.yml`).
-4. **GHCR-Pakete öffentlich:** `code-pruefer-python` und `code-pruefer-java` unter
-   GitHub → Packages → Package settings → „Change visibility“ auf **public** stellen
-   (sonst funktionieren Download und „Images aktualisieren“ nicht).
-5. **App-Updater:** Schlüssel lokal erzeugen, Repository-Variable `TAURI_UPDATER_PUBKEY`
-   und im Environment `release` die Secrets `TAURI_SIGNING_PRIVATE_KEY` /
-   `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` setzen ([`docs/UPDATER.md`](docs/UPDATER.md)).
-   Ohne sie entstehen Releases ohne Updater (Warnung).
-6. Optional: Settings → Actions → General → „Workflow permissions“ auf „Read repository
-   contents and packages permissions“ stellen (die Workflows fordern ihre Rechte selbst an).
-
-## Aufgabenblatt hochladen
-
-„Aufgabe hochladen …“ übernimmt den Text eines Aufgabenblatts in das Feld
-„Aufgabenstellung“: Word (`.docx`), PDF oder ein Bild (`.png`, `.jpg`). Höchstens 20 MB
-und 20 Seiten. Alles läuft lokal:
-
-- **DOCX:** Absätze, Tabulatoren und Zeilenumbrüche werden übernommen; eingebettete
-  Bilder nicht.
-- **PDF:** Zuerst wird die Textebene gelesen. Seiten mit weniger als 50 Zeichen gelten
-  als Scan und werden per Texterkennung gelesen.
-- **Bilder und Scans:** systemeigene Texterkennung – unter Windows `Windows.Media.Ocr`
-  (dafür muss eine Sprache mit Texterkennung installiert sein: Einstellungen → Zeit und
-  Sprache → Sprache), unter macOS Apple Vision. Die Einrückung (wichtig für Python) wird
-  aus der Lage der Wörter rekonstruiert. Unter Linux gibt es keine Texterkennung.
-- **Bildvorbereitung** (`docs/ocr/prepare.rs`): Vor der Texterkennung wird das Bild in
-  Graustufen umgewandelt, bei dunklem Hintergrund (dunkles Editor-Design) invertiert, im
-  Kontrast gestreckt, auf den Inhalt zugeschnitten und bei kleiner Schrift hochskaliert
-  (Ziel: etwa 32 Pixel Zeilenhöhe, höchstens 4-fach). Die Zeilenhöhe wird aus dem Bild
-  selbst geschätzt (Zeilen mit Schrift zählen); die Obergrenze der Windows-Texterkennung
-  (`MaxImageDimension`) und 24 Megapixel werden eingehalten. Kleine Schrift in
-  Screenshots wird so deutlich besser erkannt.
-
-Erkannter Text kann Fehler enthalten. Daneben steht eine Vorschau des Originals (bei
-Bildern; bei PDFs die erste Seite, soweit das System sie darstellen kann).
-
-**Erkennungsfehler mit KI korrigieren** (nur nach einer Texterkennung, mit eingerichtetem
-KI-Modell; `src-tauri/src/ai/ocr_fix.rs`): Das lokale Modell bekommt die strikte Anweisung,
-nur Zeichenfehler zu korrigieren (1/l, 0/O, fehlende Anführungszeichen oder Klammern) und
-nichts umzuformulieren. Es liefert eine JSON-Liste von Änderungen (Zeile, alt, neu), keinen
-neuen Text. Ein **Plausibilitätsfilter** lässt nur kleine, örtliche Änderungen durch: `alt`
-muss genau einmal in der Zeile stehen (eine Zeile daneben wird toleriert), jede Änderung
-betrifft höchstens ein Wort auf jeder Seite (keine neuen oder entfernten Wörter, keine
-Zeilenumbrüche), die Bearbeitungsdistanz ist höchstens max(2, 40 % der Wortlänge) – typische
-Verwechslungen wie 1/l oder 0/O zählen halb –, und mehr als drei Änderungen in einem
-Vorschlag gelten als Umformulierung. Ganze Zeilen werden nie als Ganzes ersetzt; höchstens
-30 Vorschläge. Die Vorschläge erscheinen farbig (alt → neu) und werden einzeln oder mit
-„Alle übernehmen“ übernommen; „Ursprünglichen Text wiederherstellen“ setzt auf das Ergebnis
-der Texterkennung zurück. Jede Übernahme setzt das Häkchen „Text geprüft und korrigiert“
-zurück. Zeilennummern oder Texte der Bedienoberfläche aus Screenshots werden nicht
-entfernt. Das Häkchen
-„Text geprüft und korrigiert“ wird bei jedem Import zurückgesetzt; es ist Voraussetzung für
-„Testfälle mit KI erzeugen“ (siehe „KI und Texterkennung“).
-
-## Ausgabevergleich
-
-Zeilenenden (CRLF/LF) werden immer vereinheitlicht. Drei Modi („Vergleich:“ über den
-Testfällen):
-
-- **Zeilen (exakt)** – Standard. Zeile für Zeile; Leerzeichen am Zeilenende und
-  Leerzeilen am Ende werden ignoriert (abschaltbar).
-- **Wörter (Leerraum egal)** – die Ausgabe wird an Leerzeichen, Tabulatoren und
-  Zeilenumbrüchen in Wörter zerlegt; nur die Wörter zählen (wie der Standard-Validator von
-  Kattis, aber mit Beachtung der Groß-/Kleinschreibung).
-- **Zahlen mit Toleranz** – wie „Wörter“; ist das erwartete Wort eine Zahl, darf die
-  Ausgabe absolut oder relativ um die Toleranz abweichen (z. B. `1e-6`).
-
-Der Diff in den Ergebnissen ist immer zeilenbasiert. Leerzeichen am Zeilenende werden dort
-und in der stdout-Anzeige als `·` dargestellt, ein Zeilenumbruch am Ende als `⏎` (nur
-Anzeige; kopiert wird der Originaltext). Unter jeder erwarteten Ausgabe steht, ob sie mit
-einem Zeilenumbruch endet und in welchen Zeilen Leerzeichen am Ende stehen. Unterscheiden
-sich erwartete und tatsächliche Ausgabe nur dort, zeigt das Ergebnis den Hinweis
-„Unterschied nur am Zeilenende (Leerzeichen/Zeilenumbruch)“.
-
-**Zeilenumbruch am Ende verbieten** (unabhängig vom Modus): Endet die Ausgabe mit einem
-Zeilenumbruch (z. B. durch `println` oder `print()`), ist der Test nicht bestanden – egal,
-was die erwartete Ausgabe enthält. Die KI-Testfälle übernehmen die Ausgabe der Musterlösung
-unverändert; endet diese selbst mit einem Zeilenumbruch, weist der Testfall-Editor einmalig
-darauf hin.
-
-## Ergebnisse verstehen
-
-Status je Testfall im Tab „Ergebnis“:
+**Ergebnisse.** Pro Testfall siehst du einen Status:
 
 | Status | Bedeutung |
 |---|---|
-| **Bestanden** | Ausgabe stimmt im gewählten Vergleichsmodus mit der Erwartung überein. |
-| **Falsche Ausgabe** | Ausgabe weicht ab (Diff darunter); auch bei verbotenem Zeilenumbruch am Ende. |
-| **Zeitüberschreitung** | Zeitlimit überschritten (Python 5 s, Java 8 s), z. B. Endlosschleife oder das Programm wartet auf weitere Eingaben. |
-| **Laufzeitfehler** | Programm endete mit Exit-Code ≠ 0 (Ausnahme, Exit-Code 137 = Speicherlimit 512 MB). |
-| **Fehler** | Die Sandbox selbst ist bei diesem Test ausgefallen. |
-| **Ausgabeformat weicht von Vorlage ab** | Die Ausgabe passt zur Erwartung, aber nicht zur Ausgabevorlage des Aufgabenblatts (siehe „Ausgabevorlagen mit Platzhaltern“). Zählt als nicht bestanden. |
-| **Nur für die gegebenen Werte richtig** | Der Test war bestanden, aber der Variationstest hat gezeigt, dass der Code mit veränderten Werten falsch rechnet. Zählt als nicht bestanden. |
-
-Lässt sich der Code nicht kompilieren, erscheint statt der Testfälle „Kompilierfehler“
-mit der Meldung des Compilers. Über den Testfällen steht „x von y Tests bestanden“; der
-Tab „Ergebnis“ zeigt dieselbe Zahl als Kennzeichen (✓ alle bestanden, ✗ sonst).
-
-## KI und Texterkennung
-
-„Testfälle mit KI erzeugen“ erstellt aus der geprüften Aufgabenstellung Testfälle – mit
-einem **lokalen** Sprachmodell (Qwen2.5-Coder über llama.cpp), ohne Cloud-Dienst.
-Grundlage ist die Recherche in
-[`docs/ENTSCHEIDUNGSGRUNDLAGE_lokale-KI-Aufgabenchecker.md`](docs/ENTSCHEIDUNGSGRUNDLAGE_lokale-KI-Aufgabenchecker.md).
-
-**Kernregel:** Die KI schreibt **nie** die erwarteten Ausgaben. Sie schreibt Lösungen und
-Testeingaben; die erwarteten Ausgaben entstehen durch **Ausführen** geprüfter Lösungen in
-derselben Sandbox wie beim „Prüfen“.
-
-Ablauf (`src-tauri/src/ai/pipeline.rs`):
-
-1. **Struktur:** Ein-/Ausgabeformat, Beispiele, Ausgabevorlagen mit Platzhaltern und ein
-   Vorschlag für den Vergleichsmodus (JSON, per JSON-Schema grammatikgebunden). Ein
-   Beispiel zählt nur, wenn Ein- und Ausgabe **wörtlich** im Aufgabentext stehen
-   (Zeilenenden und Leerraum am Zeilenrand egal) – erfundene Beispiele werden verworfen.
-   Ausgabevorlagen werden nie zu Beispielen (siehe unten).
-2. **Lösungen:** 5 (1.5B-Modell) bzw. 3 (7B-Modell) unabhängige Lösungen, Temperatur 0,7,
-   **gleichzeitig** erzeugt (llama-server mit einem Slot je Lösung; auf der CPU begrenzt die
-   Speicherbandbreite, mehrere Sequenzen kosten kaum mehr als eine). Die Antwort beginnt im
-   Codeblock und endet an dessen Ende (keine Erklärtexte).
-3. **Kompilieren** in der Sandbox, sobald eine Lösung fertig ist – ein Container je Lösung,
-   der auch für die Beispiele und den Mehrheitsentscheid dient (nur ein Kompilierlauf).
-   Höchstens eine Reparaturrunde mit der Fehlermeldung; sie entfällt, wenn schon eine klare
-   Mehrheit (mehr als die Hälfte, mindestens zwei) die Beispiele bestanden hat.
-4. **Beispiele des Blatts:** Lösungen, die sie nicht bestehen, fallen heraus.
-5. **Testeingaben:** höchstens 10, inklusive Grenzfällen – nur Eingaben; parallel zu den
-   Lösungen erzeugt.
-6. **Mehrheitsentscheid:** Alle verbliebenen Lösungen laufen auf jede Eingabe; die
-   Ausgaben werden im gewählten Vergleichsmodus gruppiert, die größte Gruppe liefert den
-   Erwartungswert. Ohne echte Mehrheit (z. B. 2 gegen 2) wird die Eingabe verworfen.
-7. **Konfidenz:**
-   - **Grün:** Die Beispiele des Blatts wurden bestanden, mindestens zwei Lösungen sind
-     übrig und bei jedem Testfall stimmen mindestens 80 % von ihnen überein.
-   - **Gelb:** keine Beispiele im Text, nur eine Lösung übrig, knappe Mehrheit oder
-     verworfene Eingaben – die Testfälle sind **nur ein Hinweis**.
-   - **Rot:** Keine Lösung besteht (oder keine Eingabe hat eine Mehrheit). Dann gibt es
-     **keine** Testfälle, sondern eine ehrliche Meldung.
-
-Vor dem Laden des Modells prüft die App die Container-Engine und startet sie bei Bedarf
-selbst (wie beim „Prüfen“); fällt sie während des Laufs aus, wird sie neu verbunden bzw.
-gestartet und der Schritt wiederholt. Ist ein Modell gewählt, lädt die App es schon nach
-„Text geprüft und korrigiert“ im Hintergrund. Die Fortschrittsanzeige nennt Phase,
-„Lösung i von N“, Token/s und eine grobe Restzeit.
-
-Die Testfälle werden an die vorhandenen angehängt (höchstens 50 insgesamt), mit „KI“
-markiert und bleiben bearbeitbar. Die Musterlösung (die Lösung, die am häufigsten mit der
-Mehrheit übereinstimmte) lässt sich aufklappen. Der vorgeschlagene Vergleichsmodus wird
-nur übernommen, wenn man „Vorschlag übernehmen“ klickt; sonst gilt der eingestellte.
-
-### Ausgabevorlagen mit Platzhaltern
-
-Manche Aufgabenblätter zeigen statt eines Beispiels nur das **Format** der Ausgabe, mit
-Platzhaltern für die echten Werte, etwa (im Blatt steht „12345678 ist nur ein
-Platzhalter“):
-
-```
-12345678 seconds have passed since midnight.
-12345678 seconds are left until midnight.
-Since I started with the task 12345678 seconds have passed.
-```
-
-Früher wurde so etwas als Beispiel mit leerer Eingabe übernommen – und alle
-KI-Lösungen fielen durch, weil keine „12345678“ ausgibt. Jetzt gilt:
-
-- Die KI meldet solche Vorlagen getrennt (Text und Platzhalter, z. B. `12345678`, `<n>`,
-  `X`). Eine Vorlage wird nur übernommen, wenn ihr Text wörtlich im Aufgabentext steht
-  und jeder Platzhalter darin vorkommt (höchstens 3 Vorlagen mit je höchstens 6
-  Platzhaltern).
-- Eine mehrzeilige Vorlage ist **eine** Vorlage. Zerlegt die KI sie trotzdem in eine
-  Vorlage pro Zeile, fügt die App Vorlagen, die im Aufgabentext ganze, direkt
-  aufeinanderfolgende Zeilen sind, wieder zu einer zusammen (in der Reihenfolge des Texts).
-- Eine Vorlage ist **nie** ein Beispiel oder ein Testfall, ein Platzhalter nie eine
-  erwartete Ausgabe: Ein von der KI als Beispiel gemeldetes Beispiel wird verworfen
-  (unabhängig von seiner Eingabe), wenn seine Ausgabe einen Platzhalter als ganzes Wort
-  enthält oder der Vorlage entspricht.
-- Die KI-Lösungen bekommen die Vorlage als Formatvorgabe. Passt die Ausgabe einer Lösung
-  bei einem Beispiel des Blatts nicht zur Vorlage, fällt sie heraus; bei den übrigen
-  Eingaben zählt eine solche Ausgabe beim Mehrheitsentscheid nicht mit.
-- Liest die Aufgabe **keine Eingabe** (laut Strukturschritt der KI) und gibt es eine
-  Vorlage, aber keinen Testfall mit leerer Eingabe, wird ein Testfall **„KI-Test (ohne
-  Eingabe)“** erzwungen; seine erwartete Ausgabe entsteht wie bei allen KI-Testfällen
-  durch den Mehrheitsentscheid der Lösungen. Bei Aufgaben, die eine Eingabe lesen, wird er
-  nicht erzwungen. Scheitern die Lösungen an der leeren Eingabe (z. B. weil die KI sich
-  bei „liest keine Eingabe“ geirrt hat), wird dieser Testfall nur weggelassen – die
-  Lösungen fallen deshalb nicht heraus.
-- Die Konfidenz nennt den Grund „Ausgabevorlage mit Platzhaltern erkannt – sie wird nur
-  als Formatprüfung verwendet, nicht als Beispiel.“; die Stufe (Grün/Gelb/Rot) ändert sich
-  dadurch nicht.
-- Im Bereich „Testfälle mit KI“ steht „Ausgabevorlage erkannt“ mit der Vorlage. Mit
-  **„Vorlage nicht verwenden“** wird sie verworfen (z. B. wenn die KI sich geirrt hat).
-
-Beim **Prüfen** wird jede bestandene Ausgabe zusätzlich mit der Vorlage verglichen
-(`src-tauri/src/runner/template.rs`): Zeile für Zeile, Leerraum am Zeilenrand und
-mehrfache Leerzeichen egal, leere Zeilen am Anfang und Ende egal; die Zeilenzahl muss
-stimmen. Ein Platzhalter steht für einen nicht leeren Wert. Der Typ ergibt sich aus dem
-Platzhalter selbst:
-
-- nur Ziffern (z. B. `12345678`): eine **Ganzzahl** ohne Nachkommastellen, optional mit
-  Vorzeichen – `54630` passt, `54630.0` oder `5.463e4` nicht (Meldung: „… erwartet eine
-  Ganzzahl ohne Nachkommastellen“). Die KI-Lösungen bekommen dazu den Hinweis, den Wert
-  als ganze Zahl auszugeben;
-- eine Zahl mit Dezimalpunkt (z. B. `0.0`): irgendeine Zahl;
-- alles andere (z. B. `<n>`, `X`): beliebiger Text.
-
-Das Panel „Testfälle mit KI“ nennt den Typ („Platzhalter 12345678 steht für eine Ganzzahl
-(ohne Nachkommastellen)“). Platzhalter werden nur als ganze Wörter erkannt
-(Platzhalter „1“ trifft nicht die „1“ in „12“). Ausgabezeilen über 4 KB passen nie zu
-einer Vorlage (begrenzt die Rechenzeit). Passt die Ausgabe zu keiner Vorlage, lautet
-der Status „Ausgabeformat weicht von Vorlage ab“ mit der betroffenen Zeile und der
-erwarteten Vorlagenzeile. Die Vorlage gilt, bis man sie verwirft, neue KI-Testfälle
-erzeugt oder den Aufgabentext ändert (jede Änderung, auch ein neuer Import oder eine
-übernommene KI-Korrektur, macht Vorlage und Musterlösung ungültig, weil sie zu einem
-anderen Text gehören).
-
-**Die Vorlagenprüfung gilt für alle Testfälle**, auch für eigene Randfälle wie
-„Ungültige Eingabe“, bei denen das Programm absichtlich etwas anderes ausgibt. Solche
-Testfälle schlagen dann mit „Ausgabeformat weicht von Vorlage ab“ fehl, obwohl die Ausgabe
-der Erwartung entspricht. Beschreibt die Vorlage nur den Normalfall, im Tab „Testfälle“
-„Vorlage nicht verwenden“ klicken – dann wird nur noch gegen die erwarteten Ausgaben
-geprüft.
-
-**Grenzen** (Recherche §11) – hier ist das Ergebnis höchstens ein Hinweis:
-Aufgaben ohne Beispiele, mehrdeutige Texte, mehrere richtige Ausgaben, GUI/Dateien/
-Netzwerk/Zufall/Nebenläufigkeit, Strukturvorgaben („rekursiv lösen“, „Klasse X
-implementieren“) und algorithmisch anspruchsvolle Aufgaben (kleine Modelle scheitern
-dort häufig). Die Konfidenzanzeige ist deshalb Pflicht.
-
-**Hardware und Dauer** (Schätzungen, nicht auf echten Schüler-/Studierenden-PCs gemessen):
-
-| Arbeitsspeicher | Vorschlag | Größe | Dauer je Aufgabe (CPU) |
-|---|---|---|---|
-| unter 12 GB | Qwen2.5-Coder 1.5B Instruct, Q5_K_M | ≈ 1,1 GB | ca. 1–4 Minuten |
-| ab 12 GB | Qwen2.5-Coder 7B Instruct, Q4_K_M | ≈ 4,7 GB | ca. 4–10 Minuten |
-
-Auf Apple Silicon (Metal) deutlich schneller. Ohne AVX2 warnt die App (sehr langsam).
-Qwen2.5-Coder-3B wird nicht angeboten (Lizenz verbietet kommerzielle Nutzung); 1.5B und 7B
-stehen unter Apache-2.0.
-
-**Datenschutz:** Alles läuft lokal. Die **einzige** Netzwerkverbindung der KI-Funktion ist
-der einmalige Modell-Download von `huggingface.co` (nur https, nur Hosts von Hugging Face,
-auch bei Weiterleitungen; feste Revision, SHA-256 und Größe aus dem Katalog,
-`src-tauri/src/ai/catalog.json`). llama-server lauscht nur auf `127.0.0.1` mit zufälligem
-API-Schlüssel und startet mit `--offline`. Aufgabentexte und Code verlassen den Rechner nie.
-
-**Modell einrichten:** Unter Zahnrad → „Einstellungen“ → „KI-Modell verwalten …“ (oder
-„KI-Modell einrichten …“ im Tab „Testfälle“) beim empfohlenen Eintrag „Herunterladen“, danach
-„Auswählen“. Revision, Dateiname, Größe und SHA-256 trägt der Release-Workflow aus der
-Hugging-Face-API ein (`scripts/pin-models.sh`, über den Workflow „KI-Modellkatalog
-pinnen“ als Pull Request zur Prüfung); der Release-Workflow vergleicht die eingecheckten
-Werte mit der API und nennt sie in den Release-Notizen. Solange der Katalog im Repository
-nicht gepinnt ist, haben Builds keinen Download-Knopf.
-
-**Modell offline einrichten** (unter „Weitere Optionen (ohne Internet)“): Die `.gguf`-Datei (Links und Prüfsummen in `catalog.json`)
-auf einem Rechner mit Internet herunterladen, z. B. per USB-Stick übertragen und unter
-„KI-Modell verwalten …“ beim passenden Eintrag mit „Datei importieren …“ einlesen (erwartet:
-`*q5_k_m*.gguf` für 1.5B, `*q4_k_m*.gguf` für 7B; ist die Datei auf Hugging Face in Teile
-`…-00001-of-0000N.gguf` aufgeteilt, alle Teile zusammen auswählen – fehlende Teile lassen sich
-nachträglich importieren). Die App prüft den GGUF-Dateianfang und warnt bei unpassendem
-Dateinamen. Ist der Eintrag gepinnt, muss die SHA-256 mit dem Katalog übereinstimmen. Ist er
-nicht gepinnt, wird die Datei nach ausdrücklicher Bestätigung diesem Eintrag zugeordnet (mit
-seinen Einstellungen, z. B. Anzahl der Lösungen), unter `models/unverified/<id>/` mit
-Originalnamen abgelegt und als „nicht geprüft (Prüfsumme fehlt in dieser Version)“ markiert.
-„Anderes Modell importieren (.gguf) …“ nimmt eine beliebige einzelne Datei: Stimmt ihre
-SHA-256 mit dem Katalog überein, gilt sie als geprüftes Katalogmodell, sonst wird sie nur nach
-Bestätigung als „unbekanntes Modell“ übernommen. Modelle liegen im App-Datenordner
-(`models/`), die Auswahl in `ai.json` im Konfigurationsordner.
-
-**Modellkatalog pinnen:** `scripts/pin-models.sh` trägt Revision, Größe und SHA-256 aus der
-Hugging-Face-API ein (bei aufgeteilten GGUF-Dateien alle Teile; llama.cpp lädt sie über den
-ersten Teil). Das geschieht nicht im Release, sondern über den Workflow
-`.github/workflows/pin-models.yml` (Actions → „KI-Modellkatalog pinnen“ → „Run workflow“):
-er legt einen Pull Request mit dem gepinnten `catalog.json` an, Bernhard prüft die Werte
-auf huggingface.co und mergt. Jeder Release prüft danach nur noch
-(`scripts/pin-models.sh --check` und `--verify`): Meldet Hugging Face für die gepinnte
-Revision andere Dateien, Größen oder SHA-256, oder fehlen die Pins, bricht er ab. So
-vertraut kein Release dem ersten Abruf. Solange nicht gepinnt ist, verweigert die App
-den Download (Import geht).
-**Stand:** In dieser Version ist der Katalog noch **nicht** gepinnt – der Build-Umgebung war
-huggingface.co nicht erreichbar. Vor dem nächsten Release den Workflow „KI-Modellkatalog
-pinnen“ starten und den Pull Request mergen; ohne Pins bricht der Release ab.
-
-**KI-Laufzeit:** llama.cpp Release `b11700` (offizielle Binaries, SHA-256 je Plattform in
-`scripts/fetch-llama-server.sh`), im Installer unter `llama/`. Unter Windows braucht
-llama-server die Visual-C++-Laufzeit; der Release-Installer legt sie bei. Fehlt sie (z. B.
-in lokal gebauten Testversionen), meldet die App das mit Link zum Microsoft-Download.
-
-## Variationstest (zufällig richtige Ergebnisse)
-
-Ein Programm kann für die Werte der Aufgabe zufällig das richtige Ergebnis liefern, obwohl
-die Formel falsch ist. Beispiel: „Sekunden bis Mitternacht“ für 15:10:30 Uhr (54630 s seit
-Mitternacht) als `86400 % sekunden` statt `86400 - sekunden` berechnet – beides ergibt
-31770, weil 54630 größer als 43200 ist. Für 03:10:30 Uhr käme aber 6390 statt 74970
-heraus. Normale Testfälle mit den Werten des Blatts bemerken das nicht.
-
-**Schalter:** „Auf zufällig richtige Ergebnisse prüfen (Variationstest)“ neben „Prüfen“,
-standardmäßig an (die Einstellung wird gemerkt).
-
-**Ablauf:** Das Ergebnis der Prüfung erscheint sofort; danach läuft der Variationstest
-(„Prüfe mit veränderten Werten …“, abbrechbar). Er vergleicht den Code mit der
-**Musterlösung** aus „Testfälle mit KI erzeugen“ – entschieden wird nur durch Ausführen
-beider Programme in der Sandbox, nie durch die KI (`src-tauri/src/ai/variation.rs`):
-
-- **Aufgaben mit Eingabe** (Testfälle mit nicht leerer Eingabe): Die KI schreibt bis zu 8
-  weitere gültige Eingaben (ohne die vorhandenen); dabei bekommt sie das Eingabeformat aus
-  „Testfälle mit KI erzeugen“. Musterlösung und Code laufen darauf; die Ausgaben werden im
-  eingestellten Vergleichsmodus (und mit der Ausgabevorlage) verglichen. Eingaben, bei
-  denen die Musterlösung selbst abstürzt, zu lange braucht oder bei zwei Läufen
-  unterschiedliche Ausgaben liefert, werden verworfen.
-- **Aufgaben ohne Eingabe bzw. mit vorgegebenen Startwerten** (z. B. `hour = 15`,
-  `minute = 10`, `second = 30`): Die KI nennt die vorgegebenen Zahlen und schlägt 2–3
-  Szenarien vor, z. B. „15 → 3“ oder „15 → 9 und 10 → 45“. Jede Originalzahl muss im
-  Aufgabentext stehen. Die App ersetzt die Werte selbst, und zwar **nur in einfachen
-  Zuweisungen** wie `hour = 15` (Python, auch `hour: int = 15` und `self.hour = 15`) bzw.
-  `int hour = 15;`, `final int hour = 15, minute = 10;`, `this.hour = 15;` (Java) – in Code
-  und Musterlösung gleichermaßen. Negative Startwerte (`x = -15`) werden als `-15`
-  erkannt. Kommentare und Zeichenketten bleiben unberührt, ebenso Zuweisungen in Klammern
-  (z. B. im Kopf einer Java-`for`-Schleife: `for (int i = 0, n = 15; …)`). Ein Szenario wird übersprungen, wenn
-  die Werte nicht in beiden Programmen gleich oft ersetzt werden können (etwa weil der
-  Code `15` direkt in einer Formel verwendet) oder wenn sich die Ausgabe der Musterlösung
-  dadurch nicht ändert. Die Musterlösung läuft jeweils zweimal (mit den Originalwerten und
-  mit jeder Variante); unterscheiden sich die beiden Ausgaben (z. B. Zufallszahlen oder
-  Uhrzeit), wird die Variante übersprungen bzw. der ganze Test, wenn das schon bei den
-  Originalwerten passiert.
-
-Als Logikfehler zählt nur eine **saubere, abweichende Ausgabe** des Codes. Bricht der Code
-bei einer Variante ab oder überschreitet er das Zeitlimit, ist das kein Befund, sondern
-ein Hinweis „unklar“ (z. B. „hour = 3 statt 15: Laufzeitfehler“). Gibt es nur solche
-Fälle, wird der Variationstest mit diesem Hinweis übersprungen.
-
-**Ergebnis:**
-
-- **Unterschied gefunden:** roter Block „Logikfehler: Code liefert nur für die gegebenen
-  Werte das richtige Ergebnis“ mit den Befunden (z. B. „hour = 3 statt 15“ bzw. „Eingabe:
-  …“, erwartete Ausgabe der Musterlösung und tatsächliche Ausgabe). Alle bisher bestandenen
-  Tests erhalten den Status **„Nur für die gegebenen Werte richtig“** und zählen als nicht
-  bestanden. Zusätzlich erklärt die KI den Fehler kurz mit einem Zitat aus dem Code (z. B.
-  `86400 % seconds` – Modulo statt Subtraktion). Steht das Zitat nicht im Code, wird die
-  Erklärung weggelassen. **Die Erklärung ist nur ein Hinweis und entscheidet nichts**; bei
-  Code über ca. 6000 Zeichen entfällt sie.
-- **Kein Unterschied:** dezenter Hinweis „Variationstest bestanden“, ggf. mit den
-  unklaren Fällen.
-- **Übersprungen:** dezenter Hinweis mit Grund; die Testergebnisse bleiben unverändert.
-
-**Voraussetzungen** – sonst läuft der Test nicht bzw. wird übersprungen:
-
-- Der Code kompiliert und mindestens ein Test ist bestanden.
-- Eine **Musterlösung** in derselben Sprache ist vorhanden, d. h. „Testfälle mit KI
-  erzeugen“ wurde für genau diesen Aufgabentext ausgeführt und war nicht rot. Jede
-  Änderung des Aufgabentexts (auch ein neuer Import) macht die Musterlösung ungültig.
-- Ein KI-Modell ist eingerichtet und die KI ist nicht gerade mit „Testfälle mit KI
-  erzeugen“ beschäftigt.
-- Bei Startwerten: Sie stehen als einfache Zuweisungen im Code (siehe oben).
-
-Übersprungen wird außerdem, wenn die KI keine brauchbaren Eingaben oder Szenarien
-liefert, wenn Musterlösung oder Engine Fehler melden oder wenn man abbricht. Ein neues
-„Prüfen“ (oder „Abbrechen“) bricht nur den laufenden Variationstest ab, das KI-Modell
-bleibt geladen und andere KI-Aufgaben laufen weiter; das alte Ergebnis wird ignoriert.
-Schaltet man den Schalter aus, verschwindet das Ergebnis des Variationstests wieder und
-die Tests zeigen ihren ursprünglichen Status.
-Die Musterlösung ist selbst KI-erzeugt – ist sie falsch, kann auch der Variationstest
-irren. Ein Befund ist deshalb ein starker Hinweis, aber kein Beweis; im Zweifel den Code
-selbst ansehen.
-
-## Fehlerbehebung
-
-- **„Keine laufende Container-Engine gefunden“ / „… ist installiert, aber nicht
-  gestartet“:** Docker Desktop bzw. Podman starten oder in den Einstellungen die richtige
-  Engine wählen; die Meldung nennt für jeden Verbindungsversuch den Grund (siehe
-  „Engine-Auswahl und automatischer Start“). Unter Windows ggf. Mitglied der Gruppe
-  `docker-users` werden.
-- **„Das Runner-Image für … ist nicht vorhanden“:** Internetverbindung prüfen und
-  Einstellungen → „Images aktualisieren“ klicken oder den Code-Prüfer neu installieren.
-- **Zeitüberschreitung, obwohl das Programm stimmt:** Wartet es auf mehr Eingaben als der
-  Testfall liefert? Die Eingabe muss alle gelesenen Zeilen enthalten.
-- **„Testfälle mit KI erzeugen“ ist ausgegraut:** Der Hinweis daneben nennt den Grund
-  (Text nicht als geprüft markiert, kein KI-Modell eingerichtet, Prüfung läuft, …).
-- **Konfidenz Rot oder Gelb:** Testfälle von Hand anlegen bzw. die vorgeschlagenen
-  erwarteten Ausgaben prüfen; oft hilft ein klarerer Aufgabentext mit Beispielen.
-- **Tests „Ausgabeformat weicht von Vorlage ab“:** Stimmt die erkannte Vorlage, und gilt
-  sie auch für diesen Testfall (Randfälle wie „Ungültige Eingabe“ geben oft etwas anderes
-  aus)? Falls nicht, im Tab „Testfälle“ „Vorlage nicht verwenden“ klicken und erneut
-  prüfen.
-- **Variationstest übersprungen:** Der Hinweis nennt den Grund (keine Musterlösung, kein
-  Modell, keine ersetzbaren Werte, …). Der Test lässt sich mit dem Schalter neben „Prüfen“
-  abschalten.
-- **KI-Laufzeit startet unter Windows nicht:** Es fehlt die Visual-C++-Laufzeit (die App
-  verlinkt den Microsoft-Download).
-- **Keine Texterkennung unter Windows:** Eine Sprache mit Texterkennung installieren
-  (Einstellungen → Zeit und Sprache → Sprache).
-
-## Entwicklung
-
-Voraussetzungen: Node.js ≥ 20, Rust (stable, via [rustup](https://rustup.rs/)) und die
-[Tauri-Systemabhängigkeiten](https://v2.tauri.app/start/prerequisites/)
-(unter Linux u. a. `libwebkit2gtk-4.1-dev`).
-
-```sh
-npm install
-npm run tauri dev
-```
-
-Weitere Befehle:
-
-```sh
-npm run build                      # Typecheck + Frontend-Build
-cd src-tauri && cargo test         # Unit-Tests
-cd src-tauri && cargo clippy --all-targets -- -D warnings
-npm run tauri build                # Installer (unsigniert) bauen
-
-# Windows-Installer unter Linux cross-kompilieren (benötigt mingw-w64 und nsis)
-npm run tauri build -- --target x86_64-pc-windows-gnu --bundles nsis
-
-# Nur die Oberfläche im Browser, Backend simuliert (src/dev/mockBackend.ts,
-# nicht im Produktions-Build): http://localhost:1420/ (?engine=missing|stopped)
-# Updates simulieren: ?update=available|none|error|progress|notConfigured|portable
-VITE_MOCK=1 npm run dev
-```
-
-Gestaltung (Tokens, Farben hell/dunkel, Bausteine, Layout):
-[`docs/design/DESIGN.md`](docs/design/DESIGN.md), Vorschau in
-`docs/design/design-preview.html`.
-
-### Runner-Images lokal bauen
-
-```sh
-docker build -t code-pruefer-python:dev images/python
-docker build -t code-pruefer-java:dev images/java
-
-# App mit den lokalen Images starten (Umgebungsvariablen und :dev nur in Debug-Builds)
-CODE_PRUEFER_PYTHON_IMAGE=code-pruefer-python:dev \
-CODE_PRUEFER_JAVA_IMAGE=code-pruefer-java:dev \
-npm run tauri dev
-
-# Integrationstests (benötigen Docker, standardmäßig mit den :dev-Images)
-cd src-tauri && cargo test -- --ignored --test-threads=1
-```
-
-KI (Entwickler-Builds): llama-server für Linux holen und per Umgebungsvariable setzen
-(gilt nur in Debug-Builds), Modell unter „KI-Modell verwalten …“ importieren:
-
-```sh
-scripts/fetch-llama-server.sh linux-x64 /tmp/llama
-CODE_PRUEFER_LLAMA_SERVER=/tmp/llama/llama-server npm run tauri dev
-
-# Integrationstests: echter llama-server, beliebiges GGUF (ideal: Qwen2.5-Coder-1.5B)
-cd src-tauri && CODE_PRUEFER_LLAMA_SERVER=/tmp/llama/llama-server \
-  CODE_PRUEFER_TEST_MODEL=/pfad/zum/modell.gguf \
-  cargo test --test ai_integration -- --ignored --nocapture --test-threads=1
-```
-
-Integrationstest für das Laden aus einem Archiv:
-`cd src-tauri && cargo test --test image_bundle -- --ignored --test-threads=1`.
-
-### Image-Versionen und Release
-
-- Image-Referenz der App: `<IMAGE_REGISTRY>/code-pruefer-<sprache>:<version>` mit
-  `IMAGE_REGISTRY = ghcr.io/bernhardgoetz` (`runner/languages.rs`) und `<version>` =
-  `CARGO_PKG_VERSION`. `Cargo.toml`, `tauri.conf.json` und `package.json` müssen dieselbe
-  Version haben (Unit-Test `versions_are_in_sync`).
-- Release auslösen (QAS mit Abnahme, [`docs/RELEASE_QAS.md`](docs/RELEASE_QAS.md)): Version
-  in den drei Dateien erhöhen, committen und einen **Pull Request nach `qas`** öffnen.
-  Jeder Push auf den PR startet einen QAS-Lauf (der vorige wird abgebrochen), der ein
-  Pre-Release `v<version>-qas.<n>` zum Testen anlegt und im PR verlinkt. Nach „Approve and
-  deploy“ (Environment `production`) wird genau dieser Build befördert: Images per Digest
-  auf `:<version>` umgetaggt, Windows mit Release-Signing neu signiert, Tag `v<version>`
-  auf dem getesteten PR-Commit und Entwurfs-Release angelegt. Danach den PR in `qas`
-  mergen (Merge-Commit) → PR `qas` → `main` entsteht (`release-qas.yml`); dessen Merge
-  veröffentlicht das Release (`release-main.yml`). Direkte Pushes auf `qas` bauen nicht.
-  Einen Tag `v*` von Hand zu pushen, startet keinen Release mehr.
-- Der Workflow prüft Versionen, Registry-Namensraum und dass `v<version>` noch frei ist,
-  baut die Images multi-arch (linux/amd64, linux/arm64, ohne Build-Cache), pusht sie als
-  `:<version>-qas.<n>` nach GHCR (`:<version>` erst nach der Abnahme),
-  exportiert daraus per Digest die Archive je Architektur
-  (`scripts/export-image-archives.sh`, `MODE=pull` – identische Digests wie online) samt
-  `image-digests.json`, baut den Windows-Installer (windows-latest, MSVC, NSIS deutsch) und
-  die macOS-DMGs (Apple Silicon und Intel) mit eingebetteten Images
-  (`--config src-tauri/tauri.release.conf.json`) und legt ein **Entwurfs-Release** mit
-  `SHA256SUMS.txt` und Build-Provenance-Attestierung an.
-  macOS-Signatur/Notarisierung ist vorbereitet, läuft aber nur, wenn das Secret
-  `APPLE_CERTIFICATE` (plus `APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY`,
-  `APPLE_ID`, `APPLE_PASSWORD`, `APPLE_TEAM_ID`) im Environment `qas` gesetzt ist.
-  Die Windows-Signatur läuft über SignPath, sobald `SIGNPATH_API_TOKEN` und die
-  SignPath-Variablen gesetzt sind: in `qas` für Test-Signing, in `release` für
-  Release-Signing. Sonst bleibt Windows unsigniert, mit Warnung
-  ([`docs/RELEASE_SIGNING.md`](docs/RELEASE_SIGNING.md)). Windows wird dafür in Jobs
-  aufgeteilt: `build-windows` kompiliert die App, `bundle-windows` (QAS) und
-  `promote-windows` (nach der Abnahme) bündeln sie mit `tauri bundle` und signieren
-  dabei in Runden (`scripts/signpath-stage.mjs`).
-- `.github/workflows/images.yml` baut die Images bei Änderungen nur noch als `:edge` /
-  `:sha-…`; Versions-Tags kommen ausschließlich aus dem Release-Workflow.
-- GHCR-Namen müssen klein geschrieben sein (der Workflow wandelt den Owner um).
-- **Noch zu prüfen:** Nach dem ersten Push sind GHCR-Pakete standardmäßig **privat**
-  (siehe „Sicherheit“ → „Nötige GitHub-Einstellungen“).
-
-Normale Builds (`npm run tauri build`, CI) enthalten keine Images und bleiben klein; die
-App funktioniert dann über GHCR (bzw. `:dev` in Debug-Builds). Lokaler Build mit
-eingebetteten Images (das Skript schreibt auch `image-digests.json`, aber ohne
-Registry-Digest – die App prüft die Archive, lädt aber nichts herunter):
-
-```sh
-scripts/export-image-archives.sh amd64     # -> src-tauri/resources/images/ (Archive + image-digests.json, nicht eingecheckt)
-scripts/fetch-llama-server.sh win-x64      # -> src-tauri/resources/llama/ (bzw. macos-arm64 / macos-x64)
-npm run tauri build -- --config src-tauri/tauri.release.conf.json
-# Windows-Installer unter Linux:
-npm run tauri build -- --target x86_64-pc-windows-gnu --bundles nsis --config src-tauri/tauri.release.conf.json
-```
-
-Portable Windows-Version: die Ordner `images` (mit den Archiven und `image-digests.json`)
-und `llama` (llama-server und DLLs) neben `code-pruefer.exe` legen – unter Windows ist der Tauri-Ressourcenordner immer der
-Ordner der exe.
-
-### Projektstruktur
-
-```
-src/                     React-Frontend (Monaco-Editor, Tabs Aufgabe/Testfälle/Ergebnis)
-src/styles.css           Design-Tokens als CSS-Variablen (hell/dunkel) und Komponenten
-src/dev/mockBackend.ts   Simuliertes Backend für VITE_MOCK=1 npm run dev (nur Entwicklung)
-docs/design/             DESIGN.md, design-tokens.json, design-preview.html
-src-tauri/src/
-  lib.rs                 Tauri-Commands: docker_status, get_engine, set_engine,
-                         start_engine, list_languages, run_tests,
-                         prepare_images, update_images, import_task_document,
-                         ai_status, download_model, import_model, delete_model,
-                         select_model, generate_tests, suggest_ocr_fixes,
-                         check_variations, cancel_ai
-  ai/llama.rs            llama-server als Sidecar (Start, /health, Client, Abbruch)
-  ai/models.rs           Modellkatalog (catalog.json), Hardware, Download, Import
-  ai/pipeline.rs         Testfälle erzeugen: Lösungen, Beispiele, Mehrheit, Konfidenz
-  ai/prompts.rs          Prompts, JSON-Schemas, Code aus Antworten extrahieren
-  ai/ocr_fix.rs          KI-Korrektur von OCR-Text: Prompt, Plausibilitätsfilter
-  ai/variation.rs        Variationstest: Eingaben/Szenarien, Literalersetzung, Erklärung
-  docs/mod.rs            Import von Aufgabenblättern (Bild, PDF, DOCX), Limits
-  docs/docx.rs           Text aus word/document.xml
-  docs/pdf.rs            Textebene pro Seite, Erkennung gescannter Seiten
-  docs/layout.rs         Zeilen und Einrückung aus OCR-Wortboxen rekonstruieren
-  docs/ocr/              Systemeigene Texterkennung: win.rs (Windows.Media.Ocr,
-                         Windows.Data.Pdf), mac.rs (Vision, PDFKit),
-                         prepare.rs (Bildvorbereitung: Kontrast, Hochskalieren)
-  docker_detect.rs       Erkennung: nicht installiert / nicht gestartet / ok
-  engine.rs              Engine-Auswahl (Datei/Registry), Start, Podman-Pipe
-  app_update.rs          App-Updater (tauri-plugin-updater): Intervall, Suche, Installation
-  runner/mod.rs          Ablauf einer Prüfung, Bewertung der Testfälle
-  runner/docker.rs       Engine-Verbindung, Image-Pull/-Load, gehärteter Container
-  runner/images.rs       Image-Auflösung: vorhanden → Archiv → GHCR → :dev
-  runner/languages.rs    Sprachtabelle (Image, Dateiname, Befehle, Zeitlimits)
-  runner/compare.rs      Normalisierung, Zeilen-Diff, Ausgabebegrenzung
-  runner/template.rs     Ausgabevorlagen mit Platzhaltern: Prüfung und Abgleich
-src-tauri/windows/       NSIS-Installer: Template + Hooks (Engine-Auswahl, winget)
-src-tauri/tauri.release.conf.json
-                         Release-Overlay: bündelt resources/images/*.tar.gz,
-                         resources/images/image-digests.json und resources/llama/*
-images/                  Dockerfiles der Runner-Images
-scripts/signpath-stage.mjs, scripts/signpath-round.sh
-                         Windows-Signatur über SignPath in Runden (release.yml)
-scripts/updater.mjs      App-Updater: Konfigurations-Overlay (öffentlicher Schlüssel),
-                         Signaturprüfung, latest.json (release.yml)
-scripts/check-version-unreleased.sh, scripts/release-notes.sh
-                         Release-Workflow: Version frei?, Release-Notizen
-scripts/pr-head-check.sh, scripts/release-stage.sh
-                         PR-Stand prüfen; PR qas → main, Release veröffentlichen
-.signpath/               SignPath-Artefaktkonfigurationen (zum Einfügen in SignPath)
-docs/CODE_SIGNING_POLICY.md, docs/RELEASE_SIGNING.md
-                         Code-Signing-Policy (englisch) und Einrichtung (deutsch)
-docs/RELEASE_QAS.md      Release-Ablauf mit QAS-Stufe und Abnahme
-docs/UPDATER.md          App-Updater: Ablauf, Schlüssel, Einrichtung, Test
-LICENSE                  MIT-Lizenz
-scripts/export-image-archives.sh
-                         Image-Archive und image-digests.json erzeugen
-scripts/fetch-llama-server.sh
-                         llama-server (gepinnt, SHA-256) nach resources/llama/
-scripts/pin-models.sh    Modellkatalog aus der Hugging-Face-API pinnen (--check, --verify)
-scripts/artifact-manifest.sh  SHA-256-Manifeste der Release-Artefakte zwischen Jobs
-scripts/install-signer.sh     nur die Tauri-CLI für die Updater-Signatur (ohne npm ci)
-THIRD_PARTY_NOTICES.txt  Lizenzen von llama.cpp u. a. (wird mitgeliefert)
-.github/workflows/       ci.yml, images.yml (edge), release.yml (PRs nach qas: QAS, Abnahme, Release),
-                         release-qas.yml (PR qas → main), release-main.yml (Release veröffentlichen),
-                         pin-models.yml (Modellkatalog pinnen → Pull Request)
-.github/dependabot.yml   Updates für Actions, npm, cargo, Basis-Images
-```
-
-Eine neue Sprache benötigt einen Eintrag in `runner/languages.rs` und ein Dockerfile
-unter `images/`.
-
-## Bekannte Einschränkungen
-
-- Nur Python und Java; Java-Code muss eine Klasse `Main` enthalten (Datei `Main.java`).
-- Testfälle werden manuell eingegeben oder mit der lokalen KI vorgeschlagen (siehe „KI und
-  Texterkennung“); keine Speicherung von Aufgaben/Testfällen.
-- Vergleich nur über stdout (Zeilen, Wörter oder Zahlen mit Toleranz, optional gegen eine
-  Ausgabevorlage).
-- Ausgabevorlagen erkennt nur die KI; von Hand lässt sich keine Vorlage anlegen.
-- Der Variationstest braucht eine KI-Musterlösung und ersetzt Startwerte nur in einfachen
-  Zuweisungen (`x = 15`, `int x = 15;`, `this.x = 15;`, `self.x = 15`), nicht in Formeln,
-  Arrays, Methodenaufrufen oder Mehrfachzuweisungen wie `a, b = 15, 10`. Er kann einen
-  Fehler übersehen und irrt, wenn die Musterlösung falsch ist.
-- Die Vorlagenprüfung gilt für alle Testfälle (auch für Randfälle mit anderer Ausgabe);
-  dann „Vorlage nicht verwenden“.
-- Builds sind noch nicht signiert: Windows SmartScreen und macOS Gatekeeper warnen beim
-  ersten Start (Windows-Signatur über die SignPath Foundation ist vorbereitet, siehe
-  „Code-Signing“; macOS-Signatur und Notarisierung fehlen noch).
-- Die portable Windows-Version aktualisiert sich nicht selbst (siehe „Updates“).
-- Mit eingebetteten Images ist der Installer deutlich größer (Java-Image ≈ 200 MB).
-- Benötigt eine Container-Engine (Docker Desktop oder Podman); der Windows-Installer kann
-  sie über winget nachinstallieren.
-- Texterkennung nur unter Windows und macOS.
-
-Geplant für spätere Versionen: weitere Sprachen (C/C++/C#/JavaScript), signierter
-Aufgabenkatalog, macOS-Signatur.
-
-## Code-Signing
-
-Windows-Releases sollen über das Open-Source-Programm der SignPath Foundation signiert
-werden:
-
-> Free code signing provided by [SignPath.io](https://about.signpath.io/), certificate by
-> [SignPath Foundation](https://signpath.org/).
-
-Kurzfassung der [Code-Signing-Policy](docs/CODE_SIGNING_POLICY.md) (englisch, verbindlich):
-Signiert werden nur Windows-Builds, die GitHub Actions in diesem Repository aus einem
-Release-Branch `qas` baut, und zwar `code-pruefer.exe`, `uninstall.exe` und der
-Installer. Mit dem Release-Zertifikat wird erst nach der QAS-Abnahme signiert.
-Autor, Committer, Reviewer und Approver ist Bernhard Götz. Jeder Signaturauftrag wird
-von Hand freigegeben. Datenschutz: Die App arbeitet lokal, ohne Telemetrie. Netzwerk nutzt
-sie nur für den optionalen Modell-Download von huggingface.co, für das Laden der
-Runner-Images von ghcr.io (über Docker/Podman), für die Update-Suche auf github.com
-(abschaltbar, [`docs/UPDATER.md`](docs/UPDATER.md)), über Podman einmalig für dessen
-VM-Image (`podman machine init`) und im Installer auf Nachfrage über winget
-(vollständige Liste: „Datenschutz und Netzwerkzugriffe“). Einrichtung und offene Punkte (z. B.
-Fremdbinaries wie llama.cpp): [`docs/RELEASE_SIGNING.md`](docs/RELEASE_SIGNING.md).
-
-## Lizenz
-
-[MIT](LICENSE) © 2026 Bernhard Götz. Mitgelieferte Drittsoftware: siehe
-[`THIRD_PARTY_NOTICES.txt`](THIRD_PARTY_NOTICES.txt).
-
-## Recherche: lokale KI und Texterkennung
-
-[`docs/ENTSCHEIDUNGSGRUNDLAGE_lokale-KI-Aufgabenchecker.md`](docs/ENTSCHEIDUNGSGRUNDLAGE_lokale-KI-Aufgabenchecker.md)
-ist die Entscheidungsgrundlage für das Hochladen von Aufgabenblättern (Bild, PDF, DOCX),
-die systemeigene Texterkennung und die lokale Erzeugung von Testfällen. Sie ist eine
-Recherche, keine Spezifikation: Übernommen werden vor allem Pipeline, Mehrheitsentscheid,
-Konfidenz und Ausgabevergleich. Die Abschnitte 8 (Sandbox) und 10 (Verteilung/JavaFX)
-gelten für diese App nicht, weil sie auf Tauri/Rust mit Docker bzw. Podman aufbaut.
+| **Bestanden** | Die Ausgabe stimmt. |
+| **Falsche Ausgabe** | Die Ausgabe weicht ab. Darunter siehst du einen Zeilenvergleich („erwartet“ gegen „tatsächlich“). |
+| **Zeitüberschreitung** | Das Programm war zu langsam, z. B. eine Endlosschleife – oder es wartet auf eine Eingabe, die der Testfall nicht liefert. |
+| **Laufzeitfehler** | Das Programm ist abgestürzt (z. B. eine Ausnahme/Exception). |
+| **Fehler** | Die Prüfumgebung selbst ist ausgefallen. |
+| **Ausgabeformat weicht von Vorlage ab** | Siehe unten bei „Ausgabevorlagen“. |
+| **Nur für die gegebenen Werte richtig** | Siehe unten bei „Variationstest“. |
+
+Lässt sich dein Code gar nicht übersetzen, siehst du statt der Testfälle einen **Kompilierfehler** mit der Meldung des Compilers.
+
+**Aufgabenblatt hochladen (Tab „Aufgabe“).** Du kannst die Aufgabenstellung einfügen oder über **„Aufgabe hochladen …“** eine Datei laden: **Word (.docx), PDF oder Bild (PNG, JPEG)**, höchstens 20 MB und 20 Seiten. Der Text wird auf deinem Computer gelesen. Bei Bildern und eingescannten PDF-Seiten benutzt die App die **Texterkennung (OCR)** von Windows bzw. macOS. Unter Windows muss dafür eine Sprache mit Texterkennung installiert sein (*Einstellungen → Zeit und Sprache → Sprache*). Erkannter Text kann Fehler enthalten (z. B. `0` statt `O` oder `1` statt `l`) – deshalb musst du ihn prüfen und das Häkchen **„Text geprüft und korrigiert“** setzen.
+
+**KI: „Testfälle mit KI erzeugen“ (Tab „Testfälle“).** Die KI geht so vor – und die Reihenfolge ist wichtig:
+1. Sie liest die Aufgabe und schreibt **mehrere eigene Lösungen** (je nach Modell 5 oder 3) und **Testeingaben**.
+2. Die Lösungen werden in der Sandbox (im Container) wirklich **ausgeführt**.
+3. Die **erwartete Ausgabe** ist die, auf die sich die Mehrheit der Lösungen einigt. Die KI *schreibt* die erwarteten Ausgaben also nie selbst.
+4. Du bekommst eine **Konfidenz** (Vertrauensstufe): **Grün** = hohe Sicherheit (die Beispiele des Aufgabenblatts bestanden, die Lösungen sind sich einig), **Gelb** = nur ein Hinweis, bitte die erwarteten Ausgaben prüfen, **Rot** = keine verlässlichen Testfälle möglich (dann gibt es auch keine).
+
+Die erzeugten Testfälle werden an deine vorhandenen angehängt und mit **„KI“** markiert. Du kannst sie bearbeiten. Bei Aufgaben ohne Beispiele, mit mehreren richtigen Lösungen, mit Zufall, GUI oder Dateien ist das Ergebnis höchstens ein Hinweis.
+
+**Ausgabevorlagen.** Manche Aufgabenblätter zeigen nur das *Format* der Ausgabe mit einem Platzhalter, z. B. „12345678 seconds have passed“. Erkennt die KI so eine Vorlage, wird sie beim Prüfen nur als **Formatprüfung** genutzt (nicht als feste Erwartung). Unter „Testfälle mit KI“ siehst du die erkannte Vorlage und kannst sie mit **„Vorlage nicht verwenden“** verwerfen. Das ist nützlich, wenn eigene Randfälle (z. B. „Ungültige Eingabe“) absichtlich etwas anderes ausgeben.
+
+**Variationstest.** Ein Programm kann *zufällig* das richtige Ergebnis liefern, obwohl die Rechnung falsch ist. Beispiel: Mit einer falschen Formel kommt für genau die Zahlen der Aufgabe das richtige Ergebnis heraus, mit anderen Zahlen aber nicht. Der Variationstest ändert deshalb Werte und lässt deinen Code **und** die Musterlösung der KI laufen. Weicht dein Code ab, bekommen bisher bestandene Tests den Status „Nur für die gegebenen Werte richtig“. Der Variationstest läuft nur, wenn
+- dein Code kompiliert und mindestens ein Test bestanden ist,
+- vorher „Testfälle mit KI erzeugen“ für genau diesen Aufgabentext gelaufen ist (daher kommt die Musterlösung),
+- ein KI-Modell eingerichtet ist.
+
+Er ist ein starker Hinweis, aber kein Beweis (die Musterlösung ist ja selbst von der KI). Du kannst ihn mit dem Schalter neben „Prüfen“ ausschalten.
+
+**OCR-Korrektur.** Wurde ein Aufgabenblatt per Texterkennung gelesen, gibt es unter dem Text die Schaltfläche **„Erkennungsfehler mit KI korrigieren“**. Die KI schlägt dann nur **kleine Zeichenkorrekturen** vor (z. B. `1`/`l`, `0`/`O`, fehlende Anführungszeichen oder Klammern). Jeder Vorschlag wird dir farbig gezeigt, und du entscheidest einzeln: **Übernehmen** oder **Verwerfen** – oder **„Alle übernehmen“**. Mit **„Ursprünglichen Text wiederherstellen“** gehst du zurück zum Rohtext. Es wird nichts automatisch geändert.
+
+**Updates.** Die installierte Version sucht beim Start (danach höchstens einmal am Tag) auf GitHub nach einer neuen Version. Findet sie eine, erscheint **„Update verfügbar“** mit den Neuerungen. Mit **„Jetzt aktualisieren“** lädt die App das Update, prüft seine Signatur, installiert es und startet neu. Mit **„Später“** wirst du beim nächsten Mal wieder gefragt. **Achtung:** Beim Neustart gehen nicht gespeicherte Eingaben (Code, Testfälle) verloren. Unter *Zahnrad → Updates* kannst du einstellen, wie oft gesucht wird (täglich, wöchentlich, nie) oder sofort suchen.
+
+**Was wird gespeichert?** Dein Code, die Aufgabe und die Testfälle werden **nicht** gespeichert. Wenn du das Programm schließt, sind sie weg. Kopiere dir deinen Code also vorher, wenn du ihn behalten willst. Gespeichert werden nur Einstellungen (z. B. Farbschema, gewählte Container-Engine, gewähltes KI-Modell, Update-Intervall).
+
+---
+
+## 6. Bedienung Schritt für Schritt
+
+So sieht ein typischer Ablauf aus. Das Fenster hat oben den **Code-Editor** mit dem Knopf **„Prüfen“** und darunter drei Reiter: **Aufgabe**, **Testfälle**, **Ergebnis**.
+
+1. **Docker prüfen:** Oben rechts muss stehen, dass Docker läuft (grünes Lämpchen). Wenn nicht, siehe [Erster Start](#4-erster-start).
+2. **Sprache wählen:** Links über dem Editor wählst du **Python** oder **Java**. Im Editor steht schon ein kleines Beispielprogramm, das du überschreiben kannst. Bei Java muss die Klasse `Main` heißen.
+3. **Code eingeben** – oder eine Datei (`.py` bzw. `.java`) in den Editor laden.
+4. **Aufgabe eintragen (optional, nötig für die KI):** Im Tab **„Aufgabe“** den Text einfügen oder mit **„Aufgabe hochladen …“** laden. Den Text kontrollieren, ggf. korrigieren und **„Text geprüft und korrigiert“** anhaken.
+5. **Testfälle anlegen:** Im Tab **„Testfälle“** mit **„+ Testfall hinzufügen“** einen Testfall erstellen. Trage die **Eingabe (stdin)** und die **erwartete Ausgabe (stdout)** ein. Beispiel: Eingabe `Welt`, erwartete Ausgabe `Hallo, Welt!`. Oder: mit **„Testfälle mit KI erzeugen“** vorschlagen lassen (dafür siehe KI-Einrichtung oben) und die Ergebnisse kritisch prüfen.
+6. **Vergleich wählen:** Bei **„Vergleich:“** den Modus einstellen (meist reicht „Zeilen (exakt)“).
+7. **Auf „Prüfen“ klicken.** Die App springt zum Tab **„Ergebnis“**. Oben steht z. B. **„3 von 4 Tests bestanden“**.
+8. **Ergebnis lesen:** Bei jedem Testfall siehst du den Status, bei Fehlern den Vergleich **erwartet gegen tatsächlich**, dazu `stdout`, `stderr` (Fehlermeldungen) und die Laufzeit. Leerzeichen am Zeilenende erscheinen als `·` und ein Zeilenumbruch am Ende als `⏎`, damit du solche unsichtbaren Unterschiede findest.
+9. **Code verbessern und erneut prüfen.**
+10. Ist der **Variationstest** an, läuft er nach dem Ergebnis automatisch (wenn die Voraussetzungen erfüllt sind). Du siehst „Prüfe mit veränderten Werten …“ und kannst abbrechen.
+
+**Einstellungen (Zahnrad oben rechts):** Farbschema (hell, dunkel, System), Container-Engine (Docker oder Podman) mit **„Images aktualisieren“**, KI-Modell verwalten, Updates.
+
+---
+
+## 7. Häufige Probleme und Lösungen
+
+**„Keine laufende Container-Engine gefunden“ / „Docker Desktop ist installiert, aber nicht gestartet“**
+Docker Desktop öffnen und warten, bis „Engine running“ dasteht. Dann im Code-Prüfer **„Erneut prüfen“** klicken. Die Meldung nennt zu jedem Verbindungsversuch einen Grund – der hilft bei der Suche. Bei „Zugriff verweigert“: Mitglied der Windows-Gruppe `docker-users` werden (siehe Abschnitt 3, Tabelle „Typische Fehlermeldungen“).
+
+**Docker startet nicht („Virtualization support not detected“, „WSL 2 installation is incomplete“)**
+Siehe [Abschnitt 3](#3-installation-schritt-für-schritt), „Wenn Docker/Podman nicht starten“: zuerst `bcdedit /set hypervisorlaunchtype auto` (CMD als Administrator, danach neu starten), dann ggf. Virtualisierung im BIOS/UEFI einschalten, dann `wsl --install` und `wsl --update`.
+
+**„Das Runner-Image für … ist nicht vorhanden“**
+Die Prüf-Umgebung konnte nicht geladen werden. Internet prüfen und unter *Zahnrad → Container-Engine* auf **„Images aktualisieren“** klicken – oder den Code-Prüfer neu installieren.
+
+**Mein Test meldet „Zeitüberschreitung“, obwohl der Code stimmt**
+Dein Programm wartet vielleicht auf mehr Eingaben, als der Testfall liefert. Die Eingabe muss **alle** Zeilen enthalten, die dein Programm liest (jedes `input()` braucht eine Zeile).
+
+**„Falsche Ausgabe“, aber sie sieht gleich aus**
+Oft ist es ein unsichtbarer Unterschied: ein Leerzeichen am Zeilenende oder ein Zeilenumbruch am Ende. Schau auf die Symbole `·` und `⏎` im Ergebnis. Probiere ggf. den Vergleichsmodus **„Wörter (Leerraum egal)“**.
+
+**„Testfälle mit KI erzeugen“ ist ausgegraut**
+Fahre mit der Maus darüber oder lies den Hinweis daneben. Meistens fehlt eines davon: Aufgabentext nicht als geprüft markiert, kein KI-Modell eingerichtet, eine Prüfung läuft noch, Docker startet gerade, die Prüf-Umgebungen werden noch vorbereitet.
+
+**Die KI-Konfidenz ist Gelb oder Rot**
+Lege Testfälle von Hand an oder prüfe die vorgeschlagenen erwarteten Ausgaben. Oft hilft ein klarerer Aufgabentext mit Beispielen.
+
+**Tests zeigen „Ausgabeformat weicht von Vorlage ab“**
+Im Tab „Testfälle“ prüfen, ob die erkannte Vorlage stimmt. Gilt sie nicht für diesen Testfall (z. B. bei einem Randfall), auf **„Vorlage nicht verwenden“** klicken und erneut prüfen.
+
+**„Variationstest übersprungen“**
+Der Hinweis nennt den Grund (z. B. keine Musterlösung vorhanden, kein KI-Modell). Das ist kein Fehler. Du kannst den Test mit dem Schalter neben „Prüfen“ abschalten.
+
+**Die KI startet unter Windows nicht**
+Es fehlt die **Microsoft Visual C++ Laufzeit**. Die App zeigt dazu einen Link zum Microsoft-Download an (`https://aka.ms/vs/17/release/vc_redist.x64.exe`).
+
+**Keine Texterkennung unter Windows (Bild/PDF wird nicht gelesen)**
+Installiere unter *Einstellungen → Zeit und Sprache → Sprache* eine Sprache mit Texterkennung, z. B. „Deutsch (Deutschland)“.
+
+**Das KI-Modell lässt sich nicht herunterladen**
+Prüfe die Internetverbindung (Download von `huggingface.co`). In Schulnetzen kann das gesperrt sein. Dann: Datei auf einem anderen Rechner laden und über „Weitere Optionen (ohne Internet)“ importieren.
+
+**Die KI ist sehr langsam**
+Das ist bei Rechnern ohne Grafikbeschleunigung normal. Wähle ggf. das kleinere Modell. Schließe andere Programme. Prüfe, ob die App eine AVX2-Warnung zeigt.
+
+**macOS meldet beim Start „… kann nicht geöffnet werden“**
+Die macOS-Version ist noch nicht signiert. Im Finder mit Rechtsklick auf „Code-Prüfer“ → **„Öffnen“** → noch einmal **„Öffnen“** bestätigen.
+
+**Ich habe etwas geschlossen und mein Code ist weg**
+Der Code-Prüfer speichert Code, Aufgaben und Testfälle nicht. Kopiere deinen Code in eine eigene Datei, bevor du das Programm schließt oder ein Update installierst.
+
+---
+
+## 8. Datenschutz in Kürze
+
+- Dein **Code, deine Aufgaben und Testfälle verlassen deinen Rechner nie.**
+- Es gibt **keine Benutzerkonten, keine Telemetrie** (Nutzungsdaten-Sammlung) und **keine Absturzberichte**.
+- Das Programm nutzt das Internet nur für: den einmaligen Download des KI-Modells (`huggingface.co`), das Nachladen der Prüf-Umgebungen aus dem Internet (`ghcr.io`, nur falls nötig), die Suche nach Updates (`github.com`, abschaltbar) und – nur auf Nachfrage im Installer – die Installation von Docker Desktop über *winget*.
+- Docker Desktop selbst ist ein Programm eines anderen Herstellers und kann nach seinen eigenen Einstellungen Verbindungen aufbauen.
+- Die verbindliche (englische) Fassung steht im Abschnitt „Privacy policy“ der [Code signing policy](docs/CODE_SIGNING_POLICY.md).
+
+---
+
+## 9. Weiterentwickeln und Lizenz
+
+Wenn du am Code-Prüfer mitarbeiten willst (Fehler beheben, neue Programmiersprache oder neues KI-Modell ergänzen, das Programm selbst bauen), findest du alles Nötige in **[`CONTRIBUTING.md`](CONTRIBUTING.md)**.
+
+**Lizenz:** [MIT-Lizenz](LICENSE), © 2026 Bernhard Götz. Du darfst das Programm frei nutzen, verändern und weitergeben. Die mitgelieferte Drittsoftware (u. a. llama.cpp) steht in [`THIRD_PARTY_NOTICES.txt`](THIRD_PARTY_NOTICES.txt).
+
+**Weitere Dokumente:** [`CHANGELOG.md`](CHANGELOG.md) (Änderungen je Version), [`docs/UPDATER.md`](docs/UPDATER.md) (Wie Updates funktionieren), [Code signing policy](#code-signing-policy) ([`docs/CODE_SIGNING_POLICY.md`](docs/CODE_SIGNING_POLICY.md)).
+
+---
+
+## Code signing policy
+
+Die vollständige Richtlinie (englisch, verbindlich): [`docs/CODE_SIGNING_POLICY.md`](docs/CODE_SIGNING_POLICY.md)
+
+**Stand:** Die kostenlose Code-Signierung der Windows-Programmdateien über die SignPath Foundation wird beantragt und ist **noch nicht genehmigt**. Bis zur Zusage sind die Windows-Installer unsigniert (siehe Abschnitt 3, Schritt 5). Die macOS-Versionen sind von dieser Richtlinie nicht erfasst.
+
+<!-- AGENT: Aktivierung der Attribution erst NACH der schriftlichen Zusage der SignPath Foundation UND nachdem das erste mit SignPath signierte Release veröffentlicht ist (Bernhard gibt das ausdrücklich an; nicht selbst entscheiden).
+Dann den Absatz "Stand" oben ersetzen durch genau diese Zeile (mit Links wie in docs/CODE_SIGNING_POLICY.md Zeilen 6-7):
+
+Free code signing provided by [SignPath.io](https://about.signpath.io/), certificate by [SignPath Foundation](https://signpath.org/).
+
+Der Wortlaut ohne Links lautet: Free code signing provided by SignPath.io, certificate by SignPath Foundation
+Gleichzeitig in docs/CODE_SIGNING_POLICY.md den Status von "beantragt" auf "genehmigt" setzen und die Release-Notizen-Zeile ergänzen (siehe AGENT-AUFTRAG.md, Aufgaben 4 und 7a). Diesen Kommentar danach löschen. -->
+
+**Rollen** (alle Rollen hat derzeit eine Person):
+
+| Rolle | Person |
+|---|---|
+| Committer | [Bernhard Götz](https://github.com/BernhardGoetz) |
+| Reviewer | [Bernhard Götz](https://github.com/BernhardGoetz) |
+| Approver (gibt jeden Signaturauftrag frei) | [Bernhard Götz](https://github.com/BernhardGoetz) |
+
+**Datenschutz (Privacy policy):** Die App arbeitet lokal, hat keine Konten, keine Telemetrie und sendet weder Code noch Aufgaben oder Testfälle an Dritte. Netzwerkverbindungen gibt es nur für den optionalen Modell-Download (`huggingface.co`), das Laden der Prüf-Umgebungen (`ghcr.io`, über Docker/Podman), die abschaltbare Update-Suche (`github.com`) und auf Nachfrage im Installer die Installation einer Container-Engine über *winget*. Einzelheiten stehen in [Abschnitt 8](#8-datenschutz-in-kürze) und in der [Policy](docs/CODE_SIGNING_POLICY.md).

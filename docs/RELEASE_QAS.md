@@ -297,7 +297,7 @@ Weitere Einstellungen:
   `release-qas.yml` (PR `qas` → `main`). Der Release-Entwurf ist dann trotzdem fertig.
 - **„Automatically delete head branches“ aus lassen**, sonst löscht GitHub `qas` nach dem
   Merge des PRs `qas` → `main`.
-- **Tag-Regel `v*`** (falls vorhanden, siehe README): Der Workflow legt die Tags
+- **Tag-Regel `v*`** (falls vorhanden, siehe `docs/VEROEFFENTLICHUNG.md` Abschnitt 1b): Der Workflow legt die Tags
   `v<version>-qas.<n>` und `v<version>` selbst an, mit dem `GITHUB_TOKEN` als
   „github-actions[bot]“. Entweder in der Ruleset-Bypass-Liste die App „GitHub Actions“
   eintragen, oder „Restrict creations“ abschalten und nur „Restrict updates“ und
