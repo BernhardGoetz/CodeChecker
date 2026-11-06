@@ -7,11 +7,13 @@ eingerichtet werden muss, und was danach für jede Version zu tun ist. Die Detai
 [`UPDATER.md`](UPDATER.md). Bei Widersprüchen gilt
 [`.github/workflows/release.yml`](../.github/workflows/release.yml).
 
-> **Ungetestet:** Keiner der Workflows (`release.yml`, `pin-models.yml`, `ci.yml`,
-> `images.yml`) ist bisher auf GitHub gelaufen. Geprüft sind Syntax und Sicherheitsregeln
-> (actionlint, zizmor) und Skriptteile lokal. Rechne beim ersten Lauf mit Nacharbeit.
-> Punkte, die ich nicht nachprüfen konnte (GitHub-/SignPath-Oberfläche), sind mit
-> **(ungeprüft)** markiert.
+> **Stand (2026-11-06):** Der Release-Workflow (`release.yml`) ist auf GitHub bereits
+> mehrfach gelaufen; veröffentlicht sind die Versionen `v1.0.0` (2026-11-03) und `v1.0.1`
+> (2026-11-05), jeweils mit Windows-Installer (unsigniert) und macOS-DMGs; `v1.0.2` liegt
+> als Entwurf vor. **Noch nicht gelaufen** sind die SignPath-Teile (Test- und
+> Release-Signing), weil das SignPath-Konto noch nicht existiert. Punkte, die nicht
+> nachgeprüft werden konnten (GitHub-/SignPath-Oberfläche), sind mit **(ungeprüft)**
+> markiert.
 
 ## 0. Überblick
 
