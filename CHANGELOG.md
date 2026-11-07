@@ -7,7 +7,7 @@ Format nach [Keep a Changelog](https://keepachangelog.com/de/1.1.0/), Versionen 
 
 ## [Unveröffentlicht]
 
-## [1.0.3] - 2026-11-06
+## [1.0.3] - 2026-11-07
 
 ### Hinzugefügt
 
