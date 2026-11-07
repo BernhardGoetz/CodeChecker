@@ -7,6 +7,11 @@ Format nach [Keep a Changelog](https://keepachangelog.com/de/1.1.0/), Versionen 
 
 ## [Unveröffentlicht]
 
+### Behoben
+
+- Kompatibilität mit sysinfo 0.40 (Dependabot-Update): Der Code wurde an die neue API
+  angepasst; ohne diese Anpassung ließ sich `main` nicht bauen.
+
 ## [1.0.3] - 2026-11-07
 
 ### Hinzugefügt

@@ -222,7 +222,7 @@ async fn llama_server_hardening() {
     assert_eq!(record.exe, llama::server_path().unwrap());
 
     // The key is not on any command line (only in llama-server's env).
-    let mut system = sysinfo::System::new();
+    let mut system = sysinfo::System::new().unwrap();
     system.refresh_processes_specifics(
         sysinfo::ProcessesToUpdate::All,
         true,
