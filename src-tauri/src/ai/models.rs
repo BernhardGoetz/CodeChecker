@@ -305,10 +305,12 @@ fn detect_avx2() -> Option<bool> {
 
 pub fn hardware() -> Hardware {
     use sysinfo::{MemoryRefreshKind, RefreshKind, System};
-    let sys = System::new_with_specifics(
+    // 0 = unbekannt; hardware_warnings ignoriert das.
+    let ram = System::new_with_specifics(
         RefreshKind::nothing().with_memory(MemoryRefreshKind::everything()),
-    );
-    let ram = sys.total_memory();
+    )
+    .map(|sys| sys.total_memory())
+    .unwrap_or(0);
     let avx2 = detect_avx2();
     Hardware {
         total_ram_bytes: ram,

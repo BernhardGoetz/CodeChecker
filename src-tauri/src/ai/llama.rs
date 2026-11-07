@@ -142,6 +142,7 @@ pub fn batch_thread_count() -> usize {
 /// Threads for inference: the physical cores (hyper-threads do not help).
 pub fn thread_count() -> usize {
     sysinfo::System::physical_core_count()
+        .ok()
         .or_else(|| std::thread::available_parallelism().ok().map(|n| n.get()))
         .unwrap_or(4)
         .clamp(1, 32)
@@ -293,7 +294,7 @@ pub fn kill_stale(pid_file: &Path, binary: &Path) -> Option<u32> {
         return None;
     }
     let pid = sysinfo::Pid::from_u32(record.pid);
-    let mut system = sysinfo::System::new();
+    let mut system = sysinfo::System::new().ok()?;
     system.refresh_processes_specifics(
         sysinfo::ProcessesToUpdate::Some(&[pid]),
         true,
@@ -1125,7 +1126,7 @@ mod tests {
             .unwrap();
         let pid = child.id();
         let exe = {
-            let mut system = sysinfo::System::new();
+            let mut system = sysinfo::System::new().unwrap();
             let p = sysinfo::Pid::from_u32(pid);
             system.refresh_processes_specifics(
                 sysinfo::ProcessesToUpdate::Some(&[p]),

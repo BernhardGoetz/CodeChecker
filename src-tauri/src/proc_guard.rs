@@ -134,7 +134,7 @@ mod tests {
 
     #[test]
     fn resident_memory_of_this_process() {
-        let mut system = sysinfo::System::new();
+        let mut system = sysinfo::System::new().unwrap();
         let rss = resident_bytes(&mut system, std::process::id()).unwrap();
         assert!(rss > 1024 * 1024, "{rss}");
         // A pid that does not exist (beyond the usual pid range).

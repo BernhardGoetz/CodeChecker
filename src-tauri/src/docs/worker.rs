@@ -326,7 +326,8 @@ fn supervise(
     let started = Instant::now();
     let mut last_progress = started;
     let mut last_memory_check = started;
-    let mut system = sysinfo::System::new();
+    // Ohne sysinfo (Err) entfällt nur die Speicherüberwachung.
+    let mut system = sysinfo::System::new().ok();
     let pid = child.0.id();
     loop {
         match rx.recv_timeout(Duration::from_millis(50)) {
@@ -363,7 +364,9 @@ fn supervise(
         }
         if now.duration_since(last_memory_check) >= crate::proc_guard::MEMORY_POLL {
             last_memory_check = now;
-            if crate::proc_guard::resident_bytes(&mut system, pid)
+            if system
+                .as_mut()
+                .and_then(|system| crate::proc_guard::resident_bytes(system, pid))
                 .is_some_and(|rss| rss > config.memory_limit)
             {
                 return Err(RunError::Failed(Failure::Memory(config.memory_limit)));
