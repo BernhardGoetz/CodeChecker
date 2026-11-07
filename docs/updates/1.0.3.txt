@@ -1,0 +1,8 @@
+Code-Prüfer 1.0.3 – neue Anleitung und Vorbereitung der Windows-Signatur.
+
+- Die Anleitung (README) ist neu geschrieben: Installation, Bedienung und Hilfe bei Problemen Schritt für Schritt.
+- Für Entwicklerinnen und Entwickler gibt es eine eigene Anleitung (CONTRIBUTING.md).
+- Die Regeln für die Code-Signierung (Code signing policy) sind überarbeitet; die Windows-Signatur über die SignPath Foundation wird beantragt.
+- An der Bedienung des Programms ändert sich nichts.
+
+Alle Änderungen stehen auf der Release-Seite auf GitHub.

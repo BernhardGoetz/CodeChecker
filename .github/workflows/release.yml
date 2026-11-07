@@ -518,9 +518,6 @@ jobs:
       SIGNPATH_ORGANIZATION_ID: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
       SIGNPATH_PROJECT_SLUG: ${{ vars.SIGNPATH_PROJECT_SLUG }}
       SIGNPATH_SIGNING_POLICY_SLUG: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}
-      # Fremdbinaries (llama.cpp-Laufzeit, NSIS-Plugins) nur signieren, wenn
-      # die SignPath Foundation das ausdrücklich erlaubt hat.
-      SIGNPATH_SIGN_UPSTREAM: ${{ vars.SIGNPATH_SIGN_UPSTREAM == 'true' }}
       SIGNPATH_SIGNED_DIR: ${{ github.workspace }}/signpath/signed
     steps: &windows-bundle-steps
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -628,7 +625,7 @@ jobs:
           {
             echo "### Windows-Signatur: SignPath"
             echo
-            echo "Signing Policy: \`$SIGNPATH_SIGNING_POLICY_SLUG\`, Fremdbinaries signieren: \`$SIGNPATH_SIGN_UPSTREAM\`"
+            echo "Signing Policy: \`$SIGNPATH_SIGNING_POLICY_SLUG\`"
           } >> "$GITHUB_STEP_SUMMARY"
 
       # --no-binary-patching: Tauri würde sonst code-pruefer.exe bei jedem
@@ -672,11 +669,8 @@ jobs:
       # Signieren in Runden (scripts/signpath-stage.mjs): Jede Runde bündelt
       # neu; Tauri ruft dabei für jede zu signierende Datei das Skript auf,
       # das bereits signierte Fassungen einsetzt und den Rest sammelt. Das
-      # Gesammelte geht als Artefakt an SignPath. Ohne Fremdbinaries:
+      # Gesammelte geht als Artefakt an SignPath.
       #   Runde 1: code-pruefer.exe + Uninstaller, Runde 2: Installer.
-      # Mit Fremdbinaries (SIGNPATH_SIGN_UPSTREAM=true):
-      #   Runde 1: code-pruefer.exe, llama-Laufzeit, NSIS-Plugins,
-      #   Runde 2: Uninstaller (enthält die Plugins), Runde 3: Installer.
       # Jeder Signaturauftrag wartet bis zu einer Stunde (bei Release-
       # Signing muss er in SignPath manuell freigegeben werden).
       - name: "Runde 1: bündeln und sammeln"
@@ -836,8 +830,8 @@ jobs:
       # Job fehl, wenn Installer, code-pruefer.exe oder uninstall.exe nicht
       # signiert sind, eine Datei eine ungültige Signatur hat oder eine
       # unbekannte PE-Datei unsigniert ist. Fremdbinaries (llama-Laufzeit,
-      # NSIS-Plugins) dürfen nur ohne SIGNPATH_SIGN_UPSTREAM unsigniert sein
-      # (Warnung). Mit einer Test-Signing-Policy (Slug enthält "test") ist
+      # NSIS-Plugins) sind immer unsigniert und erzeugen nur eine Warnung.
+      # Mit einer Test-Signing-Policy (Slug enthält "test") ist
       # das Zertifikat nicht vertrauenswürdig; dann genügt eine vorhandene
       # Signatur.
       - name: Signaturen prüfen
@@ -847,7 +841,6 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
           $enabled = $env:SIGNING_ENABLED -eq "true"
-          $upstreamSigned = $env:SIGNPATH_SIGN_UPSTREAM -eq "true"
           $trusted = $enabled -and ($env:SIGNPATH_SIGNING_POLICY_SLUG -notmatch "test")
           $installer = @(Get-ChildItem src-tauri/target/release/bundle/nsis/*-setup.exe)
           if ($installer.Count -ne 1) { throw "Erwartet genau einen Installer" }
@@ -866,21 +859,21 @@ jobs:
             $rows += "| ``$rel`` | $($sig.Status) | $subject |"
             $microsoft = $sig.Status -eq "Valid" -and $subject -match "O=Microsoft Corporation"
             $own = $f.FullName -eq $installer[0].FullName -or $rel -in @("code-pruefer.exe", "uninstall.exe")
-            $upstream = $rel -like "llama\*" -or $rel -like '$PLUGINSDIR\*'
+            $thirdParty = $rel -like "llama\*" -or $rel -like '$PLUGINSDIR\*'
             if ($microsoft) { continue }
             if (-not $sig.SignerCertificate) {
               if (-not $enabled) { continue }
-              if ($upstream -and -not $upstreamSigned) { $warnings += $rel; continue }
+              if ($thirdParty) { $warnings += $rel; continue }
               $errors += "$rel ist nicht signiert"
               continue
             }
-            if ($sig.Status -ne "Valid" -and ($trusted -or (-not $own -and -not $upstream))) {
+            if ($sig.Status -ne "Valid" -and ($trusted -or (-not $own -and -not $thirdParty))) {
               $errors += "$rel`: Signatur $($sig.Status) ($($sig.StatusMessage))"
             }
           }
           $summary = @("### Windows: Signaturen im Installer", "", "| Datei | Status | Signiert von |", "|---|---|---|") + $rows
           if ($warnings.Count -gt 0) {
-            $summary += @("", "Unsigniert (Fremdbinaries, SIGNPATH_SIGN_UPSTREAM ist nicht true): $($warnings.Count) Dateien.")
+            $summary += @("", "Unsigniert (Fremdbinaries, bewusst nicht signiert): $($warnings.Count) Dateien.")
             Write-Output "::warning::$($warnings.Count) Fremdbinaries (llama-Laufzeit, NSIS-Plugins) sind unsigniert; Smart App Control kann sie blockieren (docs/RELEASE_SIGNING.md)."
           }
           if (-not $enabled) { $summary += @("", "**Signatur nicht eingerichtet – alles unsigniert.**") }
@@ -892,7 +885,7 @@ jobs:
 
       # Nach der Abnahme: Inhalt mit dem getesteten QAS-Installer vergleichen.
       # Gleiche Dateiliste; jede Datei bitgleich, außer signierten PE-Dateien
-      # (eigene Dateien bzw. Fremdbinaries mit Signatur), die sich nur in der
+      # (eigene Dateien; Fremdbinaries sind unsigniert), die sich nur in der
       # Signatur unterscheiden dürfen: deren unsignierte Fassungen werden
       # über die Signatur-Manifeste (SHA-256 vor dem Signieren) verglichen.
       - name: QAS-Manifest holen
@@ -942,9 +935,9 @@ jobs:
           # (Ohne QAS-Signatur sind sie es per SHA256SUMS.txt von build-windows.)
           $qasManifest = "qas-manifest/signing-manifest.txt"
           if ((Test-Path $qasManifest) -and (Test-Path signpath/signing-manifest.txt)) {
-            $pick = { param($f) Get-Content $f | Where-Object { $_ -match '^(app|llama)-' } }
+            $pick = { param($f) Get-Content $f | Where-Object { $_ -match '^app-' } }
             $diff = Compare-Object @(& $pick $qasManifest) @(& $pick signpath/signing-manifest.txt)
-            if ($diff) { $errors += "Signatur-Manifeste (app/llama) unterscheiden sich: $($diff | Out-String)" }
+            if ($diff) { $errors += "Signatur-Manifeste (app) unterscheiden sich: $($diff | Out-String)" }
           }
           $summary = @("### Vergleich mit dem QAS-Installer", "",
             "$($names.Count) Dateien; nur in der Signatur verschieden: $($resigned.Count)",
@@ -1435,7 +1428,6 @@ jobs:
       SIGNPATH_ORGANIZATION_ID: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
       SIGNPATH_PROJECT_SLUG: ${{ vars.SIGNPATH_PROJECT_SLUG }}
       SIGNPATH_SIGNING_POLICY_SLUG: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}
-      SIGNPATH_SIGN_UPSTREAM: ${{ vars.SIGNPATH_SIGN_UPSTREAM == 'true' }}
       SIGNPATH_SIGNED_DIR: ${{ github.workspace }}/signpath/signed
     steps: *windows-bundle-steps
 

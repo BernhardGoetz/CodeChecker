@@ -18,18 +18,15 @@
 //      signiert, das Ergebnis wird mit --import nach SIGNPATH_SIGNED_DIR
 //      übernommen; dann folgt die nächste Runde (`tauri bundle`).
 //
-// Reihenfolge: Uninstaller und Installer enthalten andere Dateien. Der
-// Uninstaller wird erst gesammelt, wenn in derselben Runde kein NSIS-Plugin
-// mehr gesammelt wurde (er bettet die Plugins ein), der Installer erst, wenn
-// sonst nichts mehr zu signieren ist. Der Uninstaller wird von makensis
-// reproduzierbar erzeugt (gleiche Eingaben -> gleiches SHA-256; lokal
-// geprüft), deshalb findet die nächste Runde seine signierte Fassung.
+// Reihenfolge: Der Installer enthält die anderen Dateien und wird erst
+// gesammelt, wenn sonst nichts mehr zu signieren ist. Der Uninstaller wird
+// von makensis reproduzierbar erzeugt (gleiche Eingaben -> gleiches SHA-256;
+// lokal geprüft), deshalb findet die nächste Runde seine signierte Fassung.
 //
 // Nie neu signiert werden Dateien, die schon eine Authenticode-Signatur haben
-// (z. B. die Visual-C++-Laufzeit von Microsoft). Fremdbinaries ("upstream":
-// llama.cpp-Laufzeit, NSIS-Plugins) werden nur mit SIGNPATH_SIGN_UPSTREAM=true
-// gesammelt: Die Bedingungen der SignPath Foundation erlauben das Signieren
-// nur für selbst gebaute Software (siehe docs/RELEASE_SIGNING.md).
+// (z. B. die Visual-C++-Laufzeit von Microsoft). Fremdbinaries (llama.cpp-
+// Laufzeit, NSIS-Plugins) werden nie gesammelt, weil die SignPath Foundation
+// nur selbst gebaute Software signiert (siehe docs/RELEASE_SIGNING.md).
 //
 // Aufrufe:
 //   node scripts/signpath-stage.mjs <datei>              (als signCommand)
@@ -38,7 +35,7 @@
 //                                                          einsetzen, sonst Fehler)
 //   node scripts/signpath-stage.mjs --has-signature <datei>
 //
-// Umgebung: SIGNPATH_STAGE_DIR, SIGNPATH_SIGNED_DIR, SIGNPATH_SIGN_UPSTREAM.
+// Umgebung: SIGNPATH_STAGE_DIR, SIGNPATH_SIGNED_DIR.
 
 import { createHash } from "node:crypto";
 import fs from "node:fs";
@@ -46,9 +43,6 @@ import os from "node:os";
 import path from "node:path";
 
 const MAIN_BINARY = "code-pruefer.exe";
-// Von Tauri signierte Plugins (tauri-bundler NSIS_PLUGIN_FILES) und nsExec.dll,
-// das hooks.nsh (winget) zusätzlich verwendet und Tauri nicht signiert.
-const EXTRA_PLUGINS = ["nsExec.dll"];
 
 function log(msg) {
   // stdout landet im Tauri-Log ("Output of signing command").
@@ -120,7 +114,7 @@ export function classify(file) {
   return null;
 }
 
-const UPSTREAM = new Set(["llama", "nsisplugin"]);
+const THIRD_PARTY = new Set(["llama", "nsisplugin"]);
 
 function listDir(dir) {
   try {
@@ -181,15 +175,11 @@ function handle(file, ctx) {
   if (!c) {
     fail(`unbekannte unsignierte Datei ${file} – Zuordnung in scripts/signpath-stage.mjs ergänzen`);
   }
-  if (UPSTREAM.has(c.kind) && !ctx.signUpstream) {
-    log(`Fremdbinary bleibt unsigniert (SIGNPATH_SIGN_UPSTREAM ist nicht true): ${file}`);
+  if (THIRD_PARTY.has(c.kind)) {
+    log(`Fremdbinary bleibt unsigniert (wird bewusst nicht signiert): ${file}`);
     return;
   }
   const staged = listDir(ctx.stageDir);
-  if (c.kind === "uninstaller" && staged.some((f) => f.startsWith("nsisplugin-"))) {
-    log(`Uninstaller zurückgestellt (enthält Plugins, die erst in dieser Runde signiert werden)`);
-    return;
-  }
   if (c.kind === "installer" && staged.length > 0) {
     log(`Installer zurückgestellt (enthält Dateien, die erst in dieser Runde signiert werden)`);
     return;
@@ -204,20 +194,8 @@ function signCommand(file) {
   const ctx = {
     stageDir: env("SIGNPATH_STAGE_DIR"),
     index: signedIndex(env("SIGNPATH_SIGNED_DIR")),
-    signUpstream: env("SIGNPATH_SIGN_UPSTREAM", false) === "true",
   };
   handle(file, ctx);
-  // nsExec.dll liegt in Tauris Plugin-Kopie, wird von Tauri aber nicht an
-  // den signCommand übergeben; beim ersten Plugin der Runde mitbehandeln.
-  const c = classify(file);
-  if (c && c.kind === "nsisplugin" && ctx.signUpstream) {
-    for (const extra of EXTRA_PLUGINS) {
-      const p = path.join(path.dirname(file), extra);
-      if (fs.existsSync(p) && p !== file) {
-        handle(p, ctx);
-      }
-    }
-  }
 }
 
 /// Übernimmt das Ergebnis eines Signaturauftrags: jede gesammelte Datei muss
