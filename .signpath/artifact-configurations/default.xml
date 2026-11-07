@@ -15,8 +15,7 @@
     app-…-code-pruefer.exe       die App (cargo build in build-windows)
     uninstaller-…-uninstall.exe  von makensis aus src-tauri/windows/installer.nsi erzeugt
     installer-…-setup.exe        der NSIS-Installer
-  Fremdbinaries (llama.cpp-Laufzeit, NSIS-Plugins) signiert nur
-  with-upstream.xml – nur verwenden, wenn die SignPath Foundation das erlaubt.
+  Fremdbinaries (llama.cpp-Laufzeit, NSIS-Plugins) werden bewusst nicht signiert.
 -->
 <artifact-configuration xmlns="http://signpath.io/artifact-configuration/v1">
   <zip-file>

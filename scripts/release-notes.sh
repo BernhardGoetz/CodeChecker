@@ -32,6 +32,8 @@ cat <<NOTES
 - Windows x64: \`*_x64-setup.exe\` (${WINDOWS_NOTE})
 - macOS Apple Silicon: \`*_aarch64.dmg\`, macOS Intel: \`*_x64.dmg\`
 - Prüfsummen: \`SHA256SUMS.txt\` (\`sha256sum -c SHA256SUMS.txt\`)
+- Code signing policy: https://github.com/${GH_REPO}/blob/main/docs/CODE_SIGNING_POLICY.md
+- Der Code-Prüfer prüft Programmieraufgaben (Python, Java) lokal gegen Testfälle, in abgeschotteten Docker-/Podman-Containern ohne Netzwerk. Anleitung: README.
 NOTES
 if [ "$kind" = "release" ]; then
   echo "- Herkunft: \`gh attestation verify <Datei> --repo ${GH_REPO}\`"
