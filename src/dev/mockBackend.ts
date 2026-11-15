@@ -42,7 +42,7 @@ public class Main {
 
 const LANGUAGES: LanguageInfo[] = [
   { id: "python", name: "Python 3.13", sourceFile: "main.py", extensions: ["py"], template: PY, image: "ghcr.io/bernhardgoetz/code-pruefer-python:1", runTimeoutSecs: 5 },
-  { id: "java", name: "Java 21", sourceFile: "Main.java", extensions: ["java"], template: JAVA, image: "ghcr.io/bernhardgoetz/code-pruefer-java:1", runTimeoutSecs: 10 },
+  { id: "java", name: "Java 21", sourceFile: "<Klassenname>.java", extensions: ["java"], template: JAVA, image: "ghcr.io/bernhardgoetz/code-pruefer-java:1", runTimeoutSecs: 10 },
 ];
 
 const AI: AiStatus = {

@@ -3,6 +3,7 @@
 pub mod compare;
 pub mod docker;
 pub mod images;
+pub mod java;
 pub mod languages;
 pub mod template;
 
@@ -397,6 +398,8 @@ pub async fn run_program(
 pub struct SandboxSession {
     sandbox: Sandbox,
     lang: &'static languages::LanguageConfig,
+    /// Entry point of the last compiled program (Java: class to start).
+    entry: std::sync::Mutex<languages::EntryPoint>,
 }
 
 impl SandboxSession {
@@ -409,6 +412,7 @@ impl SandboxSession {
         Ok(Self {
             sandbox: Sandbox::create(docker, image).await?,
             lang,
+            entry: std::sync::Mutex::new(lang.entry("").0),
         })
     }
 
@@ -419,7 +423,10 @@ impl SandboxSession {
         on_progress: &mut impl FnMut(Progress),
     ) -> Result<(Option<StepOutput>, bool), RunnerError> {
         check_limits(code, [], 0)?;
-        compile_in_sandbox(&self.sandbox, self.lang, code, on_progress).await
+        let (output, ok, entry) =
+            compile_in_sandbox(&self.sandbox, self.lang, code, on_progress).await?;
+        *self.entry.lock().unwrap_or_else(|e| e.into_inner()) = entry;
+        Ok((output, ok))
     }
 
     /// Runs the compiled program once per input.
@@ -429,12 +436,17 @@ impl SandboxSession {
         on_progress: &mut impl FnMut(Progress),
     ) -> Result<Vec<StepOutput>, RunnerError> {
         check_limits("", inputs.iter().map(String::as_str), inputs.len())?;
+        let entry = self.entry.lock().unwrap_or_else(|e| e.into_inner()).clone();
         let mut outputs = Vec::with_capacity(inputs.len());
         for (index, input) in inputs.iter().enumerate() {
             on_progress(Progress::Phase {
                 message: format!("Eingabe {} von {} …", index + 1, inputs.len()),
             });
-            outputs.push(run_input(&self.sandbox, self.lang, input).await?.into());
+            outputs.push(
+                run_input(&self.sandbox, self.lang, &entry, input)
+                    .await?
+                    .into(),
+            );
         }
         Ok(outputs)
     }
@@ -445,43 +457,53 @@ impl SandboxSession {
     }
 }
 
-/// Writes the source file and compiles it (if the language has a compile
-/// step). Returns the compiler output and whether compiling succeeded.
+/// Writes the source file (named after the entry point, e.g. the Java
+/// class) and compiles it (if the language has a compile step). Returns
+/// the compiler output, whether the program can run (compiled and has an
+/// entry point, see [`languages::precheck`]) and the entry point.
 async fn compile_in_sandbox(
     sandbox: &Sandbox,
     lang: &languages::LanguageConfig,
     code: &str,
     on_progress: &mut impl FnMut(Progress),
-) -> Result<(Option<StepOutput>, bool), RunnerError> {
-    let source_path = format!("{}/{}", docker::WORK_DIR, lang.source_file);
+) -> Result<(Option<StepOutput>, bool, languages::EntryPoint), RunnerError> {
+    let (entry, hint) = lang.entry(code);
+    let source_path = format!("{}/{}", docker::WORK_DIR, lang.source_file_for(&entry));
     sandbox
         .write_file(&source_path, normalize_newlines(code).as_bytes())
         .await?;
 
     let Some(cmd) = lang.compile_cmd else {
-        return Ok((None, true));
+        return Ok((None, hint.is_none(), entry));
     };
     on_progress(Progress::Phase {
         message: "Kompiliere …".into(),
     });
+    let cmd = lang.command(cmd, &entry);
+    let cmd: Vec<&str> = cmd.iter().map(String::as_str).collect();
     let out = sandbox
-        .exec_with_stdin_file(cmd, None, lang.compile_timeout)
+        .exec_with_stdin_file(&cmd, None, lang.compile_timeout)
         .await?;
-    let ok = !out.timed_out && out.exit_code == Some(0);
-    Ok((Some(StepOutput::from(out)), ok))
+    // Without an entry point there is nothing to start, even if javac
+    // accepted the code (the hint explains why).
+    let ok = !out.timed_out && out.exit_code == Some(0) && hint.is_none();
+    Ok((Some(StepOutput::from(out)), ok, entry))
 }
 
 /// Runs the compiled program once with `input` as stdin.
 async fn run_input(
     sandbox: &Sandbox,
     lang: &languages::LanguageConfig,
+    entry: &languages::EntryPoint,
     input: &str,
 ) -> Result<docker::ExecOutput, RunnerError> {
     sandbox
         .write_file(STDIN_FILE, normalize_newlines(input).as_bytes())
         .await?;
+    let cmd = lang.command(lang.run_cmd, entry);
+    let cmd: Vec<&str> = cmd.iter().map(String::as_str).collect();
     sandbox
-        .exec_with_stdin_file(lang.run_cmd, Some(STDIN_FILE), lang.run_timeout)
+        .exec_with_stdin_file(&cmd, Some(STDIN_FILE), lang.run_timeout)
         .await
 }
 
@@ -493,7 +515,8 @@ async fn run_in_sandbox(
     req: &RunRequest,
     on_progress: &mut impl FnMut(Progress),
 ) -> Result<SandboxResult, RunnerError> {
-    let (compile, compile_ok) = compile_in_sandbox(sandbox, lang, &req.code, on_progress).await?;
+    let (compile, compile_ok, entry) =
+        compile_in_sandbox(sandbox, lang, &req.code, on_progress).await?;
     if !compile_ok {
         return Ok((compile, false, Vec::new()));
     }
@@ -509,7 +532,7 @@ async fn run_in_sandbox(
         } else {
             test.name.clone()
         };
-        let mut result = match run_input(sandbox, lang, &test.input).await {
+        let mut result = match run_input(sandbox, lang, &entry, &test.input).await {
             Ok(out) => evaluate(
                 index,
                 name,

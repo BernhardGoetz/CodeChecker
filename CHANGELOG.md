@@ -9,6 +9,17 @@ Format nach [Keep a Changelog](https://keepachangelog.com/de/1.1.0/), Versionen 
 
 ### Hinzugefügt
 
+- Java: Die Hauptklasse muss nicht mehr `Main` heißen. Gestartet wird die Klasse mit
+  `public static void main(String[] args)` (auch `String... args`, `final`,
+  Annotationen); die Datei heißt nach der `public`-Klasse (z. B. `Time.java`).
+  Kommentare und Zeichenketten werden dabei ignoriert. Eine `package`-Zeile ist erlaubt
+  (übersetzt mit `javac -d .`, gestartet mit dem vollständigen Namen). Fehlt `main` oder
+  haben mehrere Klassen eine `main`-Methode, gibt es einen deutschen Hinweis und das
+  Ergebnis „Nicht startbar“.
+- KI: Nennt das Aufgabenblatt eine Java-Klasse (z. B. „Öffnen Sie die bereitgestellte
+  Java-Klasse `Time`“ oder „Time.java“), schreibt die KI ihre Lösungen mit diesem
+  Klassennamen, sonst wie bisher mit `Main`.
+
 - Neue Einsteiger-Anleitung `docs/WARNUNG_BEIM_INSTALLIEREN.md`: warum Windows
   (SmartScreen, Smart App Control) und macOS (Gatekeeper) beim Installieren warnen, wie
   man die Warnung Schritt für Schritt übergeht und wie man die Echtheit der Datei mit

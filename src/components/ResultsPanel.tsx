@@ -145,7 +145,10 @@ export function ResultsPanel({
       {!report.compileOk ? (
         <div className="result failed">
           <div className="result-head">
-            <span className="status failed">Kompilierfehler</span>
+            <span className="status failed">
+              {/* Compiled, but nothing to start (e.g. Java without a main class). */}
+              {report.hint && report.compile?.exitCode === 0 ? "Nicht startbar" : "Kompilierfehler"}
+            </span>
             {report.compile?.timedOut && <span>Zeitlimit beim Kompilieren überschritten.</span>}
           </div>
           {report.hint && <p className="note warn">{report.hint}</p>}
