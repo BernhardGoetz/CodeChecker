@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import {
   CANCELLED,
   cancelAi,
@@ -98,6 +98,9 @@ export function AiPanel({
   const [error, setError] = useState<string | null>(null);
   const [cancelled, setCancelled] = useState(false);
   const [modeApplied, setModeApplied] = useState(false);
+  // Reference solution hidden by default; hidden again for every new run.
+  const [showSolution, setShowSolution] = useState(false);
+  const solutionId = useId();
   const timer = useRef<number | null>(null);
 
   useEffect(() => {
@@ -114,6 +117,7 @@ export function AiPanel({
     setError(null);
     setCancelled(false);
     setResult(null);
+    setShowSolution(false);
     setModeApplied(false);
     setProgress(null);
     setSeconds(0);
@@ -248,10 +252,21 @@ export function AiPanel({
             </div>
           )}
           {result.referenceSolution && (
-            <details>
-              <summary>Musterlösung anzeigen</summary>
-              <pre className="output">{result.referenceSolution}</pre>
-            </details>
+            <>
+              {/* Disclosure button: the label says what a click does, aria-expanded the state. */}
+              <button
+                type="button"
+                className="solution-toggle"
+                aria-expanded={showSolution}
+                aria-controls={solutionId}
+                onClick={() => setShowSolution((v) => !v)}
+              >
+                {showSolution ? "Musterlösung ausblenden" : "Musterlösung anzeigen"}
+              </button>
+              <pre id={solutionId} className="output solution-code" hidden={!showSolution}>
+                {result.referenceSolution}
+              </pre>
+            </>
           )}
         </div>
       )}

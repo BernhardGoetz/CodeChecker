@@ -314,7 +314,7 @@ Lässt sich dein Code gar nicht übersetzen, siehst du statt der Testfälle eine
 3. Die **erwartete Ausgabe** ist die, auf die sich die Mehrheit der Lösungen einigt. Die KI *schreibt* die erwarteten Ausgaben also nie selbst.
 4. Du bekommst eine **Konfidenz** (Vertrauensstufe): **Grün** = hohe Sicherheit (die Beispiele des Aufgabenblatts bestanden, die Lösungen sind sich einig), **Gelb** = nur ein Hinweis, bitte die erwarteten Ausgaben prüfen, **Rot** = keine verlässlichen Testfälle möglich (dann gibt es auch keine).
 
-Die erzeugten Testfälle werden an deine vorhandenen angehängt und mit **„KI“** markiert. Du kannst sie bearbeiten. Bei Aufgaben ohne Beispiele, mit mehreren richtigen Lösungen, mit Zufall, GUI oder Dateien ist das Ergebnis höchstens ein Hinweis.
+Die erzeugten Testfälle werden an deine vorhandenen angehängt und mit **„KI“** markiert. Du kannst sie bearbeiten. Die Musterlösung der KI ist zunächst verborgen; mit **„Musterlösung anzeigen“** blendest du sie ein und mit **„Musterlösung ausblenden“** wieder aus (bei jeder neuen Erzeugung ist sie wieder verborgen). Bei Aufgaben ohne Beispiele, mit mehreren richtigen Lösungen, mit Zufall, GUI oder Dateien ist das Ergebnis höchstens ein Hinweis.
 
 **Ausgabevorlagen.** Manche Aufgabenblätter zeigen nur das *Format* der Ausgabe mit einem Platzhalter, z. B. „12345678 seconds have passed“. Erkennt die KI so eine Vorlage, wird sie beim Prüfen nur als **Formatprüfung** genutzt (nicht als feste Erwartung). Unter „Testfälle mit KI“ siehst du die erkannte Vorlage und kannst sie mit **„Vorlage nicht verwenden“** verwerfen. Das ist nützlich, wenn eigene Randfälle (z. B. „Ungültige Eingabe“) absichtlich etwas anderes ausgeben.
 

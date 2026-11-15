@@ -27,6 +27,11 @@ Format nach [Keep a Changelog](https://keepachangelog.com/de/1.1.0/), Versionen 
 
 ### Geändert
 
+- „Testfälle mit KI“: Die Musterlösung ist standardmäßig verborgen und wird über die
+  Schaltfläche „Musterlösung anzeigen“ / „Musterlösung ausblenden“ vollständig ein- bzw.
+  ausgeblendet (barrierefrei mit `aria-expanded`). Nach jeder neuen KI-Erzeugung ist sie
+  wieder verborgen.
+
 - README: Der Weg zum ersten Start unter macOS folgt jetzt der Anleitung von Apple
   (Systemeinstellungen → „Datenschutz und Sicherheit“ → „Dennoch öffnen“); der
   Rechtsklick-Weg funktioniert seit macOS 15 nicht mehr.
