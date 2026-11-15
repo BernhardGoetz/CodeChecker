@@ -1584,6 +1584,7 @@ mod tests {
                 name: "KI-Test (ohne Eingabe)".into(),
                 input: String::new(),
                 expected: String::new(),
+                origin: None,
             }],
             input_format: String::new(),
         }
@@ -1813,6 +1814,7 @@ mod tests {
             name: "t".into(),
             input: "21\n".into(),
             expected: "42\n".into(),
+            origin: None,
         }];
         req.input_format = "eine Zahl n".into();
         let (r, _) = run_check(Some(&model), &req);

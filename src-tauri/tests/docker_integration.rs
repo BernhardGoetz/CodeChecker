@@ -36,6 +36,7 @@ fn tc(input: &str, expected: &str) -> TestCase {
         name: String::new(),
         input: input.into(),
         expected: expected.into(),
+        origin: None,
     }
 }
 
