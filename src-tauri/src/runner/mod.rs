@@ -1,5 +1,6 @@
 //! Runs a submission against its test cases inside a sandbox container.
 
+pub mod cleanup;
 pub mod compare;
 pub mod docker;
 pub mod images;
