@@ -25,6 +25,14 @@ Format nach [Keep a Changelog](https://keepachangelog.com/de/1.1.0/), Versionen 
 
 ### Behoben
 
+- Das 7B-Modell wurde doppelt heruntergeladen (Einzeldatei und Teile, ~9,4 statt
+  ~4,7 GB). Ursache: `scripts/pin-models.sh` trug für Qwen2.5-Coder 7B sowohl die
+  einzelne `.gguf`-Datei als auch die beiden Teile der aufgeteilten Datei ein. Das Skript
+  trägt jetzt genau eine Variante ein (die Einzeldatei, sonst die Teile; `--check` warnt
+  bei alten Einträgen mit beiden). Die App lädt bei solchen Einträgen nur die Einzeldatei
+  und zeigt die richtige Größe an; ein früherer Download der Teile gilt weiter als
+  installiert und wird nicht erneut geladen. Übrig gebliebene Dateien entfernt „Löschen“
+  beim Modell.
 - Kompatibilität mit sysinfo 0.40 (Dependabot-Update): Der Code wurde an die neue API
   angepasst; ohne diese Anpassung ließ sich `main` nicht bauen.
 

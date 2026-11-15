@@ -8,16 +8,24 @@
 #
 #   scripts/pin-models.sh [--check | --verify]
 #
-# Ist ein Modell auf Hugging Face in Teile aufgeteilt
-# (…-00001-of-00002.gguf), werden alle Teile eingetragen; llama.cpp lädt sie,
-# wenn sie nebeneinander liegen, über den ersten Teil.
+# Eingetragen wird genau eine Variante: gibt es für die Quantisierung genau
+# eine einzelne Datei (…-q4_k_m.gguf), nur diese; sonst alle Teile der
+# aufgeteilten Datei (…-00001-of-00002.gguf), die llama.cpp, wenn sie
+# nebeneinander liegen, über den ersten Teil lädt. Mehrere einzelne Dateien
+# sind ein Fehler. (Früher wurden Einzeldatei und Teile zusammen
+# eingetragen, und die App lud das Modell doppelt.)
 # --check: nur prüfen, ob alle Einträge vollständig gepinnt sind: Revision
-# (40 Hex-Zeichen), mindestens eine Datei, je Datei ein einfacher Name auf
-# .gguf, Größe > 0 und SHA-256 (64 Hex-Zeichen). Der Release-Workflow ruft
-# das nach dem Pinnen auf und bricht sonst ab.
+# (40 Hex-Zeichen), mindestens eine Datei, höchstens eine einzelne Datei
+# (sonst: Teile), je Datei ein einfacher Name auf .gguf, Größe > 0 und
+# SHA-256 (64 Hex-Zeichen). Der Release-Workflow ruft das nach dem Pinnen
+# auf und bricht sonst ab. Ein Eintrag mit Einzeldatei und Teilen (alter
+# Pin) ist nur eine Warnung: die App lädt davon nur die Einzeldatei; neu
+# pinnen (pin-models.yml) bereinigt ihn.
 # --verify: die eingecheckten Pins gegen die Hugging-Face-API prüfen: für die
 # gepinnte Revision müssen Dateinamen, Größen und SHA-256 exakt
-# übereinstimmen (jede Abweichung: Fehler). Eine neuere Revision auf „main“
+# übereinstimmen (jede Abweichung: Fehler); ein alter Pin mit Einzeldatei
+# und Teilen wird dabei wie in der App auf die Einzeldatei reduziert. Eine
+# neuere Revision auf „main“
 # wird nur gemeldet. So pinnt der Release nie selbst (kein Vertrauen beim
 # ersten Abruf): Pins entstehen über den Workflow pin-models.yml als Pull
 # Request, den Bernhard prüft und mergt (docs/RELEASE_QAS.md).
@@ -32,14 +40,22 @@ command -v jq >/dev/null || {
   exit 1
 }
 
+# jq: ist .name ein Teil einer aufgeteilten Datei (…-00001-of-00002.gguf)?
+is_part='def is_part: .name | ascii_downcase | test("-[0-9]{5}-of-[0-9]{5}\\.gguf$");'
+# jq: die Dateien, die das Modell ausmachen (wie effective_files in der
+# App): genau eine einzelne Datei, sonst alle Dateien.
+effective="$is_part"' def effective: [.[] | select(is_part | not)] as $s
+  | if ($s | length) == 1 then $s else . end;'
+
 if [ "${1:-}" = "--check" ]; then
   if [ "$(jq '.models | length' "$catalog")" -eq 0 ]; then
     echo "catalog.json enthält keine Modelle." >&2
     exit 1
   fi
-  unpinned="$(jq -r '.models[]
+  unpinned="$(jq -r "$is_part"' .models[]
     | select(((.revision // "") | tostring | test("^[0-9a-f]{40}$") | not)
         or ((.files // []) | length) == 0
+        or ([(.files // [])[] | select(is_part | not)] | length) > 1
         or any(.files[];
             ((.sha256 // "") | tostring | test("^[0-9a-f]{64}$") | not)
             or ((.size | type) != "number") or .size <= 0
@@ -48,6 +64,11 @@ if [ "${1:-}" = "--check" ]; then
   if [ -n "$unpinned" ]; then
     echo "Nicht gepinnte Modelle in catalog.json: $unpinned (scripts/pin-models.sh ausführen)" >&2
     exit 1
+  fi
+  mixed="$(jq -r "$is_part"' .models[]
+    | select(any(.files[]; is_part) and any(.files[]; is_part | not)) | .id' "$catalog" | tr '\n' ' ')"
+  if [ -n "$mixed" ]; then
+    echo "::warning::Einzeldatei und Teile zugleich eingetragen: $mixed(die App lädt nur die Einzeldatei; über pin-models.yml neu pinnen)." >&2
   fi
   echo "Alle Modelle gepinnt."
   exit 0
@@ -67,14 +88,20 @@ get() {
 }
 
 # GGUF-Dateien der Quantisierung $3 in Revision $2 von Repo $1, nach Namen
-# sortiert: [{name, size, sha256}].
+# sortiert: [{name, size, sha256}]. Genau eine Variante: die einzelne Datei,
+# wenn es genau eine gibt, sonst die Teile; mehrere einzelne Dateien: Fehler.
 files_at() {
-  get "$api/$1/tree/$2" | jq --arg q "$3" '
+  get "$api/$1/tree/$2" | jq --arg q "$3" "$is_part"'
     [ .[]
       | select(.type == "file")
       | select(.path | ascii_downcase | test("^[^/]*-" + $q + "(-[0-9]{5}-of-[0-9]{5})?\\.gguf$"))
       | { name: .path, size: (.lfs.size // .size), sha256: .lfs.oid } ]
-    | sort_by(.name)'
+    | sort_by(.name)
+    | [.[] | select(is_part | not)] as $single
+    | if ($single | length) > 1 then
+        error("mehrere einzelne GGUF-Dateien für " + $q + ": " + ([$single[].name] | join(", ")))
+      elif ($single | length) == 1 then $single
+      else . end'
 }
 
 if [ "${1:-}" = "--verify" ]; then
@@ -89,7 +116,7 @@ if [ "${1:-}" = "--verify" ]; then
       failed=1
       continue
     fi
-    pinned="$(jq -S '.files | sort_by(.name) | map({name, size, sha256})' <<<"$m")"
+    pinned="$(jq -S "$effective"' .files | effective | sort_by(.name) | map({name, size, sha256})' <<<"$m")"
     if ! current="$(files_at "$repo" "$rev" "$quant" | jq -S .)"; then
       echo "::error::$id: $repo@$rev nicht abrufbar (Revision gelöscht?)." >&2
       failed=1

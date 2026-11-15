@@ -210,6 +210,13 @@ Herausgebers in dem Moment kompromittiert, würde sonst die bösartige Datei gep
    Revision oder jede Abweichung → Abbruch). Eine neuere Revision auf `main` wird nur als
    Hinweis gemeldet; übernommen wird sie nur über einen neuen Pin-PR.
 
+Je Modell wird genau eine Variante gepinnt: die einzelne `.gguf`-Datei oder, wenn es
+keine gibt, alle Teile der aufgeteilten Datei. Ältere Pins enthielten beim 7B-Modell
+beides; `--check` meldet das als Warnung (`::warning::`), die App lädt dann nur die
+Einzeldatei, und `--verify` vergleicht auf diese reduziert. **Nach dem Merge des Fixes
+einmal `pin-models.yml` ausführen**, damit `catalog.json` bereinigt wird (der PR
+entfernt die Teile beim 7B-Modell, Revision und Einzeldatei bleiben gleich).
+
 ## Integrität der Artefakte zwischen den Jobs
 
 Jeder Schritt eines späteren Jobs desselben Laufs könnte Artefakte ersetzen
