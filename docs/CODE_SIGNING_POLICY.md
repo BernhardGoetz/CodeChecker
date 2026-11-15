@@ -3,7 +3,7 @@
 Project: **Code-Prüfer** – <https://github.com/BernhardGoetz/CodeChecker>
 License: [MIT](../LICENSE)
 
-**Status:** The application to the SignPath Foundation for free code signing is being prepared and has not been submitted yet. No release is signed with a SignPath Foundation certificate so far; Windows installers are currently unsigned.
+**Status:** The application to the SignPath Foundation was declined in November 2026 because the project does not yet have enough public visibility; we intend to reapply. Windows installers are currently unsigned.
 
 <!-- AGENT: Activate only after the SignPath Foundation has approved the project AND the first SignPath-signed release is published (the owner tells you explicitly). Then replace the Status paragraph with exactly this line:
 Free code signing provided by [SignPath.io](https://about.signpath.io/), certificate by [SignPath Foundation](https://signpath.org/).

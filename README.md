@@ -96,7 +96,7 @@ Zuerst ein paar Begriffe, damit du weißt, wozu das alles nötig ist:
 2. Nimm das **neueste Release** (ganz oben, **nicht** eines, das „QAS“ im Namen trägt – das sind Testversionen).
 3. Lade unter **„Assets“** die Windows-Datei herunter. Sie heißt so: `Code-Pruefer_<Version>_x64-setup.exe` (statt `<Version>` steht eine Zahl wie `1.0.1`).
 4. Starte die heruntergeladene Datei.
-5. **Windows-Warnung „Der Computer wurde durch Windows geschützt“ (SmartScreen):** Der Windows-Installer ist **zurzeit noch nicht signiert** (die kostenlose Signierung über die SignPath Foundation wird beantragt, siehe [Code signing policy](#code-signing-policy)). Deshalb zeigt Windows diese Meldung, weil es die Installationsdatei noch nicht kennt.
+5. **Windows-Warnung „Der Computer wurde durch Windows geschützt“ (SmartScreen):** Der Windows-Installer ist **zurzeit noch nicht signiert** (siehe [Code signing policy](#code-signing-policy)). Deshalb zeigt Windows diese Meldung, weil es die Installationsdatei noch nicht kennt. Ausführlich erklärt (auch: was bei „Smart App Control“ passiert und wie du die Echtheit der Datei prüfst): [`docs/WARNUNG_BEIM_INSTALLIEREN.md`](docs/WARNUNG_BEIM_INSTALLIEREN.md).
    - Klicke auf **„Weitere Informationen“**.
    - Dann erscheint der Knopf **„Trotzdem ausführen“**. Klicke darauf.
    - Mach das bitte **nur**, wenn du die Datei selbst von der oben genannten GitHub-Seite geladen hast.
@@ -208,7 +208,7 @@ Es gibt Installationsdateien für **Apple Silicon** (`…_aarch64.dmg`) und **In
 
 1. **Container-Engine installieren:** Hier installiert **der Code-Prüfer nichts nach** (der Engine-Auswahl-Schritt gehört zum Windows-Installer). Installiere vorher **Docker Desktop für Mac** (<https://www.docker.com/products/docker-desktop/>) oder **Podman** (<https://podman.io/>). Docker Desktop erwartet die App unter `/Applications/Docker.app`.
 2. **Code-Prüfer installieren:** DMG öffnen und „Code-Prüfer“ in den Ordner „Programme“ ziehen.
-3. **Erster Start:** Die Mac-Version ist noch **nicht signiert**; macOS blockiert den ersten Start. Im Finder mit **Rechtsklick** auf „Code-Prüfer“ → **„Öffnen“** → noch einmal **„Öffnen“** bestätigen. (Alternativ im Terminal: `xattr -dr com.apple.quarantine "/Applications/Code-Prüfer.app"`.)
+3. **Erster Start:** Die Mac-Version ist noch **nicht signiert**; macOS blockiert den ersten Start. Meldung schließen, dann **Systemeinstellungen** → **„Datenschutz und Sicherheit“** öffnen, nach unten scrollen und bei „Code-Prüfer“ auf **„Dennoch öffnen“** klicken, danach bestätigen (so beschreibt es [Apple](https://support.apple.com/de-de/102445)). Der früher übliche Weg per Rechtsklick → „Öffnen“ funktioniert nur noch bis macOS 14; seit macOS 15 gilt der Weg über die Systemeinstellungen. Für Fortgeschrittene geht es auch im Terminal: `xattr -dr com.apple.quarantine "/Applications/Code-Prüfer.app"`. Schritt für Schritt erklärt: [`docs/WARNUNG_BEIM_INSTALLIEREN.md`](docs/WARNUNG_BEIM_INSTALLIEREN.md#4-macos-schritt-für-schritt).
 4. **Engine:** Der Code-Prüfer startet Docker Desktop bzw. Podman beim Start selbst. Docker Desktop: beim ersten Start Lizenzbedingungen akzeptieren, warten bis „Engine running“. Podman: Die „Podman-Maschine“ wird beim ersten Start einmalig eingerichtet (`podman machine init`, Internet nötig, einige Minuten); den `podman`-Befehl findet die App auch unter `/opt/podman/bin`, `/opt/homebrew/bin` und `/usr/local/bin`.
 
 
@@ -394,7 +394,7 @@ Prüfe die Internetverbindung (Download von `huggingface.co`). In Schulnetzen ka
 Das ist bei Rechnern ohne Grafikbeschleunigung normal. Wähle ggf. das kleinere Modell. Schließe andere Programme. Prüfe, ob die App eine AVX2-Warnung zeigt.
 
 **macOS meldet beim Start „… kann nicht geöffnet werden“**
-Die macOS-Version ist noch nicht signiert. Im Finder mit Rechtsklick auf „Code-Prüfer“ → **„Öffnen“** → noch einmal **„Öffnen“** bestätigen.
+Die macOS-Version ist noch nicht signiert. Meldung schließen, dann **Systemeinstellungen** → **„Datenschutz und Sicherheit“** → nach unten scrollen → **„Dennoch öffnen“** (gilt seit macOS 15; Rechtsklick → „Öffnen“ geht nur noch bis macOS 14). Details und Terminal-Alternative: [`docs/WARNUNG_BEIM_INSTALLIEREN.md`](docs/WARNUNG_BEIM_INSTALLIEREN.md#4-macos-schritt-für-schritt).
 
 **Ich habe etwas geschlossen und mein Code ist weg**
 Der Code-Prüfer speichert Code, Aufgaben und Testfälle nicht. Kopiere deinen Code in eine eigene Datei, bevor du das Programm schließt oder ein Update installierst.
@@ -408,7 +408,7 @@ Der Code-Prüfer speichert Code, Aufgaben und Testfälle nicht. Kopiere deinen C
 - Verglichen wird nur die Standardausgabe (Zeilen, Wörter oder Zahlen mit Toleranz, optional gegen eine Ausgabevorlage).
 - Ausgabevorlagen erkennt nur die KI; von Hand lässt sich keine Vorlage anlegen. Die Vorlagenprüfung gilt für alle Testfälle, auch für Randfälle mit anderer Ausgabe – dann „Vorlage nicht verwenden“.
 - Der Variationstest braucht eine Musterlösung der KI und ersetzt vorgegebene Werte nur in einfachen Zuweisungen (`x = 15`, `int x = 15;`, `this.x = 15;`, `self.x = 15`), nicht in Formeln, Arrays, Methodenaufrufen oder Mehrfachzuweisungen wie `a, b = 15, 10`. Er kann einen Fehler übersehen und irrt, wenn die Musterlösung falsch ist.
-- Die Programme sind noch nicht signiert: Windows (SmartScreen) und macOS (Gatekeeper) warnen beim ersten Start. Die Windows-Signatur über die SignPath Foundation wird beantragt (siehe [Code signing policy](#code-signing-policy)); macOS-Signatur und Notarisierung fehlen noch.
+- Die Programme sind noch nicht signiert: Windows (SmartScreen) und macOS (Gatekeeper) warnen beim ersten Start. Der Antrag auf kostenlose Windows-Signatur bei der SignPath Foundation wurde im November 2026 abgelehnt (Projekt noch zu neu), eine erneute Bewerbung ist geplant (siehe [Code signing policy](#code-signing-policy)); macOS-Signatur und Notarisierung fehlen noch. Wie du trotzdem sicher installierst: [`docs/WARNUNG_BEIM_INSTALLIEREN.md`](docs/WARNUNG_BEIM_INSTALLIEREN.md).
 - Die portable Windows-Version aktualisiert sich nicht selbst.
 - Der Installer ist groß, weil er die Prüf-Umgebungen enthält (Windows-Installer von Version 1.0.1: rund 200 MB).
 - Es wird eine Container-Engine (Docker Desktop oder Podman) gebraucht; der Windows-Installer kann sie über *winget* nachinstallieren.
@@ -442,7 +442,7 @@ Wenn du am Code-Prüfer mitarbeiten willst (Fehler beheben, neue Programmierspra
 
 Die vollständige Richtlinie (englisch, verbindlich): [`docs/CODE_SIGNING_POLICY.md`](docs/CODE_SIGNING_POLICY.md)
 
-**Stand:** Die kostenlose Code-Signierung der Windows-Programmdateien über die SignPath Foundation wird beantragt und ist **noch nicht genehmigt**. Bis zur Zusage sind die Windows-Installer unsigniert (siehe Abschnitt 3, Schritt 5). Die macOS-Versionen sind von dieser Richtlinie nicht erfasst.
+**Stand:** Der Antrag auf kostenlose Code-Signierung der Windows-Programmdateien bei der SignPath Foundation wurde im November 2026 abgelehnt (Projekt noch zu neu), eine erneute Bewerbung ist geplant. Bis dahin sind die Windows-Installer unsigniert (siehe Abschnitt 3, Schritt 5, und [`docs/WARNUNG_BEIM_INSTALLIEREN.md`](docs/WARNUNG_BEIM_INSTALLIEREN.md)). Die macOS-Versionen sind von dieser Richtlinie nicht erfasst.
 
 <!-- AGENT: Aktivierung der Attribution erst NACH der schriftlichen Zusage der SignPath Foundation UND nachdem das erste mit SignPath signierte Release veröffentlicht ist (Bernhard gibt das ausdrücklich an; nicht selbst entscheiden).
 Dann den Absatz "Stand" oben ersetzen durch genau diese Zeile (mit Links wie in docs/CODE_SIGNING_POLICY.md Zeilen 6-7):

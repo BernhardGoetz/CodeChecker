@@ -7,6 +7,22 @@ Format nach [Keep a Changelog](https://keepachangelog.com/de/1.1.0/), Versionen 
 
 ## [Unveröffentlicht]
 
+### Hinzugefügt
+
+- Neue Einsteiger-Anleitung `docs/WARNUNG_BEIM_INSTALLIEREN.md`: warum Windows
+  (SmartScreen, Smart App Control) und macOS (Gatekeeper) beim Installieren warnen, wie
+  man die Warnung Schritt für Schritt übergeht und wie man die Echtheit der Datei mit
+  `SHA256SUMS.txt` prüft.
+
+### Geändert
+
+- README: Der Weg zum ersten Start unter macOS folgt jetzt der Anleitung von Apple
+  (Systemeinstellungen → „Datenschutz und Sicherheit“ → „Dennoch öffnen“); der
+  Rechtsklick-Weg funktioniert seit macOS 15 nicht mehr.
+- Signatur-Status in README und Code signing policy aktualisiert: Der Antrag bei der
+  SignPath Foundation wurde abgelehnt (Projekt noch zu neu), eine erneute Bewerbung ist
+  geplant.
+
 ### Behoben
 
 - Kompatibilität mit sysinfo 0.40 (Dependabot-Update): Der Code wurde an die neue API
