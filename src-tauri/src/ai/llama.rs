@@ -778,6 +778,10 @@ pub struct ChatResponse {
     pub finish_reason: Option<String>,
     /// The stop string that ended the answer (not part of `content`).
     pub stopping_word: Option<String>,
+    /// Prompt tokens processed for this answer (without the part taken from
+    /// the prompt cache) and the time that took.
+    pub prompt_tokens: Option<u64>,
+    pub prompt_ms: Option<f64>,
 }
 
 /// A chat model. Implemented by [`LlamaClient`]; mocked in tests.
@@ -852,6 +856,8 @@ struct RawCompletion {
 #[derive(Deserialize)]
 struct RawTimings {
     predicted_per_second: Option<f64>,
+    prompt_n: Option<u64>,
+    prompt_ms: Option<f64>,
 }
 
 pub fn parse_template(raw: &str) -> Result<String, AiError> {
@@ -864,13 +870,17 @@ pub fn parse_template(raw: &str) -> Result<String, AiError> {
 pub fn parse_completion(raw: &str) -> Result<ChatResponse, AiError> {
     let r: RawCompletion = serde_json::from_str(raw)
         .map_err(|e| AiError::Http(format!("Unerwartete Antwort ({e})")))?;
+    let timings = r.timings.as_ref();
     Ok(ChatResponse {
         content: r.content,
         completion_tokens: r.tokens_predicted,
-        tokens_per_second: r
-            .timings
+        tokens_per_second: timings
             .and_then(|t| t.predicted_per_second)
             .filter(|v| v.is_finite() && *v > 0.0),
+        prompt_tokens: timings.and_then(|t| t.prompt_n),
+        prompt_ms: timings
+            .and_then(|t| t.prompt_ms)
+            .filter(|v| v.is_finite() && *v >= 0.0),
         stopping_word: (r.stop_type.as_deref() == Some("word") && !r.stopping_word.is_empty())
             .then_some(r.stopping_word),
         // "limit": cut off at n_predict.
@@ -1370,15 +1380,18 @@ mod tests {
         );
         assert!(parse_template("{}").is_err());
         let raw = r#"{"index":0,"content":"hallo","tokens_predicted":12,"stop":true,
-            "stop_type":"eos","timings":{"predicted_per_second":21.5,"prompt_n":3}}"#;
+            "stop_type":"eos","timings":{"predicted_per_second":21.5,"prompt_n":3,"prompt_ms":150.5}}"#;
         let r = parse_completion(raw).unwrap();
         assert_eq!(r.content, "hallo");
         assert_eq!(r.completion_tokens, Some(12));
         assert_eq!(r.tokens_per_second, Some(21.5));
+        assert_eq!(r.prompt_tokens, Some(3));
+        assert_eq!(r.prompt_ms, Some(150.5));
         assert_eq!(r.finish_reason.as_deref(), Some("stop"));
         let r = parse_completion(r#"{"content":"x","stop_type":"limit"}"#).unwrap();
         assert_eq!(r.finish_reason.as_deref(), Some("length"));
         assert_eq!(r.tokens_per_second, None);
+        assert_eq!((r.prompt_tokens, r.prompt_ms), (None, None));
         assert!(parse_completion("kaputt").is_err());
     }
 }

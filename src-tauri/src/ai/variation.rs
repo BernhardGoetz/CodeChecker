@@ -1440,6 +1440,7 @@ mod tests {
                 tokens_per_second: None,
                 finish_reason: Some("stop".into()),
                 stopping_word: None,
+                ..ChatResponse::default()
             })
         }
     }
