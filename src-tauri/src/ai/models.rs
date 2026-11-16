@@ -448,6 +448,47 @@ fn update_config(f: impl FnOnce(&mut AiConfig)) -> Result<AiConfig, AiError> {
     Ok(c)
 }
 
+/// Measured llama-server speeds of the last run per model (start value of
+/// the remaining-time estimate, see `eta`), next to `ai.json`.
+pub const SPEEDS_FILE: &str = "ai-speed.json";
+/// Serializes read-modify-write of [`SPEEDS_FILE`].
+static SPEEDS_LOCK: Mutex<()> = Mutex::new(());
+
+fn read_speeds_from(dir: &Path) -> std::collections::BTreeMap<String, super::eta::Speeds> {
+    std::fs::read_to_string(dir.join(SPEEDS_FILE))
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default()
+}
+
+fn write_speeds_to(dir: &Path, id: &str, speeds: super::eta::Speeds) -> Result<(), AiError> {
+    let _lock = SPEEDS_LOCK.lock();
+    let mut all = read_speeds_from(dir);
+    all.insert(id.to_string(), speeds);
+    let json = serde_json::to_string_pretty(&all).map_err(|e| AiError::Other(e.to_string()))?;
+    std::fs::create_dir_all(dir)
+        .and_then(|_| std::fs::write(dir.join(SPEEDS_FILE), json))
+        .map_err(|e| AiError::Other(format!("Messwerte konnten nicht gespeichert werden: {e}")))
+}
+
+/// Speeds measured in the last run of model `id` (implausible values are
+/// ignored).
+pub fn load_speeds(id: &str) -> Option<super::eta::Speeds> {
+    let dir = CONFIG_DIR.get()?;
+    read_speeds_from(dir)
+        .get(id)
+        .copied()
+        .filter(|s| s.prompt_tps.is_finite() && s.gen_tps.is_finite())
+        .filter(|s| {
+            (0.01..100_000.0).contains(&s.prompt_tps) && (0.01..10_000.0).contains(&s.gen_tps)
+        })
+}
+
+/// Stores the speeds measured for model `id`.
+pub fn save_speeds(id: &str, speeds: super::eta::Speeds) -> Result<(), AiError> {
+    write_speeds_to(config_dir()?, id, speeds)
+}
+
 pub fn models_dir() -> Result<PathBuf, AiError> {
     DATA_DIR
         .get()
@@ -1578,6 +1619,34 @@ pub async fn import_for(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn speeds_are_stored_per_model() {
+        let dir = std::env::temp_dir().join(format!("cp-speeds-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(read_speeds_from(&dir).is_empty());
+        let a = super::super::eta::Speeds {
+            prompt_tps: 7.5,
+            gen_tps: 2.25,
+        };
+        let b = super::super::eta::Speeds {
+            prompt_tps: 20.0,
+            gen_tps: 5.0,
+        };
+        write_speeds_to(&dir, LARGE_MODEL, a).unwrap();
+        write_speeds_to(&dir, SMALL_MODEL, b).unwrap();
+        write_speeds_to(&dir, SMALL_MODEL, a).unwrap();
+        let all = read_speeds_from(&dir);
+        assert_eq!(all.len(), 2);
+        assert_eq!(all[LARGE_MODEL], a);
+        assert_eq!(all[SMALL_MODEL], a);
+        let raw = std::fs::read_to_string(dir.join(SPEEDS_FILE)).unwrap();
+        assert!(raw.contains("\"promptTps\": 7.5"), "{raw}");
+        // A broken file counts as empty.
+        std::fs::write(dir.join(SPEEDS_FILE), "{kaputt").unwrap();
+        assert!(read_speeds_from(&dir).is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     fn pinned(id: &str, files: &[(&str, u64, char)]) -> CatalogModel {
         CatalogModel {

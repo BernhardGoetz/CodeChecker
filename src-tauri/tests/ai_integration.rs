@@ -400,6 +400,7 @@ async fn pipeline_on_sample_tasks() {
             Settings {
                 solutions,
                 repair_rounds: 1,
+                speeds: None,
             },
             &cancel,
             |p| eprintln!("  [{:?}] {}", p.phase, p.message),
@@ -506,6 +507,7 @@ async fn pipeline_with_real_sandbox() {
         Settings {
             solutions: 4,
             repair_rounds: 1,
+            speeds: None,
         },
         &cancel,
         |_| {},
@@ -546,6 +548,7 @@ async fn pipeline_with_real_sandbox() {
         Settings {
             solutions: 3,
             repair_rounds: 1,
+            speeds: None,
         },
         &cancel,
         |_| {},
@@ -691,6 +694,7 @@ async fn pipeline_survives_engine_restart() {
         Settings {
             solutions: 3,
             repair_rounds: 1,
+            speeds: None,
         },
         &cancel,
         |p| eprintln!("  [{:?}] {}", p.phase, p.message),

@@ -17,26 +17,45 @@ pub const MAX_INPUTS: usize = 10;
 pub const MAX_FORMAT_CHARS: usize = 300;
 
 /// `class_name`: Java class named by the task ([`class_name_from_task`]),
-/// else `Main`.
-fn language_rules(language: &str, class_name: Option<&str>) -> String {
-    match language {
+/// else `Main`. `no_input`: the task reads no input (fixed values).
+fn language_rules(language: &str, class_name: Option<&str>, no_input: bool) -> String {
+    let base = match language {
         "java" => {
             let class = class_name.unwrap_or(crate::runner::java::DEFAULT_CLASS);
+            let input = if no_input {
+                "The program reads no input: never use `java.util.Scanner`, \
+                 `java.io.BufferedReader` or System.in."
+            } else {
+                "Read the input with `java.util.Scanner` or `java.io.BufferedReader` from \
+                 System.in. Never print a prompt before reading input (no \
+                 `System.out.print(\"Zahl eingeben: \")`) – prompts would end up in the output."
+            };
             format!(
                 "Write Java 21. Put everything into `public class {class}` with \
                  `public static void main(String[] args)` (the file is {class}.java), no \
                  package declaration, no other class with a main method, only the standard \
-                 library. Read the input with `java.util.Scanner` or `java.io.BufferedReader` \
-                 from System.in. Never print a prompt before reading input (no \
-                 `System.out.print(\"Zahl eingeben: \")`) – prompts would end up in the output."
+                 library. {input}"
             )
         }
-        _ => "Write Python 3.12 using only the standard library. Read the input from \
-              standard input (`input()` or `sys.stdin`). Never pass a prompt string to \
-              `input()` – prompts would end up in the output."
-            .to_string(),
-    }
+        _ => if no_input {
+            "Write Python 3.12 using only the standard library. The program reads no input: \
+             never call `input()` and never read `sys.stdin`."
+        } else {
+            "Write Python 3.12 using only the standard library. Read the input from \
+             standard input (`input()` or `sys.stdin`). Never pass a prompt string to \
+             `input()` – prompts would end up in the output."
+        }
+        .to_string(),
+    };
+    format!("{base} {FIXED_VALUES_RULE}")
 }
+
+/// Rule for tasks with fixed values (regression „Aufgabe 2.2 Time“: the
+/// solutions read the given time from standard input).
+pub const FIXED_VALUES_RULE: &str = "If the task gives fixed values (e.g. \"the time is \
+15:17:51\", \"assign the values … to the variables …\") and does not ask for input, write \
+these values as constants or variable assignments in the code and read nothing from \
+standard input.";
 
 /// Well-known JDK classes that task sheets mention ("Verwenden Sie die
 /// Klasse Scanner") – never the class to write.
@@ -268,6 +287,8 @@ pub struct SolutionContext<'a> {
     pub output_templates: &'a [OutputTemplate],
     /// Java: class named by the task ([`class_name_from_task`]), else `Main`.
     pub class_name: Option<&'a str>,
+    /// The task reads no input: the solutions must use the given values.
+    pub no_input: bool,
 }
 
 pub fn solution_messages(
@@ -280,11 +301,13 @@ pub fn solution_messages(
          correct program. {} Print exactly the required output and nothing else (no \
          prompts, no explanations, no extra spaces). Answer with exactly one ```{} code \
          block containing the whole program.",
-        language_rules(language, ctx.class_name),
+        language_rules(language, ctx.class_name, ctx.no_input),
         fence(language)
     );
     let mut user = task_block(task_text);
-    if !ctx.input_format.trim().is_empty() {
+    if ctx.no_input {
+        user.push_str(&format!("\n\n{NO_INPUT_NOTE}"));
+    } else if !ctx.input_format.trim().is_empty() {
         user.push_str(&format!("\n\nInput format: {}", ctx.input_format.trim()));
     }
     if !ctx.output_format.trim().is_empty() {
@@ -361,6 +384,32 @@ pub fn repair_messages(
         "The program does not compile:\n```\n{}\n```\nFix the error. Answer with the complete \
          corrected program in exactly one ```{} code block.",
         errors.trim_end(),
+        fence(language)
+    )));
+    conversation
+}
+
+/// Part of the solution prompt for a task without input.
+pub const NO_INPUT_NOTE: &str = "This program reads no input. Use the values given in the task \
+as constants in the code; do not read anything from standard input.";
+
+/// Repair hint for a solution that read input although the task reads
+/// none (German meaning: „Die Aufgabe liest keine Eingabe; verwende die
+/// vorgegebenen Werte“).
+pub const NO_INPUT_REPAIR: &str = "The program reads input, but the task reads no input: it \
+crashed, waited for input or printed something different when run without input. Use the \
+values given in the task as constants in the code and remove every read from standard input.";
+
+/// Follow-up after a solution read input although the task reads none.
+pub fn no_input_repair_messages(
+    mut conversation: Vec<ChatMessage>,
+    previous_answer: &str,
+    language: &str,
+) -> Vec<ChatMessage> {
+    conversation.push(ChatMessage::assistant(previous_answer));
+    conversation.push(ChatMessage::user(format!(
+        "{NO_INPUT_REPAIR} Answer with the complete corrected program in exactly one ```{} \
+         code block.",
         fence(language)
     )));
     conversation
@@ -566,6 +615,7 @@ mod tests {
             examples: &[("3\n".into(), "6\n".into())],
             output_templates: &[],
             class_name: None,
+            no_input: false,
         };
         let m = solution_messages("Verdopple n.", "java", &ctx);
         assert!(m[0].content.contains("public class Main"));
@@ -610,6 +660,7 @@ mod tests {
             examples: &[],
             output_templates: &templates,
             class_name: None,
+            no_input: false,
         };
         let m = solution_messages("t", "python", &ctx);
         assert!(m[1].content.contains("Placeholders: `12345678`"));
@@ -651,6 +702,41 @@ mod tests {
     }
 
     #[test]
+    fn no_input_prompt_forbids_reading() {
+        let ctx = SolutionContext {
+            input_format: "hour minute second",
+            output_format: "",
+            examples: &[],
+            output_templates: &[],
+            class_name: Some("Time"),
+            no_input: true,
+        };
+        let m = solution_messages("Aufgabe 2.2 Time", "java", &ctx);
+        assert!(m[0].content.contains("never use `java.util.Scanner`"));
+        assert!(!m[0].content.contains("Read the input with"));
+        assert!(m[0].content.contains(FIXED_VALUES_RULE));
+        assert!(m[1].content.contains(NO_INPUT_NOTE));
+        // A wrong input format of the model is not passed on.
+        assert!(!m[1].content.contains("hour minute second"));
+        let m = solution_messages("t", "python", &ctx);
+        assert!(m[0].content.contains("never call `input()`"));
+        let r = no_input_repair_messages(m, "```python\nx = input()\n```", "python");
+        assert_eq!(r.len(), 4);
+        assert!(r[3].content.contains(NO_INPUT_REPAIR));
+        assert!(r[3].content.contains("```python"));
+        // The general rule is part of every solution prompt.
+        let ctx = SolutionContext {
+            no_input: false,
+            ..ctx
+        };
+        let m = solution_messages("t", "python", &ctx);
+        assert!(m[0].content.contains(FIXED_VALUES_RULE));
+        assert!(m[0]
+            .content
+            .contains("Read the input from standard input (`input()`"));
+    }
+
+    #[test]
     fn solution_prompt_uses_class_from_task() {
         let ctx = SolutionContext {
             input_format: "",
@@ -658,6 +744,7 @@ mod tests {
             examples: &[],
             output_templates: &[],
             class_name: Some("Time"),
+            no_input: false,
         };
         let m = solution_messages("Klasse Time", "java", &ctx);
         assert!(m[0].content.contains("`public class Time`"));

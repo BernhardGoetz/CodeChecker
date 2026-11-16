@@ -7,6 +7,38 @@ Format nach [Keep a Changelog](https://keepachangelog.com/de/1.1.0/), Versionen 
 
 ## [Unveröffentlicht]
 
+### Behoben
+
+- KI: Das vorzeitige Ende der Testfall-Erzeugung übernahm schon eine bloße Mehrheit
+  (z. B. 2 von 3 Lösungen), auch wenn diese falsch war und die nicht abgewartete Lösung
+  richtig gewesen wäre (Blatt „Aufgabe 2.2 Time“, 7B-Modell: „9630“ statt „441“
+  Sekunden). Vorzeitig beendet wird jetzt nur noch, wenn höchstens eine Minderheit fehlt
+  und mindestens 80 % aller Lösungen übereinstimmen; ohne Beispiele im Blatt müssen
+  zusätzlich alle bisher fertigen Lösungen einig sein. Bei 3 Lösungen werden damit alle
+  abgewartet.
+- KI: Aufgaben mit festen Werten und ohne Eingabe (z. B. „Die aktuelle Uhrzeit ist
+  15:17:51 … Speichern Sie Stunde, Minute und Sekunde in Variablen“) wurden als
+  „liest Eingabe“ behandelt; die Lösungen lasen die Werte von der Standardeingabe und die
+  KI erzeugte passende Eingaben (1.5B-Modell). Die Lösungen sollen solche Werte jetzt als
+  Konstanten verwenden. Zusätzlich erkennt eine Prüfung ohne KI solche Aufgaben am Text
+  (keine Eingabe-Hinweise wie „einlesen“, „Eingabe“, „Scanner“, „stdin“, aber feste Werte
+  für Variablen); dann gibt es keine KI-Eingaben, und Lösungen, die ohne Eingabe abstürzen,
+  auf Eingabe warten oder mit Eingabe etwas anderes ausgeben, zählen als fehlgeschlagen
+  und werden mit einem entsprechenden Hinweis repariert.
+- KI: Die angezeigte Restdauer war zu optimistisch.
+
+### Geändert
+
+- KI: Sind sich die Lösungen bei einem Testfall uneinig, zeigt der Testfall (und das
+  KI-Panel) die abweichenden Ausgaben der anderen Lösungen mit Anzahl an, damit die
+  übernommene Mehrheitsausgabe geprüft werden kann.
+- KI: Die Restdauer wird als Spanne angezeigt („noch ca. 4–6 Min.“) und alle 5 Sekunden
+  aktualisiert. Sie rechnet mit den verbleibenden Prompt- und Ausgabe-Token, der gemessenen
+  Geschwindigkeit des ganzen KI-Servers (alle parallelen Lösungen zusammen) und den
+  Sandbox-Zeiten, mit Sicherheitsaufschlag. Startwert sind die Messwerte des letzten
+  Laufs je Modell (`ai-speed.json` im Konfigurationsordner), beim ersten Lauf vorsichtige
+  Annahmen.
+
 ## [1.1.0] - 2026-11-16
 
 ### Hinzugefügt
