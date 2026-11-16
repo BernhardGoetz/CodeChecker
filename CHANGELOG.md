@@ -7,15 +7,16 @@ Format nach [Keep a Changelog](https://keepachangelog.com/de/1.1.0/), Versionen 
 
 ## [Unveröffentlicht]
 
+## [1.1.1] - 2026-11-16
+
 ### Behoben
 
-- KI: Das vorzeitige Ende der Testfall-Erzeugung übernahm schon eine bloße Mehrheit
-  (z. B. 2 von 3 Lösungen), auch wenn diese falsch war und die nicht abgewartete Lösung
-  richtig gewesen wäre (Blatt „Aufgabe 2.2 Time“, 7B-Modell: „9630“ statt „441“
-  Sekunden). Vorzeitig beendet wird jetzt nur noch, wenn höchstens eine Minderheit fehlt
-  und mindestens 80 % aller Lösungen übereinstimmen; ohne Beispiele im Blatt müssen
-  zusätzlich alle bisher fertigen Lösungen einig sein. Bei 3 Lösungen werden damit alle
-  abgewartet.
+- KI: Die Testfall-Erzeugung konnte vorzeitig enden, sobald eine bloße Mehrheit (z. B. 2 von
+  3 Lösungen) übereinstimmte, auch wenn diese falsch war und die nicht abgewartete Lösung
+  richtig gewesen wäre (Blatt „Aufgabe 2.2 Time“, 7B-Modell: „9630“ statt „441“ Sekunden).
+  Die Lösungen werden jetzt in einem Durchgang gemeinsam geschrieben und kommen zusammen
+  an; es wird also immer jede Lösung abgewartet und mitgezählt. Das vorzeitige Ende und die
+  Angabe „Lösung(en) nicht abgewartet“ entfallen.
 - KI: Aufgaben mit festen Werten und ohne Eingabe (z. B. „Die aktuelle Uhrzeit ist
   15:17:51 … Speichern Sie Stunde, Minute und Sekunde in Variablen“) wurden als
   „liest Eingabe“ behandelt; die Lösungen lasen die Werte von der Standardeingabe und die
@@ -25,19 +26,31 @@ Format nach [Keep a Changelog](https://keepachangelog.com/de/1.1.0/), Versionen 
   für Variablen); dann gibt es keine KI-Eingaben, und Lösungen, die ohne Eingabe abstürzen,
   auf Eingabe warten oder mit Eingabe etwas anderes ausgeben, zählen als fehlgeschlagen
   und werden mit einem entsprechenden Hinweis repariert.
-- KI: Die angezeigte Restdauer war zu optimistisch.
+- KI: Die Prompt-Statistik im KI-Panel („Prompt: … Token in … s“) war bei gleichzeitig
+  laufenden Anfragen um ein Vielfaches zu hoch, weil die Zeiten paralleler Anfragen addiert
+  wurden. Sie zeigt jetzt die tatsächlich vergangene Zeit; ein gemeinsamer Prompt mehrerer
+  Lösungen zählt einmal.
 
 ### Geändert
 
+- KI: Testfälle werden schneller erzeugt. Alle Lösungen der ersten Runde gehen als eine
+  Anfrage an die KI-Laufzeit, die den (langen) Prompt nur noch einmal statt einmal je
+  Lösung verarbeitet. Der KV-Cache bleibt in voller Genauigkeit (f16), weil die
+  Komprimierung (q8_0) die Prompt-Verarbeitung um etwa 20 % bremste; komprimiert wird nur
+  noch, wenn der freie Arbeitsspeicher knapp ist (weniger als Modellgröße + 2 GB). Die
+  Prompt-Verarbeitung nutzt so viele Threads wie physische Kerne. Gemessen mit dem
+  1.5B-Modell auf 4 Kernen: Lösungsphase etwa 144 s → 84 s. Reparaturen und die
+  Testeingaben bleiben einzelne Anfragen.
+- KI: Die Restdauer ist adaptiv und eher vorsichtig (vorher zu optimistisch). Sie wird als
+  Spanne angezeigt („noch ca. 4–6 Min.“) und alle 5 Sekunden aktualisiert. Sie rechnet
+  mit den verbleibenden Prompt- und Ausgabe-Token, der gemessenen Geschwindigkeit des
+  ganzen KI-Servers (alle parallelen Lösungen zusammen) und den Sandbox-Zeiten, mit
+  Sicherheitsaufschlag. Startwert sind die Messwerte des letzten Laufs je Modell
+  (`ai-speed.json` im Konfigurationsordner), beim ersten Lauf vorsichtige Annahmen.
 - KI: Sind sich die Lösungen bei einem Testfall uneinig, zeigt der Testfall (und das
   KI-Panel) die abweichenden Ausgaben der anderen Lösungen mit Anzahl an, damit die
-  übernommene Mehrheitsausgabe geprüft werden kann.
-- KI: Die Restdauer wird als Spanne angezeigt („noch ca. 4–6 Min.“) und alle 5 Sekunden
-  aktualisiert. Sie rechnet mit den verbleibenden Prompt- und Ausgabe-Token, der gemessenen
-  Geschwindigkeit des ganzen KI-Servers (alle parallelen Lösungen zusammen) und den
-  Sandbox-Zeiten, mit Sicherheitsaufschlag. Startwert sind die Messwerte des letzten
-  Laufs je Modell (`ai-speed.json` im Konfigurationsordner), beim ersten Lauf vorsichtige
-  Annahmen.
+  übernommene Mehrheitsausgabe geprüft werden kann. Während die Lösungen geschrieben
+  werden, zählt die Anzeige sie erst beim Prüfen hoch (sie kommen zusammen an).
 
 ## [1.1.0] - 2026-11-16
 
@@ -238,7 +251,8 @@ Erste stabile Version.
   und Notarisierung sind noch nicht eingerichtet); SmartScreen und Gatekeeper warnen beim
   ersten Start.
 
-[Unveröffentlicht]: https://github.com/BernhardGoetz/CodeChecker/compare/v1.1.0...HEAD
+[Unveröffentlicht]: https://github.com/BernhardGoetz/CodeChecker/compare/v1.1.1...HEAD
+[1.1.1]: https://github.com/BernhardGoetz/CodeChecker/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/BernhardGoetz/CodeChecker/compare/v1.0.3...v1.1.0
 [1.0.3]: https://github.com/BernhardGoetz/CodeChecker/compare/v1.0.2...v1.0.3
 [1.0.2]: https://github.com/BernhardGoetz/CodeChecker/compare/v1.0.1...v1.0.2

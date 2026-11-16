@@ -1,0 +1,8 @@
+Code-Prüfer 1.1.1 – richtigere und schnellere KI-Testfälle.
+
+- KI-Testfälle: Die KI wartet jetzt immer alle Lösungen ab. Vorher konnte eine falsche Mehrheit von 2 der 3 Lösungen gewinnen, bevor die richtige dritte fertig war.
+- Sind sich die Lösungen uneinig, zeigt der Testfall auch die abweichenden Ausgaben an. Prüfe dann selbst, welche Ausgabe stimmt.
+- Nennt die Aufgabe feste Werte und verlangt keine Eingabe, liest die KI-Lösung die Werte nicht mehr ein.
+- Die Testfälle sind schneller fertig, und die Restdauer wird als vorsichtige Spanne angezeigt.
+
+Alle Änderungen stehen auf der Release-Seite auf GitHub.
