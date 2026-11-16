@@ -13,8 +13,23 @@ Format nach [Keep a Changelog](https://keepachangelog.com/de/1.1.0/), Versionen 
   (SmartScreen, Smart App Control) und macOS (Gatekeeper) beim Installieren warnen, wie
   man die Warnung Schritt für Schritt übergeht und wie man die Echtheit der Datei mit
   `SHA256SUMS.txt` prüft.
+- KI-Testfälle: Ausgabevorlagen mit ausdrücklich erklärtem Platzhalter („12345678 ist ein
+  Platzhalter“) oder eindeutigen Platzhaltern (`<n>`, `___`, `XX.XX`, `[Name]`) nach
+  „Ausgabe:“ werden jetzt auch ohne die KI erkannt und mit den Vorlagen der KI zusammengeführt.
+- KI-Testfälle: Unter „Zeit je Schritt“ zeigt die Statistik, wie lange Analyse, Lösungen,
+  Reparatur, Testeingaben und Mehrheitsentscheid gedauert haben (dazu die verarbeiteten
+  Prompt-Token), damit sich messen lässt, wo die Zeit bleibt.
 
 ### Geändert
+
+- KI-Testfälle schneller: Liest eine Aufgabe keine Eingabe, erzeugt die KI keine Testeingaben
+  mehr; es gibt einen Test mit leerer Eingabe. Ein Probelauf mit Eingabe prüft diese
+  Einschätzung; liest das Programm doch etwas, werden die Eingaben nachträglich erzeugt.
+- KI-Testfälle schneller: Bei Aufgaben ohne Eingabe wird nicht auf die letzte Lösung gewartet,
+  wenn die Mehrheit schon feststeht und dadurch keine bessere Konfidenz verloren geht. Nicht
+  abgewartete Lösungen zählen als Gegenstimme; die Konfidenz nennt den vorzeitigen Abschluss.
+- Mehrere Ausgabevorlagen werden als Folge geprüft: Eine Ausgabe passt, wenn sie zu einer
+  Vorlage passt oder aus mehreren Vorlagen in der Reihenfolge des Blatts besteht.
 
 - README: Der Weg zum ersten Start unter macOS folgt jetzt der Anleitung von Apple
   (Systemeinstellungen → „Datenschutz und Sicherheit“ → „Dennoch öffnen“); der
@@ -25,6 +40,13 @@ Format nach [Keep a Changelog](https://keepachangelog.com/de/1.1.0/), Versionen 
 
 ### Behoben
 
+- KI-Testfälle: Stehen die Zeilen einer Ausgabevorlage erst einzeln in den Teilaufgaben und
+  dann zusammen als Block (z. B. „Aufgabe 2.2 Time“), entsteht wieder eine mehrzeilige
+  Vorlage statt drei einzelner. Bisher endete so ein Blatt mit „Rot“, obwohl alle Lösungen
+  dasselbe ausgaben.
+- KI-Testfälle: Passt keine einzige Ausgabe zur erkannten Vorlage, obwohl alle Lösungen
+  einig sind, wird die Vorlage verworfen (höchstens „Gelb“, mit Hinweis); sind sie sich
+  nicht einig, nennt „Rot“ jetzt die Vorlage als Grund statt „nicht mehrheitlich einig“.
 - Kompatibilität mit sysinfo 0.40 (Dependabot-Update): Der Code wurde an die neue API
   angepasst; ohne diese Anpassung ließ sich `main` nicht bauen.
 
