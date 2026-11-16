@@ -13,6 +13,15 @@ Format nach [Keep a Changelog](https://keepachangelog.com/de/1.1.0/), Versionen 
   (SmartScreen, Smart App Control) und macOS (Gatekeeper) beim Installieren warnen, wie
   man die Warnung Schritt für Schritt übergeht und wie man die Echtheit der Datei mit
   `SHA256SUMS.txt` prüft.
+- KI-Testfälle tolerieren Eingabeaufforderungen: Schreibt ein Programm vor dem Einlesen
+  einen Text wie „Zahl eingeben: “ (Python `input("…")`, Java `System.out.print("…")`),
+  besteht es einen KI-Testfall trotzdem, wenn die Werte stimmen; das Ergebnis nennt die
+  ignorierten Texte. Beschriftungen wie „Ergebnis:“ oder „Summe:“ werden nie ignoriert,
+  ohne Eingabe gibt es keine Toleranz. Handgeschriebene Testfälle bleiben streng; ein
+  KI-Testfall, dessen erwartete Ausgabe geändert wird, gilt als handgeschrieben. Der
+  Variationstest wertet ebenso.
+- Testfälle mit KI: Geben einige der erzeugten Lösungen Eingabeaufforderungen aus, wird
+  die Ausgabe ohne sie als Erwartung genommen (Einstufung dann höchstens Gelb).
 
 ### Geändert
 
