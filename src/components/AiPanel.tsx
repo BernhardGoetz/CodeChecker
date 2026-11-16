@@ -241,7 +241,11 @@ export function AiPanel({
               ` (${(result.stats.templatesDiscarded ?? 0) + (result.stats.templatesMerged ?? 0)} verworfen/zusammengeführt)`}
             {result.stats.noInput && " · Aufgabe liest keine Eingabe"}
             {(result.stats.solutionsCancelled ?? 0) > 0 &&
-              ` · ${result.stats.solutionsCancelled} Lösung(en) nicht abgewartet`} ·{" "}
+              ` · ${result.stats.solutionsCancelled} Lösung(en) nicht abgewartet`}
+            {(result.stats.inputsInvalid ?? 0) > 0 &&
+              ` · ${result.stats.inputsInvalid} ungültige KI-Eingabe(n) nicht übernommen`}
+            {(result.stats.testsRedundant ?? 0) > 0 &&
+              ` · ${result.stats.testsRedundant} gleichartige Testfälle weggelassen`} ·{" "}
             {Math.round(result.stats.durationMs / 1000)} s
             {result.stats.tokensPerSecond !== null &&
               ` · ${result.stats.tokensPerSecond.toFixed(1).replace(".", ",")} Token/s`}

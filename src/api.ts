@@ -309,6 +309,10 @@ export interface GenerateStats {
   templatesMerged?: number;
   inputsGenerated: number;
   testsDropped: number;
+  /** Model inputs on which every solution crashed or timed out (not taken over). */
+  inputsInvalid?: number;
+  /** Model tests left out because too many had the same expected output. */
+  testsRedundant?: number;
   /** The task reads no input (confirmed): no inputs were requested from the model. */
   noInput?: boolean;
   /** Solutions not waited for because the majority was already certain. */
@@ -342,6 +346,8 @@ export interface GenerateResult {
   outputTemplates: OutputTemplate[];
   /** Input format from the structure step (sent to the variation check). */
   inputFormat: string;
+  /** Input limits stated by the task (sent to the variation check). */
+  inputConstraints?: string;
   stats: GenerateStats;
 }
 
@@ -421,6 +427,8 @@ export interface VariationRequest {
   tests: { name: string; input: string; expected: string }[];
   /** Input format from the test generation (helps the model write valid inputs). */
   inputFormat: string;
+  /** Input limits from the test generation. */
+  inputConstraints?: string;
 }
 
 export interface VariationFinding {

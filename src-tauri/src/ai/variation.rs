@@ -79,6 +79,9 @@ pub struct VariationRequest {
     /// helps the model write valid inputs.
     #[serde(default)]
     pub input_format: String,
+    /// Input limits from the test generation (`GenerateResult.inputConstraints`).
+    #[serde(default)]
+    pub input_constraints: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -940,7 +943,15 @@ async fn check_inputs<L: Llm + Sync, E: Executor>(
     let answer: Option<InputsAnswer> = ask(
         llm,
         json_request(
-            prompts::inputs_messages(task, &ctx.req.input_format, &existing),
+            prompts::inputs_messages(
+                task,
+                &prompts::InputsContext {
+                    input_format: &ctx.req.input_format,
+                    constraints: &ctx.req.input_constraints,
+                    known_inputs: &existing,
+                    ..prompts::InputsContext::default()
+                },
+            ),
             prompts::inputs_schema(),
             INPUTS_TEMPERATURE,
         ),
@@ -1618,6 +1629,7 @@ mod tests {
                 origin: None,
             }],
             input_format: String::new(),
+            input_constraints: String::new(),
         }
     }
 

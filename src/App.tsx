@@ -126,6 +126,7 @@ export default function App() {
     templates: OutputTemplate[];
     reference: { code: string; language: string } | null;
     inputFormat: string;
+    inputConstraints: string;
   } | null>(null);
   const activeAi = aiData !== null && aiData.taskText === task ? aiData : null;
   const outputTemplates = activeAi?.templates ?? [];
@@ -373,6 +374,7 @@ export default function App() {
       templates: r.outputTemplates ?? [],
       reference: r.referenceSolution ? { code: r.referenceSolution, language: languageId } : null,
       inputFormat: r.inputFormat ?? "",
+      inputConstraints: r.inputConstraints ?? "",
     });
     if (r.tests.length === 0) return;
     const prev = testsRef.current;
@@ -480,6 +482,7 @@ export default function App() {
         outputTemplates,
         tests: testData,
         inputFormat: activeAi?.inputFormat ?? "",
+        inputConstraints: activeAi?.inputConstraints ?? "",
       });
       // The backend may have started the engine.
       if (docker?.state !== "ok") refreshDocker();

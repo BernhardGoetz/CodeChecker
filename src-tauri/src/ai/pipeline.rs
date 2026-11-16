@@ -139,6 +139,12 @@ pub struct Stats {
     pub templates_merged: usize,
     pub inputs_generated: usize,
     pub tests_dropped: usize,
+    /// Model inputs on which every solution crashed or timed out: invalid
+    /// for the task (not counted as dropped).
+    pub inputs_invalid: usize,
+    /// Model tests left out because more than [`MAX_TESTS_PER_OUTPUT`]
+    /// had the same expected output.
+    pub tests_redundant: usize,
     /// The task reads no input (confirmed by running): no inputs were
     /// requested from the model.
     pub no_input: bool,
@@ -189,6 +195,8 @@ pub struct GenerateResult {
     pub output_templates: Vec<OutputTemplate>,
     /// Input format from the structure step (for the variation check).
     pub input_format: String,
+    /// Input limits from the structure step (for the variation check).
+    pub input_constraints: String,
     pub stats: Stats,
 }
 
@@ -613,6 +621,8 @@ pub struct Settings {
 #[serde(rename_all = "camelCase", default)]
 pub struct Structure {
     pub input_format: String,
+    /// Limits for the input stated by the task (empty: none stated).
+    pub input_constraints: String,
     pub output_format: String,
     pub examples: Vec<Example>,
     pub output_templates: Vec<OutputTemplate>,
@@ -684,12 +694,46 @@ pub fn suggested_mode(s: &Structure) -> Option<CompareMode> {
 
 pub use crate::runner::compare::normalize_for_match;
 
+/// How far the output of an example may start after its input: at most
+/// this many characters (after [`normalize_for_match`]) …
+pub const MAX_PAIR_GAP_CHARS: usize = 400;
+/// … or at most this many line breaks (layouts with all inputs first and
+/// then all outputs), but never more than [`MAX_PAIR_GAP_CHARS_LINES`]
+/// characters.
+pub const MAX_PAIR_GAP_LINES: usize = 15;
+pub const MAX_PAIR_GAP_CHARS_LINES: usize = 1200;
+
+/// Whether the text between an input and its output is short enough for
+/// them to belong together.
+fn close_enough(gap: &str) -> bool {
+    let chars = gap.chars().count();
+    chars <= MAX_PAIR_GAP_CHARS
+        || (chars <= MAX_PAIR_GAP_CHARS_LINES && gap.matches('\n').count() <= MAX_PAIR_GAP_LINES)
+}
+
 /// An example counts only if its output (non-empty) and its input appear
-/// verbatim in the task text (after [`normalize_for_match`]).
+/// verbatim in the task text (after [`normalize_for_match`]) and belong
+/// together: with a non-empty input, the output must start at or after an
+/// occurrence of the input and close to it (see [`MAX_PAIR_GAP_CHARS`]).
+/// A pair whose input and output only appear far apart is not an example.
 pub fn example_in_text(normalized_text: &str, ex: &Example) -> bool {
     let input = normalize_for_match(&ex.input);
     let output = normalize_for_match(&ex.output);
-    !output.is_empty() && normalized_text.contains(&output) && normalized_text.contains(&input)
+    if output.is_empty() || !normalized_text.contains(&output) {
+        return false;
+    }
+    if input.is_empty() {
+        return true;
+    }
+    normalized_text.match_indices(input.as_str()).any(|(p, _)| {
+        let end = p + input.len();
+        // The nearest occurrence of the output from here on.
+        let Some(q) = normalized_text[p..].find(&output).map(|q| p + q) else {
+            return false;
+        };
+        // An output starting inside the input (overlap) is close.
+        q <= end || close_enough(&normalized_text[end..q])
+    })
 }
 
 /// Splits the model's examples into (verbatim, discarded count); at most
@@ -1051,6 +1095,16 @@ pub struct Evidence {
     pub template_mismatch: bool,
     /// Tests whose majority needed merging outputs with input prompts.
     pub prompt_merged: usize,
+    /// Model inputs on which every solution crashed (only a note).
+    pub invalid: usize,
+}
+
+/// Note (no reason for yellow) when model inputs were invalid for the task.
+fn invalid_note(n: usize) -> String {
+    format!(
+        "{n} KI-Eingabe(n) nicht übernommen: Alle Lösungen brachen damit ab oder überschritten \
+         das Zeitlimit – die Eingabe passt wohl nicht zur Aufgabe."
+    )
 }
 
 fn early_stop_reason(e: &Evidence) -> String {
@@ -1136,8 +1190,7 @@ pub fn decide_confidence(e: &Evidence) -> Confidence {
     }
     if e.dropped > 0 {
         yellow.push(format!(
-            "{} Eingabe(n) verworfen, weil sich die Lösungen nicht einig waren oder alle \
-             abstürzten.",
+            "{} Eingabe(n) verworfen, weil sich die Lösungen nicht einig waren.",
             e.dropped
         ));
     }
@@ -1154,11 +1207,17 @@ pub fn decide_confidence(e: &Evidence) -> Confidence {
         if e.cancelled > 0 {
             reasons.push(early_stop_reason(e));
         }
+        if e.invalid > 0 {
+            reasons.push(invalid_note(e.invalid));
+        }
         Confidence {
             level: ConfidenceLevel::Green,
             reasons,
         }
     } else {
+        if e.invalid > 0 {
+            yellow.push(invalid_note(e.invalid));
+        }
         yellow.push(
             "Die erwarteten Ausgaben sind nur ein Hinweis – bitte prüfen, bevor danach bewertet \
              wird."
@@ -1469,14 +1528,26 @@ pub struct Vote {
     pub fitting: usize,
     /// Tests whose majority needed merging outputs with input prompts.
     pub prompt_merged: usize,
+    /// Model inputs on which every solution crashed or timed out.
+    pub invalid: usize,
+    /// Model tests left out because of [`MAX_TESTS_PER_OUTPUT`].
+    pub redundant: usize,
 }
+
+/// At most this many model tests with the same expected output are kept
+/// (the first ones); the others add nothing (e.g. ten inputs all giving
+/// „Ungültige Eingabe“). Sheet examples are never left out.
+pub const MAX_TESTS_PER_OUTPUT: usize = 3;
 
 /// Majority vote over all inputs. `results[i]`: the outputs of surviving
 /// solution `i` on `inputs` (`None`: incomplete). The first `sheet` inputs
 /// are the sheet's examples, up to `check` the forced empty input (dropped
 /// silently without a majority). `voters`: surviving plus cancelled
 /// solutions – a cancelled one counts as disagreeing. Outputs that do not
-/// fit the templates count as no output. Pure.
+/// fit the templates count as no output. A model input on which every
+/// solution crashed or timed out is invalid for the task (counted in
+/// `invalid`, not in `dropped`); of the model tests with the same expected
+/// output at most [`MAX_TESTS_PER_OUTPUT`] are kept. Pure.
 pub fn vote(
     mode: &CompareMode,
     templates: &[OutputTemplate],
@@ -1505,6 +1576,15 @@ pub fn vote(
         // The forced empty input is only a helper: without a majority it is
         // dropped silently (not counted as a dropped input).
         let forced = !from_sheet && j < check;
+        let from_model = j >= check;
+        // Every solution crashed or timed out: the input is probably not
+        // one the task requires (outside the limits, malformed). Crashes of
+        // only some solutions stay disagreement.
+        let ran: Vec<&StepOutput> = raw.iter().flatten().copied().collect();
+        if from_model && !ran.is_empty() && ran.iter().all(|o| !valid(o)) {
+            v.invalid += 1;
+            continue;
+        }
         let Some(maj) = majority_ignoring_prompts(mode, &outputs, input) else {
             v.dropped += usize::from(!forced);
             continue;
@@ -1515,6 +1595,22 @@ pub fn vote(
             v.dropped += usize::from(!forced);
             continue;
         }
+        for &m in members {
+            v.wins[m] += 1;
+        }
+        let expected = outputs[rep].map(|o| o.stdout.clone()).unwrap_or_default();
+        if from_model
+            && v.tests
+                .iter()
+                .filter(|t| {
+                    t.source == TestSource::Generated && mode.matches(&t.expected, &expected)
+                })
+                .count()
+                >= MAX_TESTS_PER_OUTPUT
+        {
+            v.redundant += 1;
+            continue;
+        }
         v.prompt_merged += usize::from(maj.merged());
         // Agreement of the largest group of equal outputs: merging can save
         // a test, but not make it green.
@@ -1522,10 +1618,6 @@ pub fn vote(
         if !from_sheet {
             v.min_agreement = Some(v.min_agreement.map_or(agreement, |m: f64| m.min(agreement)));
         }
-        for &m in members {
-            v.wins[m] += 1;
-        }
-        let expected = outputs[rep].map(|o| o.stdout.clone()).unwrap_or_default();
         let name = if from_sheet {
             format!("Beispiel {} (Blatt)", j + 1)
         } else if forced {
@@ -1654,6 +1746,14 @@ pub async fn generate<L: Llm + Sync, E: Executor>(
         .iter()
         .map(|e| (e.input.clone(), e.output.clone()))
         .collect();
+    // The inputs prompt sees the verified sheet pairs (never model outputs).
+    let inputs_ctx = prompts::InputsContext {
+        input_format: &structure.input_format,
+        output_format: &structure.output_format,
+        constraints: &structure.input_constraints,
+        examples: &example_pairs,
+        known_inputs: &[],
+    };
 
     // 2.–4. Solutions, all at the same time (llama-server has a slot per
     // solution): generate while the containers start, check each one as
@@ -1771,7 +1871,7 @@ pub async fn generate<L: Llm + Sync, E: Executor>(
         let phase = Instant::now();
         let r = run
             .json_step::<InputsAnswer>(
-                prompts::inputs_messages(&req.task_text, &structure.input_format, &example_inputs),
+                prompts::inputs_messages(&req.task_text, &inputs_ctx),
                 prompts::inputs_schema(),
                 INPUTS_TEMPERATURE,
                 INPUTS_MAX_TOKENS,
@@ -1930,6 +2030,7 @@ pub async fn generate<L: Llm + Sync, E: Executor>(
                 templates.clone()
             },
             input_format: structure.input_format.clone(),
+            input_constraints: structure.input_constraints.clone(),
             stats,
         }
     };
@@ -1956,7 +2057,7 @@ pub async fn generate<L: Llm + Sync, E: Executor>(
         let phase = Instant::now();
         let r = run
             .json_step::<InputsAnswer>(
-                prompts::inputs_messages(&req.task_text, &structure.input_format, &example_inputs),
+                prompts::inputs_messages(&req.task_text, &inputs_ctx),
                 prompts::inputs_schema(),
                 INPUTS_TEMPERATURE,
                 INPUTS_MAX_TOKENS,
@@ -2093,6 +2194,8 @@ pub async fn generate<L: Llm + Sync, E: Executor>(
     {
         let mut st = run.shared();
         st.stats.tests_dropped = v.dropped;
+        st.stats.inputs_invalid = v.invalid;
+        st.stats.tests_redundant = v.redundant;
         st.stats.phase_ms.majority = ms(phase.elapsed());
     }
     let reference = v
@@ -2107,6 +2210,7 @@ pub async fn generate<L: Llm + Sync, E: Executor>(
     evidence.dropped = v.dropped;
     evidence.min_agreement = v.min_agreement;
     evidence.prompt_merged = v.prompt_merged;
+    evidence.invalid = v.invalid;
     Ok(finish(run, v.tests, reference, evidence))
 }
 
@@ -2495,6 +2599,47 @@ mod tests {
         assert_eq!(kept.len(), 1);
         let (kept, _) = verify_examples(text, &[ex("3\n1 2 4\n", "6")]);
         assert!(kept.is_empty());
+    }
+
+    #[test]
+    fn example_pairs_must_be_close() {
+        let ex = |i: &str, o: &str| Example {
+            input: i.into(),
+            output: o.into(),
+        };
+        let far = format!(
+            "Eingabe: 17\n{}\nIn einer anderen Aufgabe steht 34.\n",
+            "Fülltext ohne Zahlen. ".repeat(100)
+        );
+        let text = normalize_for_match(&far);
+        // Input at the start, the same output only ~2000 characters later.
+        assert!(!example_in_text(&text, &ex("17", "34")));
+        // The output before the input does not count either.
+        let text = normalize_for_match("Ausgabe: 34\nEingabe: 17\n");
+        assert!(!example_in_text(&text, &ex("17", "34")));
+        // Close pairs, also in a table row and with the output overlapping.
+        let text = normalize_for_match("Eingabe: 17\nAusgabe: 34\n");
+        assert!(example_in_text(&text, &ex("17", "34")));
+        let text = normalize_for_match("| 17 | 34 |\n| 5 | 10 |\n");
+        assert!(example_in_text(&text, &ex("5", "10")));
+        assert!(example_in_text(
+            &normalize_for_match("17 ergibt 1734"),
+            &ex("17", "1734")
+        ));
+        // One occurrence of the input close to the output is enough.
+        let text = normalize_for_match(&format!("17 Äpfel. {far}Eingabe: 17\nAusgabe: 34"));
+        assert!(example_in_text(&text, &ex("17", "34")));
+        // All inputs first, then all outputs: line breaks within the window.
+        let inputs: String = (1..=10)
+            .map(|i| format!("Eingabe {i}: {}\n", i * 100))
+            .collect();
+        let outputs: String = (1..=10)
+            .map(|i| format!("Ausgabe {i}: {}\n", i * 200 + 7))
+            .collect();
+        let text = normalize_for_match(&format!("{inputs}{outputs}"));
+        assert!(example_in_text(&text, &ex("100", "207")));
+        // Without input only the output is checked.
+        assert!(example_in_text(&normalize_for_match(&far), &ex("", "34")));
     }
 
     #[test]
@@ -4044,5 +4189,150 @@ mod tests {
             ..Evidence::default()
         });
         assert_eq!(c.level, ConfidenceLevel::Yellow);
+    }
+
+    fn timeout() -> StepOutput {
+        StepOutput {
+            timed_out: true,
+            exit_code: None,
+            ..step("", 0)
+        }
+    }
+
+    #[test]
+    fn all_crash_input_is_invalid_not_dropped() {
+        let mode = CompareMode::lines(true);
+        let inputs: Vec<String> = ["21\n", "7\n", "-1\n", "x\n"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        // Sheet example 21 (all agree), 7 (all agree), -1 (all crash or time
+        // out: invalid), x (only some crash: disagreement, dropped).
+        let results = vec![
+            Some(vec![
+                step("42\n", 0),
+                step("14\n", 0),
+                step("", 1),
+                step("", 1),
+            ]),
+            Some(vec![
+                step("42\n", 0),
+                step("14\n", 0),
+                timeout(),
+                step("", 1),
+            ]),
+            Some(vec![
+                step("42\n", 0),
+                step("14\n", 0),
+                step("", 1),
+                step("0\n", 0),
+            ]),
+        ];
+        let v = vote(&mode, &[], &results, &inputs, 1, 1, 3);
+        assert_eq!(v.invalid, 1);
+        assert_eq!(v.dropped, 1);
+        assert_eq!(
+            v.tests.iter().map(|t| t.input.as_str()).collect::<Vec<_>>(),
+            vec!["21\n", "7\n"]
+        );
+        // A sheet example on which all crash is no "invalid input".
+        let v = vote(
+            &mode,
+            &[],
+            &[Some(vec![step("", 1)]), Some(vec![step("", 1)])],
+            &inputs[..1],
+            1,
+            1,
+            2,
+        );
+        assert_eq!((v.invalid, v.dropped), (0, 1));
+        // The note does not make the result yellow.
+        let base = Evidence {
+            solutions: 3,
+            compiled: 3,
+            survivors: 3,
+            examples: 1,
+            tests: 2,
+            min_agreement: Some(1.0),
+            ..Evidence::default()
+        };
+        let c = decide_confidence(&Evidence {
+            invalid: 1,
+            ..base.clone()
+        });
+        assert_eq!(c.level, ConfidenceLevel::Green);
+        assert!(c
+            .reasons
+            .iter()
+            .any(|r| r.contains("1 KI-Eingabe(n) nicht übernommen")));
+        let c = decide_confidence(&Evidence {
+            invalid: 2,
+            dropped: 1,
+            ..base
+        });
+        assert_eq!(c.level, ConfidenceLevel::Yellow);
+        assert!(c
+            .reasons
+            .iter()
+            .any(|r| r.contains("2 KI-Eingabe(n) nicht übernommen")));
+        assert!(c
+            .reasons
+            .iter()
+            .any(|r| r == "1 Eingabe(n) verworfen, weil sich die Lösungen nicht einig waren."));
+    }
+
+    #[test]
+    fn redundant_outputs_are_capped() {
+        let mode = CompareMode::lines(true);
+        // Sheet example "0" gives "Ungültige Eingabe" too: never left out
+        // and not counted for the cap.
+        let inputs: Vec<String> = ["0\n", "-1\n", "-2\n", "-3\n", "-4\n", "-5\n", "4\n"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let outs: Vec<StepOutput> = inputs
+            .iter()
+            .map(|i| {
+                let n: i64 = i.trim().parse().unwrap();
+                if n <= 0 {
+                    step("Ungültige Eingabe\n", 0)
+                } else {
+                    step(&format!("{}\n", n * 2), 0)
+                }
+            })
+            .collect();
+        let results = vec![Some(outs.clone()), Some(outs)];
+        let v = vote(&mode, &[], &results, &inputs, 1, 1, 2);
+        assert_eq!(v.redundant, 5 - MAX_TESTS_PER_OUTPUT);
+        assert_eq!(v.dropped, 0);
+        let names: Vec<&str> = v.tests.iter().map(|t| t.input.as_str()).collect();
+        assert_eq!(names, vec!["0\n", "-1\n", "-2\n", "-3\n", "4\n"]);
+        // Wins still count all agreeing inputs.
+        assert_eq!(v.wins, vec![7, 7]);
+    }
+
+    #[test]
+    fn inputs_prompt_gets_format_examples_and_limits() {
+        let structure = serde_json::json!({
+            "inputFormat": "eine Zahl n",
+            "inputConstraints": "1 <= n <= 100",
+            "outputFormat": "2n",
+            "examples": [{"input": "21", "output": "42"}],
+            "compareMode": "lines"
+        })
+        .to_string();
+        let llm = MockLlm::new(scripted(
+            structure,
+            vec!["double"],
+            r#"{"inputs": ["3", "100"]}"#,
+        ));
+        let r = generate_with(&llm, req(None), 2).unwrap();
+        assert_eq!(r.input_constraints, "1 <= n <= 100");
+        let calls = llm.calls();
+        let inputs = calls.iter().find(|c| is_inputs(c)).unwrap();
+        let u = &inputs.messages[1].content;
+        assert!(u.contains("Output format: 2n"), "{u}");
+        assert!(u.contains("Input limits (every input must respect them): 1 <= n <= 100"));
+        assert!(u.contains("Example 1\nInput:\n```\n21\n```\nExpected output:\n```\n42\n```"));
     }
 }
