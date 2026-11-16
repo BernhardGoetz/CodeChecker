@@ -456,7 +456,7 @@ export default function App() {
     setError(null);
     setReport(null);
     setProgress(null);
-    const testData = tests.map(({ name, input, expected }) => ({ name, input, expected }));
+    const testData = tests.map(({ name, input, expected, origin }) => ({ name, input, expected, origin }));
     try {
       const r = await runTests({
         language: languageId,

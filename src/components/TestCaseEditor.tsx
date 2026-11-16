@@ -119,7 +119,9 @@ export function TestCaseEditor({
                 rows={4}
                 value={t.expected}
                 spellCheck={false}
-                onChange={(e) => update(t.id, { expected: e.target.value })}
+                // A changed expectation is the user's own: the test becomes
+                // handwritten (strict, no prompt tolerance, no KI badge).
+                onChange={(e) => update(t.id, { expected: e.target.value, origin: undefined })}
               />
               <span
                 className={

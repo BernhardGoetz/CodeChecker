@@ -43,7 +43,14 @@ function TestRow({ t }: { t: TestResult }) {
         <strong className="result-name">{t.name}</strong>
         {t.output && <span className="muted small">{t.output.durationMs} ms</span>}
       </div>
-      {t.message && <p className="small">{t.message}</p>}
+      {t.promptsIgnored?.length ? (
+        <p className="note small">
+          {LABEL.passed} – Eingabeaufforderungen wurden ignoriert (KI-Testfall):{" "}
+          {t.promptsIgnored.map((p) => `„${p}“`).join(", ")}
+        </p>
+      ) : (
+        t.message && <p className="small">{t.message}</p>
+      )}
       {t.onlyTrailingWhitespaceDiffers && (
         <p className="note warn small">Unterschied nur am Zeilenende (Leerzeichen/Zeilenumbruch)</p>
       )}
