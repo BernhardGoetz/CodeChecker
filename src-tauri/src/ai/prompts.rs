@@ -13,6 +13,8 @@ use crate::runner::template::{
 pub const MAX_EXAMPLES: usize = 5;
 /// Upper bound for generated test inputs.
 pub const MAX_INPUTS: usize = 10;
+/// Longest input/output format description of the structure step.
+pub const MAX_FORMAT_CHARS: usize = 300;
 
 /// `class_name`: Java class named by the task ([`class_name_from_task`]),
 /// else `Main`.
@@ -185,7 +187,8 @@ real values (e.g. \"12345678 seconds have passed\" when the task says 12345678 i
 placeholder, or \"<n>\"/\"X\"). text: the template copied character by character; \
 placeholders: the placeholder tokens exactly as they appear in the text. A template spanning \
 several consecutive lines is ONE template; never split it into one template per line. A \
-template is not an example. Empty list if there is none.\n\
+template is not an example. Empty list if there is none. Do not repeat a template in \
+examples; keep inputFormat and outputFormat short.\n\
 - compareMode: \"float\" if the output contains decimal numbers where tiny rounding \
 differences are acceptable, \"tokens\" if only the words/numbers matter and spacing or \
 line breaks do not, otherwise \"lines\".\n\
@@ -195,9 +198,11 @@ pub fn structure_schema() -> Value {
     json!({
         "type": "object",
         "properties": {
-            "inputFormat": { "type": "string" },
+            // Short descriptions bound runaway answers. Examples and
+            // templates stay unbounded: a cut-off one would not be verbatim.
+            "inputFormat": { "type": "string", "maxLength": MAX_FORMAT_CHARS },
             "readsInput": { "type": "boolean" },
-            "outputFormat": { "type": "string" },
+            "outputFormat": { "type": "string", "maxLength": MAX_FORMAT_CHARS },
             "examples": {
                 "type": "array",
                 "maxItems": MAX_EXAMPLES,
@@ -287,6 +292,13 @@ pub fn solution_messages(
             output.trim_end()
         ));
     }
+    let several = ctx.output_templates.len() > 1;
+    if several {
+        user.push_str(
+            "\n\nThe sheet shows several output format templates. The output consists of one or \
+             more of these blocks, in this order.",
+        );
+    }
     for t in ctx.output_templates {
         let tokens = t
             .placeholders
@@ -294,10 +306,15 @@ pub fn solution_messages(
             .map(|p| format!("`{p}`"))
             .collect::<Vec<_>>()
             .join(", ");
+        let print = if several {
+            "Print this block in exactly this format where it applies"
+        } else {
+            "Print exactly this format"
+        };
         user.push_str(&format!(
             "\n\nOutput format template (placeholders, not real values). Placeholders: {tokens}. \
-             Print exactly this format, replace every placeholder by the real value your program \
-             computes, and keep all other text unchanged:\n```\n{}\n```",
+             {print}, replace every placeholder by the real value your program computes, and keep \
+             all other text unchanged:\n```\n{}\n```",
             t.text.trim_end()
         ));
         for p in &t.placeholders {
@@ -547,6 +564,32 @@ mod tests {
              decimal places."
         ));
         assert!(STRUCTURE_SYSTEM.contains("never split it into one template per line"));
+        assert!(!m[1].content.contains("several output format templates"));
+        assert_eq!(
+            structure_schema()["properties"]["inputFormat"]["maxLength"],
+            MAX_FORMAT_CHARS
+        );
+        assert!(
+            structure_schema()["properties"]["examples"]["items"]["properties"]["output"]
+                .get("maxLength")
+                .is_none()
+        );
+        let two = [
+            templates[0].clone(),
+            OutputTemplate {
+                text: "Fertig nach 12345678 s.".into(),
+                placeholders: vec!["12345678".into()],
+            },
+        ];
+        let ctx = SolutionContext {
+            output_templates: &two,
+            ..ctx
+        };
+        let m = solution_messages("t", "python", &ctx);
+        assert!(m[1]
+            .content
+            .contains("one or more of these blocks, in this order"));
+        assert!(!m[1].content.contains("Print exactly this format"));
         assert_eq!(inputs_schema()["properties"]["inputs"]["maxItems"], 10);
     }
 

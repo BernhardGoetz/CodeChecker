@@ -294,12 +294,31 @@ export interface GenerateStats {
   examplesDiscarded: number;
   /** Output templates with placeholders found in the task text. */
   templatesFound: number;
+  /** Templates rejected by the checks or cut off. */
+  templatesDiscarded?: number;
+  /** Model templates joined into one or subsumed by a longer one. */
+  templatesMerged?: number;
   inputsGenerated: number;
   testsDropped: number;
+  /** The task reads no input (confirmed): no inputs were requested from the model. */
+  noInput?: boolean;
+  /** Solutions not waited for because the majority was already certain. */
+  solutionsCancelled?: number;
   llmCalls: number;
   completionTokens: number;
+  /** Prompt tokens processed (without the prompt cache) and the time for that. */
+  promptTokens?: number;
+  promptMs?: number;
   tokensPerSecond: number | null;
   durationMs: number;
+  /** Duration per step in milliseconds (inputs run alongside the solutions). */
+  phaseMs?: {
+    structure: number;
+    solutions: number;
+    repairs: number;
+    inputs: number;
+    majority: number;
+  };
 }
 
 export interface GenerateResult {
