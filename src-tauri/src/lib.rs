@@ -77,25 +77,44 @@ async fn run_tests(app: AppHandle, request: RunRequest) -> Result<RunReport, Run
 
 /// Loads bundled image archives into the active engine if the images are
 /// missing (called once the engine is up, i.e. at app start). Also removes
-/// sandbox containers left over from a crash.
+/// sandbox containers left over from a crash and, afterwards in the
+/// background, outdated runner images.
 #[tauri::command]
 async fn prepare_images(app: AppHandle) -> Result<images::ImagesReport, RunnerError> {
     let docker = docker::connect().await?;
     let _ = docker::remove_orphans(&docker, docker::ORPHAN_AGE).await;
-    Ok(images::prepare_all(&docker, |p| {
+    let report = images::prepare_all(&docker, |p| {
         let _ = app.emit(IMAGES_EVENT, p);
     })
-    .await)
+    .await;
+    spawn_cleanup(&docker, &report);
+    Ok(report)
 }
 
-/// "Images aktualisieren": pulls the pinned images from GHCR.
+/// Removes outdated runner images in the background (see
+/// `runner/cleanup.rs`) once the current images were prepared without
+/// errors; never blocks a run, errors are only logged.
+fn spawn_cleanup(docker: &bollard::Docker, report: &images::ImagesReport) {
+    if !report.errors.is_empty() {
+        return;
+    }
+    let docker = docker.clone();
+    tauri::async_runtime::spawn(async move {
+        runner::cleanup::remove_outdated(&docker).await;
+    });
+}
+
+/// "Images aktualisieren": pulls the pinned images from GHCR, then removes
+/// outdated runner images in the background.
 #[tauri::command]
 async fn update_images(app: AppHandle) -> Result<images::ImagesReport, RunnerError> {
     let docker = docker::connect().await?;
-    Ok(images::update_all(&docker, |p| {
+    let report = images::update_all(&docker, |p| {
         let _ = app.emit(IMAGES_EVENT, p);
     })
-    .await)
+    .await;
+    spawn_cleanup(&docker, &report);
+    Ok(report)
 }
 
 /// Opens the system file dialog (from the backend; the webview has no

@@ -234,6 +234,8 @@ Der Code-Prüfer sucht beim Start selbst nach der gewählten Engine (Einzelheite
 
 Der Code-Prüfer bringt „Bauanleitungen“ für die Container (sogenannte **Images**) für Python und Java gleich im Installationspaket mit. Beim ersten Start mit laufendem Docker lädt er sie automatisch in Docker. Dafür brauchst du **kein Internet**. Der Fortschritt steht neben dem Knopf „Prüfen“. Solange das läuft, ist „Prüfen“ kurz gesperrt.
 
+Damit nach Updates kein Speicherplatz verloren geht, **löscht der Code-Prüfer alte Prüf-Umgebungen automatisch** (in Docker und Podman): Er behält die Images der aktuellen und der vorherigen Version und entfernt ältere Versionen im Hintergrund, nachdem die aktuellen Images bereitstehen. Images neuerer Versionen, selbst gebaute Images und Images anderer Programme rührt er nicht an; ein Image, das gerade von einem Container benutzt wird, bleibt ebenfalls stehen.
+
 ### KI-Modell einrichten (freiwillig)
 
 Das brauchst du nur, wenn du die KI-Funktionen nutzen willst (Testfälle erzeugen lassen, Texterkennungsfehler korrigieren lassen). Zum Prüfen von Code ist die KI **nicht** nötig.

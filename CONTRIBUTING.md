@@ -60,7 +60,7 @@ Lizenz: MIT (siehe [`LICENSE`](LICENSE)).
 
 **Runner** (`src-tauri/src/runner/`): Jede Prüfung startet einen frischen Container, schreibt den Quellcode hinein, kompiliert (falls nötig) und führt den Code pro Testfall einmal mit der Eingabe als stdin aus. Danach wird der Container immer gelöscht.
 - `docker.rs`: Verbindung (Docker/Podman, Sockets, Named Pipes, `DOCKER_HOST`), Image-Pull/-Load, gehärteter Container.
-- `images.rs`: Image-Auflösung (siehe Abschnitt 6).
+- `images.rs`: Image-Auflösung (siehe Abschnitt 6); `cleanup.rs`: automatisches Löschen veralteter Runner-Images (ebenda).
 - `languages.rs`: datengetriebene Sprachtabelle.
 - `compare.rs`: Normalisierung, Zeilen-Diff, Ausgabebegrenzung; `template.rs`: Ausgabevorlagen mit Platzhaltern.
 - `mod.rs`: Ablauf und Bewertung einer Prüfung.
@@ -123,6 +123,7 @@ src-tauri/src/
   runner/mod.rs          Ablauf einer Prüfung, Bewertung der Testfälle
   runner/docker.rs       Engine-Verbindung, Image-Pull/-Load, gehärteter Container
   runner/images.rs       Image-Auflösung: vorhanden → Archiv → GHCR → :dev
+  runner/cleanup.rs      Automatisches Löschen veralteter Runner-Images
   runner/languages.rs    Sprachtabelle (Image, Dateiname, Befehle, Zeitlimits)
   runner/compare.rs      Normalisierung, Zeilen-Diff, Ausgabebegrenzung
   runner/template.rs     Ausgabevorlagen mit Platzhaltern: Prüfung und Abgleich
@@ -232,6 +233,14 @@ npm run tauri dev
 6. sonst eine deutsche Fehlermeldung mit Lösungsweg
 
 Release-Builds beachten weder die Umgebungsvariablen noch `:dev`-Images.
+
+**Automatisches Aufräumen alter Images** (`runner/cleanup.rs`): Nach `prepare_images` (App-Start) und `update_images` („Images aktualisieren“) entfernt die App, wenn der Bericht keine Fehler enthält, im Hintergrund veraltete Tags der eigenen Repositories `ghcr.io/bernhardgoetz/code-pruefer-<sprache>` in der verbundenen Engine (Docker oder Podman). Die Auswahl trifft die reine, unit-getestete Funktion `images_to_remove`, je Sprache und nur, wenn der Tag der aktuellen Version vorhanden ist:
+
+- behalten: die aktuelle Version, die **Vorgängerversion** (die höchste vorhandene Release-Version `x.y.z` unterhalb der aktuellen, nicht zwingend „aktuelle minus 1“), alle höheren Versionen, `dev`/`edge`/`latest`, nicht als SemVer lesbare Tags und (nur Debug-Builds) die Overrides aus `CODE_PRUEFER_*_IMAGE`;
+- gelöscht: Release-Tags unterhalb der Vorgängerversion und Pre-Release-Tags (`x.y.z-qas.N`), deren `x.y.z` unterhalb der Vorgängerversion liegt; die QAS-Tags der aktuellen und der vorigen Version bleiben;
+- `sha-…`-Tags nur, wenn ihre Image-ID zu einem gelöschten und zu keinem behaltenen Versions-Tag desselben Repositorys gehört.
+
+Ohne Vorgängerversion wird nichts gelöscht. Gelöscht wird per `DELETE /images/<ref>` ohne `force`: Hat ein Image weitere Tags, wird nur der Tag entfernt; von Containern benutzte Images verweigert die Engine. Verwaiste Schichten werden nicht gesondert bereinigt (`/images/prune` lässt sich nicht auf die eigenen Images beschränken). Fehler landen nur im Log (`eprintln!`).
 
 **Prüfsummen (`images/image-digests.json`):** Builds mit eingebetteten Images enthalten diese Datei (erzeugt von `scripts/export-image-archives.sh`). Sie enthält je Sprache und Architektur die SHA-256 des Archivs und die Image-IDs, bei Release-Builds auch den Registry-Digest. Ist sie vorhanden, prüft die App Archive vor dem Laden und Image-IDs danach und lädt per `@sha256:…` statt per Tag. Ohne die Datei (Entwicklungs- und CI-Builds) gilt Vertrauen über den Tag.
 

@@ -9,6 +9,11 @@ Format nach [Keep a Changelog](https://keepachangelog.com/de/1.1.0/), Versionen 
 
 ### Hinzugefügt
 
+- Alte Prüf-Umgebungen werden automatisch gelöscht, um Speicherplatz zu sparen: Nach dem
+  Bereitstellen der aktuellen Images (beim Start und nach „Images aktualisieren“) entfernt
+  der Code-Prüfer im Hintergrund in Docker und Podman die eigenen Runner-Images, die älter
+  als die aktuelle und die vorherige Version sind. Neuere Versionen, selbst gebaute
+  `:dev`-Images, fremde Images und von Containern benutzte Images bleiben unangetastet.
 - Neue Einsteiger-Anleitung `docs/WARNUNG_BEIM_INSTALLIEREN.md`: warum Windows
   (SmartScreen, Smart App Control) und macOS (Gatekeeper) beim Installieren warnen, wie
   man die Warnung Schritt für Schritt übergeht und wie man die Echtheit der Datei mit
