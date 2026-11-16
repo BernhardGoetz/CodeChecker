@@ -32,6 +32,7 @@ use super::prompts::{self, SolutionContext, MAX_EXAMPLES, MAX_INPUTS};
 use super::AiError;
 use crate::engine;
 use crate::runner::compare::{group_outputs, normalize_newlines, CompareMode};
+use crate::runner::prompt_tolerance::{matches_ignoring_prompts, prompt_budget};
 use crate::runner::template::{self, OutputTemplate};
 use crate::runner::{self, languages, StepOutput};
 
@@ -793,6 +794,85 @@ pub fn majority(
     Some((members[0], members))
 }
 
+/// Majority vote that tolerates input prompts (see
+/// [`majority_ignoring_prompts`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PromptMajority {
+    /// A solution of the prompt-free group: its output is the expectation.
+    pub rep: usize,
+    /// All solutions of the merged group (counts for the majority).
+    pub members: Vec<usize>,
+    /// The solutions of the prompt-free group (they get the wins).
+    pub exact_members: Vec<usize>,
+    /// Size of the largest group of equal outputs within `members` (counts
+    /// for the agreement: merging can save a test, but not make it green).
+    pub exact: usize,
+}
+
+impl PromptMajority {
+    /// Whether outputs with prompts were merged into the group.
+    pub fn merged(&self) -> bool {
+        self.members.len() > self.exact_members.len()
+    }
+}
+
+/// Like [`majority`], but a group whose output matches another group's
+/// output once input prompts are removed (the same tolerance as for AI tests,
+/// budget from `input`) is merged into that group; the expectation is the
+/// output of the prompt-free group, i.e. an output a solution really wrote.
+/// Without input there is no merging and the result equals [`majority`].
+pub fn majority_ignoring_prompts(
+    mode: &CompareMode,
+    outputs: &[Option<&StepOutput>],
+    input: &str,
+) -> Option<PromptMajority> {
+    let valid_idx: Vec<usize> = outputs
+        .iter()
+        .enumerate()
+        .filter(|(_, o)| o.is_some_and(valid))
+        .map(|(i, _)| i)
+        .collect();
+    let texts: Vec<&str> = valid_idx
+        .iter()
+        .map(|&i| outputs[i].map_or("", |o| o.stdout.as_str()))
+        .collect();
+    let groups = group_outputs(mode, &texts);
+    let budget = prompt_budget(input);
+    let mut best: Option<PromptMajority> = None;
+    for (y, group) in groups.iter().enumerate() {
+        let mut members = group.clone();
+        let mut exact = group.len();
+        if budget > 0 {
+            for (x, other) in groups.iter().enumerate() {
+                if x != y
+                    && matches_ignoring_prompts(mode, texts[group[0]], texts[other[0]], budget)
+                        .is_some()
+                {
+                    members.extend(other);
+                    exact = exact.max(other.len());
+                }
+            }
+        }
+        if best
+            .as_ref()
+            .is_none_or(|b| members.len() > b.members.len())
+        {
+            members.sort_unstable();
+            best = Some(PromptMajority {
+                rep: valid_idx[group[0]],
+                members: members.iter().map(|&g| valid_idx[g]).collect(),
+                exact_members: group.iter().map(|&g| valid_idx[g]).collect(),
+                exact,
+            });
+        }
+    }
+    best
+}
+
+/// German confidence reason when outputs with prompts were merged.
+pub const PROMPT_MERGED_REASON: &str = "Einige Lösungen gaben zusätzlich \
+Eingabeaufforderungen oder Beschriftungen aus; erwartet wird die Ausgabe ohne sie – bitte prüfen.";
+
 /// Inputs to [`decide_confidence`].
 #[derive(Debug, Clone, Default)]
 pub struct Evidence {
@@ -804,6 +884,8 @@ pub struct Evidence {
     pub dropped: usize,
     /// Lowest agreement over the generated tests.
     pub min_agreement: Option<f64>,
+    /// Tests whose majority needed merging outputs with input prompts.
+    pub prompt_merged: usize,
 }
 
 fn pct(x: f64) -> String {
@@ -871,6 +953,9 @@ pub fn decide_confidence(e: &Evidence) -> Confidence {
              abstürzten.",
             e.dropped
         ));
+    }
+    if e.prompt_merged > 0 {
+        yellow.push(PROMPT_MERGED_REASON.into());
     }
     if yellow.is_empty() {
         let agree = e.min_agreement.map_or("100 %".to_string(), pct);
@@ -1544,6 +1629,7 @@ pub async fn generate<L: Llm + Sync, E: Executor>(
     let mut wins = vec![0usize; s];
     let mut min_agreement: Option<f64> = None;
     let mut dropped = 0;
+    let mut prompt_merged = 0;
     for (j, input) in all_inputs.iter().enumerate() {
         // Outputs that do not fit the output template count as no output.
         let outputs: Vec<Option<&StepOutput>> = results
@@ -1555,20 +1641,22 @@ pub async fn generate<L: Llm + Sync, E: Executor>(
         // The forced empty input is only a helper: without a majority it is
         // dropped silently (not counted as a dropped input).
         let forced = !from_sheet && j < check_inputs.len();
-        let Some((rep, members)) = majority(&mode, &outputs) else {
+        let Some(vote) = majority_ignoring_prompts(&mode, &outputs, input) else {
             dropped += usize::from(!forced);
             continue;
         };
+        let (rep, members) = (vote.rep, &vote.exact_members);
         // Strict majority of all surviving solutions.
-        if members.len() * 2 <= s {
+        if vote.members.len() * 2 <= s {
             dropped += usize::from(!forced);
             continue;
         }
-        let agreement = members.len() as f64 / s as f64;
+        prompt_merged += usize::from(vote.merged());
+        let agreement = vote.exact as f64 / s as f64;
         if !from_sheet {
             min_agreement = Some(min_agreement.map_or(agreement, |m: f64| m.min(agreement)));
         }
-        for &m in &members {
+        for &m in members {
             wins[m] += 1;
         }
         let expected = outputs[rep].map(|o| o.stdout.clone()).unwrap_or_default();
@@ -1602,6 +1690,7 @@ pub async fn generate<L: Llm + Sync, E: Executor>(
     evidence.tests = tests.len();
     evidence.dropped = dropped;
     evidence.min_agreement = min_agreement;
+    evidence.prompt_merged = prompt_merged;
     Ok(finish(run, tests, reference, evidence))
 }
 
@@ -1801,6 +1890,13 @@ mod tests {
                 step("", 1)
             } else {
                 step(&format!("Ergebnis: {}\n", n * 2), 0)
+            }
+        } else if code.contains("prompt") {
+            // input("Zahl eingeben: ") before reading; crashes without input.
+            if input.trim().is_empty() {
+                step("Zahl eingeben: ", 1)
+            } else {
+                step(&format!("Zahl eingeben: {}\n", n * 2), 0)
             }
         } else if code.contains("qasfloat") {
             step(QAS_FLOAT_OUTPUT, 0)
@@ -2053,6 +2149,7 @@ mod tests {
             tests: 8,
             dropped: 0,
             min_agreement: Some(1.0),
+            prompt_merged: 0,
         };
         assert_eq!(decide_confidence(&base).level, ConfidenceLevel::Green);
         let c = decide_confidence(&Evidence {
@@ -3058,5 +3155,77 @@ mod tests {
         assert_eq!(c.opened, 3);
         assert_eq!(c.closed, 3, "containers are removed after a cancel");
         assert_eq!(c.compiles, 0);
+    }
+
+    #[test]
+    fn prompt_outputs_merge_into_the_prompt_free_group() {
+        let mode = CompareMode::lines(true);
+        let vote = |outs: &[&str]| {
+            let steps: Vec<StepOutput> = outs.iter().map(|o| step(o, 0)).collect();
+            let refs: Vec<Option<&StepOutput>> = steps.iter().map(Some).collect();
+            majority_ignoring_prompts(&mode, &refs, "5\n").unwrap()
+        };
+        // Expected "25" (written by solution 2), majority 3/3, exact 2/3.
+        let v = vote(&["Zahl: 25\n", "Zahl: 25\n", "25\n"]);
+        assert_eq!((v.rep, v.members.clone(), v.exact), (2, vec![0, 1, 2], 2));
+        assert!(v.merged());
+        // Different prompts: exact subgroup 1/3.
+        let v = vote(&["Zahl: 25\n", "Enter: 25\n", "25\n"]);
+        assert_eq!((v.rep, v.members.len(), v.exact), (2, 3, 1));
+        // A wrong value does not merge.
+        let v = vote(&["Zahl: 25\n", "Zahl: 26\n", "25\n"]);
+        assert_eq!((v.rep, v.members.clone()), (2, vec![0, 2]));
+        // Result labels do not merge.
+        let v = vote(&["Ergebnis: 25\n", "Ergebnis: 25\n", "25\n"]);
+        assert_eq!(
+            (v.rep, v.members.clone(), v.merged()),
+            (0, vec![0, 1], false)
+        );
+        // Without input: no merging, same as `majority`.
+        let steps = [
+            step("Zahl: 25\n", 0),
+            step("25\n", 0),
+            step("Zahl: 25\n", 0),
+        ];
+        let refs: Vec<Option<&StepOutput>> = steps.iter().map(Some).collect();
+        let v = majority_ignoring_prompts(&mode, &refs, "").unwrap();
+        assert_eq!(Some((v.rep, v.members)), majority(&mode, &refs));
+    }
+
+    #[test]
+    fn solutions_with_prompts_give_prompt_free_expectations() {
+        let llm = MockLlm::new(scripted(
+            structure_json(&[], "lines"),
+            vec!["prompt", "prompt", "double"],
+            r#"{"inputs": ["5", "7"]}"#,
+        ));
+        let mut r0 = req(None);
+        r0.task_text = "Lies n und gib das Doppelte aus.".into();
+        let r = generate_with(&llm, r0, 3).unwrap();
+        assert_eq!(r.tests.len(), 2, "{:?}", r.confidence);
+        assert_eq!(r.tests[0].expected, "10\n");
+        assert_eq!(r.tests[1].expected, "14\n");
+        // Agreement of the largest group of equal outputs (2 of 3).
+        assert!((r.tests[0].agreement - 2.0 / 3.0).abs() < 1e-9);
+        assert_eq!(r.confidence.level, ConfidenceLevel::Yellow);
+        assert!(r
+            .confidence
+            .reasons
+            .iter()
+            .any(|x| x == PROMPT_MERGED_REASON));
+        // The prompt-free solution is the reference.
+        assert!(r.reference_solution.unwrap().contains("double"));
+        // Merging never makes a test green on its own.
+        let c = decide_confidence(&Evidence {
+            solutions: 3,
+            compiled: 3,
+            survivors: 3,
+            examples: 2,
+            tests: 2,
+            dropped: 0,
+            min_agreement: Some(1.0),
+            prompt_merged: 1,
+        });
+        assert_eq!(c.level, ConfidenceLevel::Yellow);
     }
 }
