@@ -1157,9 +1157,13 @@ pub fn decide_confidence(e: &Evidence) -> Confidence {
              Testfälle erzeugt. Testfälle bitte von Hand anlegen."
                 .into()
         };
+        let mut reasons = vec![reason];
+        if e.invalid > 0 {
+            reasons.push(invalid_note(e.invalid));
+        }
         return Confidence {
             level: ConfidenceLevel::Red,
-            reasons: vec![reason],
+            reasons,
         };
     }
     let mut yellow: Vec<String> = Vec::new();
@@ -4268,7 +4272,7 @@ mod tests {
         let c = decide_confidence(&Evidence {
             invalid: 2,
             dropped: 1,
-            ..base
+            ..base.clone()
         });
         assert_eq!(c.level, ConfidenceLevel::Yellow);
         assert!(c
@@ -4279,6 +4283,17 @@ mod tests {
             .reasons
             .iter()
             .any(|r| r == "1 Eingabe(n) verworfen, weil sich die Lösungen nicht einig waren."));
+        // Red without tests names the invalid inputs as well.
+        let c = decide_confidence(&Evidence {
+            tests: 0,
+            invalid: 3,
+            ..base
+        });
+        assert_eq!(c.level, ConfidenceLevel::Red);
+        assert!(c
+            .reasons
+            .iter()
+            .any(|r| r.contains("3 KI-Eingabe(n) nicht übernommen")));
     }
 
     #[test]
