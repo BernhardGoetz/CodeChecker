@@ -369,15 +369,21 @@ const SAMPLES: &[Sample] = &[
 async fn pipeline_on_sample_tasks() {
     setup_images();
     let cancel = CancellationToken::new();
-    let endpoint = llama::ensure_running(&model(), 4, ChatTemplate::FromModel, &cancel, |m| {
-        eprintln!("{m}")
-    })
-    .await
-    .expect("llama-server starten");
     let solutions: usize = std::env::var("CODE_PRUEFER_TEST_SOLUTIONS")
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(5);
+    // As in the app: one slot per solution (they are requested together
+    // with "n") plus one for the inputs.
+    let endpoint = llama::ensure_running(
+        &model(),
+        solutions + 1,
+        ChatTemplate::FromModel,
+        &cancel,
+        |m| eprintln!("{m}"),
+    )
+    .await
+    .expect("llama-server starten");
     let llm = LlamaClient::new(endpoint, cancel.clone()).unwrap();
     let exec = SandboxExecutor::connect(cancel.clone(), |m| eprintln!("{m}"))
         .await

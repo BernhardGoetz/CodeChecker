@@ -2070,9 +2070,9 @@ pub async fn generate<L: Llm + Sync, E: Executor>(
             known_inputs: &[],
         };
 
-        // 2.–4. Solutions, all at the same time (llama-server has a slot per
-        // solution): generate while the containers start, check each one as
-        // soon as it is written. The test inputs (5.) only need the task, so
+        // 2.–4. Solutions, all in one request (llama-server has a slot per
+        // solution): generate while the containers start, then check them
+        // all at once. The test inputs (5.) only need the task, so
         // they are generated alongside – unless the task reads no input.
         // Java: the class named by the task sheet (e.g. „Klasse Time“), else Main.
         let class_name = (lang.id == "java")
@@ -2112,11 +2112,16 @@ pub async fn generate<L: Llm + Sync, E: Executor>(
             let run = &run;
             let sessions = futures_util::future::join_all((0..n).map(|_| async {
                 run.check()?;
-                tokio::select! {
+                let s = tokio::select! {
                     biased;
                     _ = run.cancel.cancelled() => Err(AiError::Cancelled),
                     s = run.exec.open(lang.id) => s,
+                };
+                if matches!(&s, Err(e) if !matches!(e, AiError::Cancelled)) {
+                    // Stops the request for the solutions right away.
+                    run.cancel.cancel();
                 }
+                s
             }));
             let (answers, sessions) = futures_util::future::join(
                 run.chat_n(run.solution_request(base_messages.clone()), n),
@@ -2137,8 +2142,9 @@ pub async fn generate<L: Llm + Sync, E: Executor>(
             let answers = match answers {
                 Ok(rs) => rs,
                 Err(e) => {
-                    // The model failed for every solution at once.
-                    if let Some(a) = attempts.first_mut() {
+                    // The model failed for every solution at once. A sandbox
+                    // error (which cancelled the request) is kept.
+                    if let Some(a) = attempts.iter_mut().find(|a| a.fatal.is_none()) {
                         run.record_error(a, e, true);
                     }
                     return attempts;
@@ -2745,6 +2751,8 @@ mod tests {
         counters: Arc<Mutex<Counters>>,
         /// Sandbox error on the n-th compile (1-based).
         fail_compile: Option<usize>,
+        /// Sandbox error on the n-th container start (1-based).
+        fail_open: Option<usize>,
     }
 
     impl MockExec {
@@ -2752,6 +2760,7 @@ mod tests {
             Self {
                 counters: Arc::new(Mutex::new(Counters::default())),
                 fail_compile: None,
+                fail_open: None,
             }
         }
         fn get(&self) -> std::sync::MutexGuard<'_, Counters> {
@@ -2867,7 +2876,16 @@ mod tests {
         type Session = MockSession;
 
         async fn open(&self, _language: &str) -> Result<MockSession, AiError> {
-            self.counters.lock().unwrap().opened += 1;
+            let n = {
+                let mut c = self.counters.lock().unwrap();
+                c.opened += 1;
+                c.opened
+            };
+            if self.fail_open == Some(n) {
+                // A container that failed to start needs no removal.
+                self.counters.lock().unwrap().closed += 1;
+                return Err(AiError::Other("Fehler der Container-Engine: Start".into()));
+            }
             Ok(MockSession {
                 counters: self.counters.clone(),
                 code: Mutex::new(String::new()),
@@ -4875,6 +4893,43 @@ mod tests {
         // Tasks not started yet stop before opening a container.
         assert!(c.opened >= 2);
         assert_eq!(c.closed, c.opened, "every container is removed");
+    }
+
+    #[test]
+    fn container_error_while_solutions_are_written_is_reported() {
+        // The container error cancels the running request for all
+        // solutions; the error shown is the container error.
+        for failing in 1..=3 {
+            let structure = structure_json(&[("21", "42")], "lines");
+            let llm = slow(
+                move |r: &ChatRequest, _| {
+                    if is_structure(r) {
+                        Ok(structure.clone())
+                    } else if is_inputs(r) {
+                        Ok(r#"{"inputs": ["1"]}"#.into())
+                    } else {
+                        Ok(program("double"))
+                    }
+                },
+                vec![2000, 2000, 2000],
+            );
+            let mut exec = MockExec::new();
+            exec.fail_open = Some(failing);
+            let started = std::time::Instant::now();
+            let e = block_on(generate(
+                &llm,
+                &exec,
+                &req(None),
+                settings(3),
+                &CancellationToken::new(),
+                |_| {},
+            ))
+            .unwrap_err();
+            assert!(e.to_string().contains("Container-Engine: Start"), "{e}");
+            assert!(started.elapsed() < std::time::Duration::from_millis(1500));
+            let c = exec.get();
+            assert_eq!(c.closed, c.opened, "every container is removed");
+        }
     }
 
     #[test]
