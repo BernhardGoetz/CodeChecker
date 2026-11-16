@@ -42,7 +42,7 @@ public class Main {
 
 const LANGUAGES: LanguageInfo[] = [
   { id: "python", name: "Python 3.13", sourceFile: "main.py", extensions: ["py"], template: PY, image: "ghcr.io/bernhardgoetz/code-pruefer-python:1", runTimeoutSecs: 5 },
-  { id: "java", name: "Java 21", sourceFile: "Main.java", extensions: ["java"], template: JAVA, image: "ghcr.io/bernhardgoetz/code-pruefer-java:1", runTimeoutSecs: 10 },
+  { id: "java", name: "Java 21", sourceFile: "<Klassenname>.java", extensions: ["java"], template: JAVA, image: "ghcr.io/bernhardgoetz/code-pruefer-java:1", runTimeoutSecs: 10 },
 ];
 
 const AI: AiStatus = {
@@ -85,7 +85,9 @@ function report(req: RunRequest): RunReport {
     total: req.tests.length,
     tests: req.tests.map((t, i) => {
       const failed = i === 1;
-      const stdout = failed ? "Hallo, Anna! \nHallo,Ben!\n" : t.expected;
+      // AI tests: the first one shows the prompt tolerance.
+      const prompt = !failed && t.origin === "ai" && i === req.tests.findIndex((x) => x.origin === "ai");
+      const stdout = failed ? "Hallo, Anna! \nHallo,Ben!\n" : prompt ? `Name eingeben: ${t.expected}` : t.expected;
       return {
         index: i,
         name: t.name,
@@ -99,8 +101,9 @@ function report(req: RunRequest): RunReport {
               { kind: "actual", text: "Hallo,Ben!", finalNewline: true },
             ]
           : [],
-        message: null,
+        message: prompt ? "Eingabeaufforderungen wurden ignoriert (KI-Testfall): „Name eingeben:“." : null,
         onlyTrailingWhitespaceDiffers: false,
+        promptsIgnored: prompt ? ["Name eingeben:"] : [],
       };
     }),
   };
@@ -225,7 +228,8 @@ export function installMock(): void {
             compareMode: { kind: "lines", trim: true },
             outputTemplates: [{ text: "Hallo, <Name>!", placeholders: ["<Name>"] }],
             inputFormat: "Eine Zahl n, danach n Namen (je eine Zeile).",
-            stats: { solutionsRequested: 3, solutionsCompiled: 3, solutionsRepaired: 0, solutionsPassed: 3, examplesFound: 1, examplesDiscarded: 0, templatesFound: 1, inputsGenerated: 4, testsDropped: 0, llmCalls: 4, completionTokens: 900, tokensPerSecond: 14.2, durationMs: 72000 },
+            inputConstraints: "0 <= n <= 20",
+            stats: { solutionsRequested: 3, solutionsCompiled: 3, solutionsRepaired: 0, solutionsPassed: 3, examplesFound: 1, examplesDiscarded: 0, templatesFound: 1, templatesDiscarded: 0, templatesMerged: 2, inputsGenerated: 4, testsDropped: 0, inputsInvalid: 1, testsRedundant: 0, noInput: false, solutionsCancelled: 0, llmCalls: 4, completionTokens: 900, promptTokens: 2400, promptMs: 31000, tokensPerSecond: 14.2, durationMs: 72000, phaseMs: { structure: 24000, solutions: 41000, repairs: 0, inputs: 38000, majority: 6000 } },
           };
         case "check_variations": {
           await sleep(900);

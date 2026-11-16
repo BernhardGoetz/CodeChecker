@@ -43,7 +43,14 @@ function TestRow({ t }: { t: TestResult }) {
         <strong className="result-name">{t.name}</strong>
         {t.output && <span className="muted small">{t.output.durationMs} ms</span>}
       </div>
-      {t.message && <p className="small">{t.message}</p>}
+      {t.promptsIgnored?.length ? (
+        <p className="note small">
+          {LABEL.passed} – Eingabeaufforderungen wurden ignoriert (KI-Testfall):{" "}
+          {t.promptsIgnored.map((p) => `„${p}“`).join(", ")}
+        </p>
+      ) : (
+        t.message && <p className="small">{t.message}</p>
+      )}
       {t.onlyTrailingWhitespaceDiffers && (
         <p className="note warn small">Unterschied nur am Zeilenende (Leerzeichen/Zeilenumbruch)</p>
       )}
@@ -145,7 +152,10 @@ export function ResultsPanel({
       {!report.compileOk ? (
         <div className="result failed">
           <div className="result-head">
-            <span className="status failed">Kompilierfehler</span>
+            <span className="status failed">
+              {/* Compiled, but nothing to start (e.g. Java without a main class). */}
+              {report.hint && report.compile?.exitCode === 0 ? "Nicht startbar" : "Kompilierfehler"}
+            </span>
             {report.compile?.timedOut && <span>Zeitlimit beim Kompilieren überschritten.</span>}
           </div>
           {report.hint && <p className="note warn">{report.hint}</p>}

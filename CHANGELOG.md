@@ -7,6 +7,104 @@ Format nach [Keep a Changelog](https://keepachangelog.com/de/1.1.0/), Versionen 
 
 ## [Unveröffentlicht]
 
+## [1.1.0] - 2026-11-16
+
+### Hinzugefügt
+
+- Java: Die Hauptklasse muss nicht mehr `Main` heißen. Gestartet wird die Klasse mit
+  `public static void main(String[] args)` (auch `String... args`, `final`,
+  Annotationen); die Datei heißt nach der `public`-Klasse (z. B. `Time.java`).
+  Kommentare und Zeichenketten werden dabei ignoriert. Eine `package`-Zeile ist erlaubt
+  (übersetzt mit `javac -d .`, gestartet mit dem vollständigen Namen). Fehlt `main` oder
+  haben mehrere Klassen eine `main`-Methode, gibt es einen deutschen Hinweis und das
+  Ergebnis „Nicht startbar“.
+- KI: Nennt das Aufgabenblatt eine Java-Klasse (z. B. „Öffnen Sie die bereitgestellte
+  Java-Klasse `Time`“ oder „Time.java“), schreibt die KI ihre Lösungen mit diesem
+  Klassennamen, sonst wie bisher mit `Main`.
+- KI-Testfälle tolerieren Eingabeaufforderungen: Schreibt ein Programm vor dem Einlesen
+  einen Text wie „Zahl eingeben: “ (Python `input("…")`, Java `System.out.print("…")`),
+  besteht es einen KI-Testfall trotzdem, wenn die Werte stimmen; das Ergebnis nennt die
+  ignorierten Texte. Beschriftungen wie „Ergebnis:“ oder „Summe:“ werden nie ignoriert,
+  ohne Eingabe gibt es keine Toleranz. Handgeschriebene Testfälle bleiben streng. Ein
+  bearbeiteter KI-Testfall bleibt markiert (mit Hinweis bei geänderter Erwartung); per
+  Häkchen „KI-Markierung entfernen“ wird er wie handgeschrieben streng geprüft. Der
+  Variationstest wertet ebenso.
+- KI-Testfälle: Ausgabevorlagen mit ausdrücklich erklärtem Platzhalter („12345678 ist ein
+  Platzhalter“) oder eindeutigen Platzhaltern (`<n>`, `___`, `XX.XX`, `[Name]`) nach
+  „Ausgabe:“ werden jetzt auch ohne die KI erkannt und mit den Vorlagen der KI
+  zusammengeführt.
+- KI-Testfälle: Unter „Zeit je Schritt“ zeigt die Statistik, wie lange Analyse, Lösungen,
+  Reparatur, Testeingaben und Mehrheitsentscheid gedauert haben (dazu die verarbeiteten
+  Prompt-Token), damit sich messen lässt, wo die Zeit bleibt.
+- Alte Prüf-Umgebungen werden automatisch gelöscht, um Speicherplatz zu sparen: Nach dem
+  Bereitstellen der aktuellen Images (beim Start und nach „Images aktualisieren“) entfernt
+  der Code-Prüfer im Hintergrund in Docker und Podman die eigenen Runner-Images, die älter
+  als die aktuelle und die vorherige Version sind. Neuere Versionen, selbst gebaute
+  `:dev`-Images, fremde Images und von Containern benutzte Images bleiben unangetastet.
+- Neue Einsteiger-Anleitung `docs/WARNUNG_BEIM_INSTALLIEREN.md`: warum Windows
+  (SmartScreen, Smart App Control) und macOS (Gatekeeper) beim Installieren warnen, wie
+  man die Warnung Schritt für Schritt übergeht und wie man die Echtheit der Datei mit
+  `SHA256SUMS.txt` prüft.
+
+### Geändert
+
+- KI-Testfälle schneller: Liest eine Aufgabe keine Eingabe, erzeugt die KI keine
+  Testeingaben mehr; es gibt einen Test mit leerer Eingabe. Ein Probelauf mit Eingabe prüft
+  diese Einschätzung; liest das Programm doch etwas, werden die Eingaben nachträglich
+  erzeugt.
+- KI-Testfälle schneller: Bei Aufgaben ohne Eingabe wird nicht auf die letzte Lösung
+  gewartet, wenn die Mehrheit schon feststeht und dadurch keine bessere Konfidenz verloren
+  geht. Nicht abgewartete Lösungen zählen als Gegenstimme; die Konfidenz nennt den
+  vorzeitigen Abschluss.
+- KI-Testfälle passen besser zur Aufgabe: Die KI bekommt für die Testeingaben das
+  Ausgabeformat, die Beispielpaare des Blatts und die Grenzen der Eingabe (neu erkannt,
+  z. B. „1 <= n <= 1000“); die Eingaben sollen die Grenzen einhalten und keine Fälle
+  enthalten, die das Programm laut Aufgabe nicht verarbeiten muss. Der Variationstest
+  nutzt die Grenzen ebenfalls.
+- KI-Testfälle: Brechen alle Lösungen bei einer KI-Eingabe ab oder überschreiten das
+  Zeitlimit, wird die Eingabe als „passt nicht zur Aufgabe“ weggelassen und nur als Hinweis
+  genannt (kein Grund mehr für Gelb). Von KI-Testfällen mit derselben erwarteten Ausgabe
+  werden höchstens drei übernommen.
+- KI-Testfälle: Geben einige der erzeugten Lösungen Eingabeaufforderungen aus, wird die
+  Ausgabe ohne sie als Erwartung genommen (Einstufung dann höchstens Gelb). Auch die
+  Java-Lösungen der KI sollen keine Eingabeaufforderungen mehr ausgeben (wie schon bei
+  Python).
+- Mehrere Ausgabevorlagen werden als Folge geprüft: Eine Ausgabe passt, wenn sie zu einer
+  Vorlage passt oder aus mehreren Vorlagen in der Reihenfolge des Blatts besteht.
+- „Testfälle mit KI“: Die Musterlösung ist standardmäßig verborgen und wird über die
+  Schaltfläche „Musterlösung anzeigen“ / „Musterlösung ausblenden“ vollständig ein- bzw.
+  ausgeblendet (barrierefrei mit `aria-expanded`). Nach jeder neuen KI-Erzeugung ist sie
+  wieder verborgen.
+- README: Der Weg zum ersten Start unter macOS folgt jetzt der Anleitung von Apple
+  (Systemeinstellungen → „Datenschutz und Sicherheit“ → „Dennoch öffnen“); der
+  Rechtsklick-Weg funktioniert seit macOS 15 nicht mehr.
+- Signatur-Status in README und Code signing policy aktualisiert: Der Antrag bei der
+  SignPath Foundation wurde abgelehnt (Projekt noch zu neu), eine erneute Bewerbung ist
+  geplant.
+
+### Behoben
+
+- Das 7B-Modell wurde doppelt heruntergeladen (Einzeldatei und Teile, ~9,4 statt
+  ~4,7 GB). Ursache: `scripts/pin-models.sh` trug für Qwen2.5-Coder 7B sowohl die
+  einzelne `.gguf`-Datei als auch die beiden Teile der aufgeteilten Datei ein. Das Skript
+  trägt jetzt genau eine Variante ein (die Einzeldatei, sonst die Teile; `--check` warnt
+  bei alten Einträgen mit beiden). Die App lädt bei solchen Einträgen nur die Einzeldatei
+  und zeigt die richtige Größe an; ein früherer Download der Teile gilt weiter als
+  installiert und wird nicht erneut geladen. Übrig gebliebene Dateien entfernt „Löschen“
+  beim Modell.
+- KI-Testfälle: Stehen die Zeilen einer Ausgabevorlage erst einzeln in den Teilaufgaben und
+  dann zusammen als Block (z. B. „Aufgabe 2.2 Time“), entsteht wieder eine mehrzeilige
+  Vorlage statt drei einzelner. Bisher endete so ein Blatt mit „Rot“, obwohl alle Lösungen
+  dasselbe ausgaben.
+- KI-Testfälle: Passt keine einzige Ausgabe zur erkannten Vorlage, obwohl alle Lösungen
+  einig sind, wird die Vorlage verworfen (höchstens „Gelb“, mit Hinweis); sind sie sich
+  nicht einig, nennt „Rot“ jetzt die Vorlage als Grund statt „nicht mehrheitlich einig“.
+- KI-Testfälle: Ein Beispiel aus dem Blatt zählt nur noch, wenn seine Ausgabe nach der
+  Eingabe und nahe bei ihr steht. Bisher reichte es, dass Eingabe und Ausgabe irgendwo im
+  Text vorkamen (bei kurzen Eingaben wie „5“ fast immer).
+- Kompatibilität mit sysinfo 0.40 (Dependabot-Update): Der Code wurde an die neue API
+  angepasst; ohne diese Anpassung ließ sich `main` nicht bauen.
+
 ## [1.0.3] - 2026-11-07
 
 ### Hinzugefügt
@@ -108,7 +206,8 @@ Erste stabile Version.
   und Notarisierung sind noch nicht eingerichtet); SmartScreen und Gatekeeper warnen beim
   ersten Start.
 
-[Unveröffentlicht]: https://github.com/BernhardGoetz/CodeChecker/compare/v1.0.3...HEAD
+[Unveröffentlicht]: https://github.com/BernhardGoetz/CodeChecker/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/BernhardGoetz/CodeChecker/compare/v1.0.3...v1.1.0
 [1.0.3]: https://github.com/BernhardGoetz/CodeChecker/compare/v1.0.2...v1.0.3
 [1.0.2]: https://github.com/BernhardGoetz/CodeChecker/compare/v1.0.1...v1.0.2
 [1.0.1]: https://github.com/BernhardGoetz/CodeChecker/compare/v1.0.0...v1.0.1

@@ -103,6 +103,7 @@ async fn load_via_app(archived_as: &str) {
                 name: String::new(),
                 input: "x\n".into(),
                 expected: "x\n".into(),
+                origin: None,
             }],
             trim_whitespace: true,
             compare_mode: None,

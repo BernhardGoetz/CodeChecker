@@ -60,8 +60,9 @@ Lizenz: MIT (siehe [`LICENSE`](LICENSE)).
 
 **Runner** (`src-tauri/src/runner/`): Jede Prüfung startet einen frischen Container, schreibt den Quellcode hinein, kompiliert (falls nötig) und führt den Code pro Testfall einmal mit der Eingabe als stdin aus. Danach wird der Container immer gelöscht.
 - `docker.rs`: Verbindung (Docker/Podman, Sockets, Named Pipes, `DOCKER_HOST`), Image-Pull/-Load, gehärteter Container.
-- `images.rs`: Image-Auflösung (siehe Abschnitt 6).
+- `images.rs`: Image-Auflösung (siehe Abschnitt 6); `cleanup.rs`: automatisches Löschen veralteter Runner-Images (ebenda).
 - `languages.rs`: datengetriebene Sprachtabelle.
+- `java.rs`: Einstiegspunkt von Java-Code (Klasse mit `main`, `public`-Klasse für den Dateinamen, `package`).
 - `compare.rs`: Normalisierung, Zeilen-Diff, Ausgabebegrenzung; `template.rs`: Ausgabevorlagen mit Platzhaltern.
 - `mod.rs`: Ablauf und Bewertung einer Prüfung.
 
@@ -123,6 +124,7 @@ src-tauri/src/
   runner/mod.rs          Ablauf einer Prüfung, Bewertung der Testfälle
   runner/docker.rs       Engine-Verbindung, Image-Pull/-Load, gehärteter Container
   runner/images.rs       Image-Auflösung: vorhanden → Archiv → GHCR → :dev
+  runner/cleanup.rs      Automatisches Löschen veralteter Runner-Images
   runner/languages.rs    Sprachtabelle (Image, Dateiname, Befehle, Zeitlimits)
   runner/compare.rs      Normalisierung, Zeilen-Diff, Ausgabebegrenzung
   runner/template.rs     Ausgabevorlagen mit Platzhaltern: Prüfung und Abgleich
@@ -232,6 +234,14 @@ npm run tauri dev
 6. sonst eine deutsche Fehlermeldung mit Lösungsweg
 
 Release-Builds beachten weder die Umgebungsvariablen noch `:dev`-Images.
+
+**Automatisches Aufräumen alter Images** (`runner/cleanup.rs`): Nach `prepare_images` (App-Start) und `update_images` („Images aktualisieren“) entfernt die App, wenn der Bericht keine Fehler enthält, im Hintergrund veraltete Tags der eigenen Repositories `ghcr.io/bernhardgoetz/code-pruefer-<sprache>` in der verbundenen Engine (Docker oder Podman). Die Auswahl trifft die reine, unit-getestete Funktion `images_to_remove`, je Sprache und nur, wenn der Tag der aktuellen Version vorhanden ist:
+
+- behalten: die aktuelle Version, die **Vorgängerversion** (die höchste vorhandene Release-Version `x.y.z` unterhalb der aktuellen, nicht zwingend „aktuelle minus 1“), alle höheren Versionen, `dev`/`edge`/`latest`, nicht als SemVer lesbare Tags und (nur Debug-Builds) die Overrides aus `CODE_PRUEFER_*_IMAGE`;
+- gelöscht: Release-Tags unterhalb der Vorgängerversion und Pre-Release-Tags (`x.y.z-qas.N`), deren `x.y.z` unterhalb der Vorgängerversion liegt; die QAS-Tags der aktuellen und der vorigen Version bleiben;
+- `sha-…`-Tags nur, wenn ihre Image-ID zu einem gelöschten und zu keinem behaltenen Versions-Tag desselben Repositorys gehört.
+
+Ohne Vorgängerversion wird nichts gelöscht. Gelöscht wird per `DELETE /images/<ref>` ohne `force`: Hat ein Image weitere Tags, wird nur der Tag entfernt; von Containern benutzte Images verweigert die Engine. Verwaiste Schichten werden nicht gesondert bereinigt (`/images/prune` lässt sich nicht auf die eigenen Images beschränken). Fehler landen nur im Log (`eprintln!`).
 
 **Prüfsummen (`images/image-digests.json`):** Builds mit eingebetteten Images enthalten diese Datei (erzeugt von `scripts/export-image-archives.sh`). Sie enthält je Sprache und Architektur die SHA-256 des Archivs und die Image-IDs, bei Release-Builds auch den Registry-Digest. Ist sie vorhanden, prüft die App Archive vor dem Laden und Image-IDs danach und lädt per `@sha256:…` statt per Tag. Ohne die Datei (Entwicklungs- und CI-Builds) gilt Vertrauen über den Tag.
 
@@ -385,11 +395,11 @@ Diese Regeln stammen aus `CLAUDE.md` bzw. dem bestehenden Code:
 Die Sprachtabelle ist datengetrieben (`src-tauri/src/runner/languages.rs`). Sie ist der zentrale Ausgangspunkt, aber nicht der einzige Ort. Diese Stellen sind im Code erkennbar:
 
 1. **Dockerfile** unter `images/<id>/Dockerfile` anlegen. Muster (siehe `images/python`, `images/java`): Basis-Image per Digest pinnen, unprivilegierten Benutzer `runner` mit UID/GID 1000 anlegen, `/work` anlegen, `USER 1000:1000`, `WORKDIR /work`, `CMD ["sleep", "infinity"]`.
-2. **Eintrag in `LANGUAGES`** (`runner/languages.rs`): `id`, `name` (Anzeigename), `default_image` (`ghcr.io/bernhardgoetz/code-pruefer-<id>:<Cargo-Version>`), `image_env` (z. B. `CODE_PRUEFER_<ID>_IMAGE`), `local_image` (`code-pruefer-<id>:dev`; ein Test erzwingt dieses Schema), `source_file`, `extensions`, optional `compile_cmd`, `run_cmd`, `compile_timeout`, `run_timeout` und `template` (Startcode im Editor). Optional eine sprachspezifische Vorprüfung in `precheck`.
+2. **Eintrag in `LANGUAGES`** (`runner/languages.rs`): `id`, `name` (Anzeigename), `default_image` (`ghcr.io/bernhardgoetz/code-pruefer-<id>:<Cargo-Version>`), `image_env` (z. B. `CODE_PRUEFER_<ID>_IMAGE`), `local_image` (`code-pruefer-<id>:dev`; ein Test erzwingt dieses Schema), `source_file`, `extensions`, optional `compile_cmd`, `run_cmd`, `entry_point`, `compile_timeout`, `run_timeout` und `template` (Startcode im Editor). `source_file`, `compile_cmd` und `run_cmd` dürfen die Platzhalter `{file}` (Dateiname ohne Endung) und `{main}` (zu startende Einheit) enthalten; `entry_point` bestimmt deren Werte aus dem Code oder liefert einen deutschen Hinweis (wird von `precheck` gemeldet; das Programm gilt dann als nicht startbar). Sprachen mit festen Dateinamen nutzen `fixed_entry`. Java nutzt `java_entry` (`runner/java.rs`: Klasse mit `public static void main(String[] …)` beliebigen Namens, Datei nach der `public`-Klasse, `package` → `javac -d .` und qualifizierter Start).
 3. **CI und Release:** Die Sprachen sind in den Workflows als Matrix aufgelistet: `language: [python, java]` in `.github/workflows/images.yml` und in `.github/workflows/release.yml` (Job `images`; dessen Outputs `digests_<sprache>`, `amd64_<sprache>`, `arm64_<sprache>` und `image_<sprache>` sind je Sprache einzeln benannt und müssen mitgezogen werden). In `release.yml` verwenden außerdem diese Jobs die Outputs je Sprache als Umgebungsvariablen (`AMD64_PYTHON`/`AMD64_JAVA`, `DIGESTS_PYTHON`/`DIGESTS_JAVA`, `ARCHIVE_PYTHON`/`ARCHIVE_JAVA`, `IMAGE_PYTHON`/`IMAGE_JAVA`) und übergeben sie an `scripts/artifact-manifest.sh verify`: `bundle-windows` und damit `promote-windows` (gleiche Schritte), `bundle-macos` und `promote-images` (dort zusätzlich die Zuordnung `IMAGE_<SPRACHE>` beim Umtaggen). `ci.yml` baut die `:dev`-Images je Sprache einzeln (Schritt „Runner-Images lokal bauen“); `scripts/export-image-archives.sh` verwendet standardmäßig `LANGUAGES="python java"` (`LANGUAGES` lässt sich per Umgebungsvariable überschreiben); `.github/dependabot.yml` führt die Image-Verzeichnisse in der Liste `directories` auf.
 4. **Frontend:** Die Sprachliste kommt vom Backend (`list_languages`). Der Monaco-Editor erhält die Sprach-`id` direkt als Sprache (`CodeEditor.tsx`), die `id` sollte deshalb ein von Monaco bekannter Sprachname sein. Java-spezifische Hinweise im Editor (`language?.id === "java"`) sind fest eingebaut.
 5. **Variationstest:** `ai/variation.rs` kennt Wertersetzung nur für Python und Java (`language == "java"`, sonst Python-Regeln). Für eine neue Sprache entweder die Ersetzung erweitern oder bewusst auf Python-Regeln verzichten und das testen.
-6. **KI-Prompts:** `ai/prompts.rs` und `ai/pipeline.rs` verwenden die Sprachkonfiguration (`languages::get`). `ai/prompts.rs` unterscheidet aber fest nur `"java"` und behandelt jede andere Sprache wie Python: `language_rules` (Zeile 17, Vorgaben „Java 21“ bzw. „Python 3.12“), `fence` (Zeile 33), `looks_like_code` (Zeile 293) und die Codeblock-Kennungen in `extract_code` (Zeile 305). Für eine neue Sprache müssen diese Stellen ergänzt werden.
+6. **KI-Prompts:** `ai/prompts.rs` und `ai/pipeline.rs` verwenden die Sprachkonfiguration (`languages::get`). `ai/prompts.rs` unterscheidet aber fest nur `"java"` und behandelt jede andere Sprache wie Python: `language_rules` (Vorgaben „Java 21“ bzw. „Python 3.12“; bei Java mit dem Klassennamen aus `class_name_from_task`), `fence`, `looks_like_code` und die Codeblock-Kennungen in `extract_code`. Für eine neue Sprache müssen diese Stellen ergänzt werden.
 7. **Mock-Backend:** `src/dev/mockBackend.ts` führt eine eigene Sprachliste; bei Bedarf ergänzen.
 8. **Tests und Doku:** Integrationstests in `src-tauri/tests/` ergänzen, `README.md` anpassen.
 
@@ -398,7 +408,7 @@ Die Sprachtabelle ist datengetrieben (`src-tauri/src/runner/languages.rs`). Sie 
 Modelle stehen in `src-tauri/src/ai/catalog.json`; der Katalog wird per `include_str!` in die App eingebaut.
 
 1. **Eintrag in `catalog.json`** ergänzen mit den Feldern `id`, `name`, `repo` (Hugging-Face-Repository mit GGUF-Dateien), `quant` (z. B. `q4_k_m`; der Importdialog erwartet eine Datei mit `*<quant>*.gguf`), `license`, `solutions` (Anzahl der Kandidaten-Lösungen pro Aufgabe) sowie `revision` und `files` (Name, Größe, SHA-256).
-2. **Pinnen:** `revision`, `files[].size` und `files[].sha256` **nicht von Hand** eintragen, sondern den Workflow `pin-models.yml` starten (er nutzt `scripts/pin-models.sh`) und den entstehenden PR auf huggingface.co prüfen und mergen (siehe Abschnitt 10). Aufgeteilte GGUF-Dateien (`…-00001-of-0000N.gguf`) werden mit allen Teilen eingetragen; llama.cpp lädt über den ersten Teil.
+2. **Pinnen:** `revision`, `files[].size` und `files[].sha256` **nicht von Hand** eintragen, sondern den Workflow `pin-models.yml` starten (er nutzt `scripts/pin-models.sh`) und den entstehenden PR auf huggingface.co prüfen und mergen (siehe Abschnitt 10). Je Modell wird genau eine Variante eingetragen: die einzelne `.gguf`-Datei, wenn es sie gibt, sonst alle Teile der aufgeteilten Datei (`…-00001-of-0000N.gguf`); llama.cpp lädt über den ersten Teil. Ältere Pins mit beiden Varianten bereinigt ein erneuter Lauf von `pin-models.yml` (siehe `docs/RELEASE_QAS.md`).
 3. **Lizenz prüfen:** Nur Modelle mit Lizenz, die die Nutzung erlaubt (die bisherigen: Apache-2.0). Qwen2.5-Coder-3B fehlt absichtlich, weil seine Lizenz (Qwen Research License) keine kommerzielle Nutzung erlaubt.
 4. **Hardware-Empfehlung:** Die Auswahl „empfohlen“ ist in `ai/models.rs` fest verdrahtet: `SMALL_MODEL` (`qwen2.5-coder-1.5b`) unter `SMALL_MODEL_RAM_BYTES` (12 GiB RAM), sonst `LARGE_MODEL` (`qwen2.5-coder-7b`). Ein neues Modell wird also in der Liste angezeigt, aber nur dann empfohlen, wenn diese Konstanten angepasst werden. Warnungen zu wenig RAM (unter 6 GiB) und fehlendem AVX2 stehen in `hardware_warnings`.
 5. **Chat-Vorlage:** Modelle ohne geprüfte Prüfsumme laufen mit der eingebauten ChatML-Vorlage statt der Vorlage aus der Datei. Ein neues Modell mit anderem Prompt-Format braucht daher ggf. Anpassungen in `ai/llama.rs`/`ai/prompts.rs`. Gepinnte Katalogmodelle mit geprüfter SHA-256 nutzen die Jinja-Vorlage aus der GGUF-Datei (`ChatTemplate::FromModel`, Auswahl in `ai/models.rs`, `chat_template()`), alle anderen die eingebaute ChatML-Vorlage (`--chat-template chatml`); ob andere Modellfamilien als Qwen damit funktionieren, ist ungeprüft.

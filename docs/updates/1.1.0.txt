@@ -1,0 +1,9 @@
+Code-Prüfer 1.1.0 – bessere KI-Testfälle, freie Java-Klassennamen, weniger Speicherbedarf.
+
+- Java: Deine Klasse muss nicht mehr „Main“ heißen; gestartet wird die Klasse mit der main-Methode. Eine package-Zeile ist erlaubt.
+- KI-Testfälle: Eingabeaufforderungen wie „Zahl eingeben: “ führen bei KI-Testfällen nicht mehr zum Fehlschlag, wenn die Werte stimmen. Selbst geschriebene Testfälle werden weiter streng geprüft.
+- KI-Testfälle passen besser zur Aufgabe, Ausgabevorlagen werden zuverlässiger erkannt, und Aufgaben ohne Eingabe sind schneller fertig.
+- Die Musterlösung der KI ist zunächst verborgen und lässt sich per Schaltfläche einblenden.
+- Das größere KI-Modell wird nicht mehr doppelt heruntergeladen, und alte Prüf-Umgebungen werden automatisch gelöscht.
+
+Alle Änderungen stehen auf der Release-Seite auf GitHub.

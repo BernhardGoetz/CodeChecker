@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import {
   CANCELLED,
   cancelAi,
@@ -52,6 +52,34 @@ const LEVEL_HINT = {
   red: "Keine verlässlichen Testfälle möglich.",
 } as const;
 
+/** "12,3 s" (one decimal below 10 s). */
+function seconds(ms: number): string {
+  const s = ms / 1000;
+  return `${s < 10 ? s.toFixed(1).replace(".", ",") : Math.round(s)} s`;
+}
+
+/** Duration per step, e.g. "Analyse 24 s · Lösungen 31 s · …" (steps without time left out). */
+function phaseTimes(stats: GenerateResult["stats"]): string | null {
+  const p = stats.phaseMs;
+  if (!p) return null;
+  const parts: [string, number][] = [
+    ["Analyse", p.structure],
+    ["Lösungen", p.solutions],
+    ["Reparatur", p.repairs],
+    ["Eingaben", p.inputs],
+    ["Mehrheitsentscheid", p.majority],
+  ];
+  const text = parts
+    .filter(([, ms]) => ms > 0)
+    .map(([name, ms]) => `${name} ${seconds(ms)}`)
+    .join(" · ");
+  const prompt =
+    stats.promptTokens && stats.promptMs
+      ? ` · Prompt: ${stats.promptTokens} Token in ${seconds(stats.promptMs)}`
+      : "";
+  return text ? text + prompt : null;
+}
+
 export function modeName(m: CompareMode): string {
   if (m.kind === "lines") return "Zeilen (exakt)";
   if (m.kind === "tokens") return "Wörter (Leerraum egal)";
@@ -98,6 +126,9 @@ export function AiPanel({
   const [error, setError] = useState<string | null>(null);
   const [cancelled, setCancelled] = useState(false);
   const [modeApplied, setModeApplied] = useState(false);
+  // Reference solution hidden by default; hidden again for every new run.
+  const [showSolution, setShowSolution] = useState(false);
+  const solutionId = useId();
   const timer = useRef<number | null>(null);
 
   useEffect(() => {
@@ -114,6 +145,7 @@ export function AiPanel({
     setError(null);
     setCancelled(false);
     setResult(null);
+    setShowSolution(false);
     setModeApplied(false);
     setProgress(null);
     setSeconds(0);
@@ -204,11 +236,28 @@ export function AiPanel({
             {result.tests.length} Testfälle übernommen (mit „KI“ markiert) ·{" "}
             {result.stats.solutionsPassed} von {result.stats.solutionsRequested} Lösungen bestanden ·{" "}
             {result.stats.examplesFound} Beispiel(e) aus dem Blatt
-            {result.stats.templatesFound > 0 && ` · ${result.stats.templatesFound} Ausgabevorlage(n)`} ·{" "}
+            {result.stats.templatesFound > 0 && ` · ${result.stats.templatesFound} Ausgabevorlage(n)`}
+            {(result.stats.templatesDiscarded ?? 0) + (result.stats.templatesMerged ?? 0) > 0 &&
+              ` (${(result.stats.templatesDiscarded ?? 0) + (result.stats.templatesMerged ?? 0)} verworfen/zusammengeführt)`}
+            {result.stats.noInput && " · Aufgabe liest keine Eingabe"}
+            {(result.stats.solutionsCancelled ?? 0) > 0 &&
+              ` · ${result.stats.solutionsCancelled} Lösung(en) nicht abgewartet`}
+            {(result.stats.inputsInvalid ?? 0) > 0 &&
+              ` · ${result.stats.inputsInvalid} ungültige KI-Eingabe(n) nicht übernommen`}
+            {(result.stats.testsRedundant ?? 0) > 0 &&
+              ` · ${result.stats.testsRedundant} gleichartige Testfälle weggelassen`} ·{" "}
             {Math.round(result.stats.durationMs / 1000)} s
             {result.stats.tokensPerSecond !== null &&
               ` · ${result.stats.tokensPerSecond.toFixed(1).replace(".", ",")} Token/s`}
           </p>
+          {phaseTimes(result.stats) && (
+            <details className="small muted">
+              <summary>Zeit je Schritt</summary>
+              <span title="Die Testeingaben entstehen gleichzeitig mit den Lösungen.">
+                {phaseTimes(result.stats)}
+              </span>
+            </details>
+          )}
           {showSuggestion && suggestion && (
             <div className="row small">
               <span>
@@ -248,10 +297,21 @@ export function AiPanel({
             </div>
           )}
           {result.referenceSolution && (
-            <details>
-              <summary>Musterlösung anzeigen</summary>
-              <pre className="output">{result.referenceSolution}</pre>
-            </details>
+            <>
+              {/* Disclosure button: the label says what a click does, aria-expanded the state. */}
+              <button
+                type="button"
+                className="solution-toggle"
+                aria-expanded={showSolution}
+                aria-controls={solutionId}
+                onClick={() => setShowSolution((v) => !v)}
+              >
+                {showSolution ? "Musterlösung ausblenden" : "Musterlösung anzeigen"}
+              </button>
+              <pre id={solutionId} className="output solution-code" hidden={!showSolution}>
+                {result.referenceSolution}
+              </pre>
+            </>
           )}
         </div>
       )}
