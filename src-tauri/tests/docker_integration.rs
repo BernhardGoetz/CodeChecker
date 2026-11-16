@@ -36,6 +36,7 @@ fn tc(input: &str, expected: &str) -> TestCase {
         name: String::new(),
         input: input.into(),
         expected: expected.into(),
+        origin: None,
     }
 }
 
@@ -308,6 +309,36 @@ async fn java_wrong_class_name_gives_hint() {
 
 #[tokio::test]
 #[ignore = "benötigt Docker und die Runner-Images"]
+async fn java_any_class_name_and_package() {
+    // Class named after the task sheet: stored as Time.java, run as Time.
+    let code = "import java.util.Scanner;\n// class Fake { }\npublic class Time {\n    \
+                public static void main(String... args) {\n        \
+                System.out.println(new Scanner(System.in).nextInt() * 2);\n    }\n}\n";
+    let r = run("java", code, vec![tc("21\n", "42\n")]).await;
+    assert!(r.compile_ok, "{:?}", r.compile);
+    assert_eq!(statuses(&r), vec![TestStatus::Passed], "{:?}", r.tests[0]);
+    // Public data class plus a separate main class.
+    let code = "public class Time { int h = 7; }\nclass Start {\n    \
+                public static void main(String[] a) { System.out.println(new Time().h); }\n}\n";
+    let r = run("java", code, vec![tc("", "7\n")]).await;
+    assert!(r.compile_ok, "{:?}", r.compile);
+    assert_eq!(statuses(&r), vec![TestStatus::Passed], "{:?}", r.tests[0]);
+    // Package declaration: compiled with -d, started qualified.
+    let code = "package de.uni.blatt3;\npublic class Time {\n    \
+                public static void main(String[] a) { System.out.println(\"ok\"); }\n}\n";
+    let r = run("java", code, vec![tc("", "ok\n")]).await;
+    assert!(r.compile_ok, "{:?}", r.compile);
+    assert_eq!(statuses(&r), vec![TestStatus::Passed], "{:?}", r.tests[0]);
+    // Two classes with main: not started, German hint.
+    let code = "class A { public static void main(String[] a) {} }\n\
+                class B { public static void main(String[] a) {} }\n";
+    let r = run("java", code, vec![tc("", "")]).await;
+    assert!(!r.compile_ok);
+    assert!(r.hint.unwrap().contains("Mehrere Klassen"));
+}
+
+#[tokio::test]
+#[ignore = "benötigt Docker und die Runner-Images"]
 async fn containers_are_removed() {
     let _ = run("python", "print(1)\n", vec![tc("", "1")]).await;
     assert!(
@@ -449,4 +480,66 @@ async fn start_is_a_no_op_when_engine_already_answers() {
     .await
     .expect("engine should already be reachable");
     assert!(messages.is_empty(), "{messages:?}");
+}
+
+/// Automatic removal of outdated runner images (`runner/cleanup.rs`) on a
+/// test repository: tags the local `code-pruefer-python:dev` several times
+/// and checks which tags survive.
+#[tokio::test]
+#[ignore = "benötigt Docker und die Runner-Images"]
+async fn cleanup_removes_outdated_tags() {
+    use code_pruefer_lib::runner::cleanup;
+
+    let docker = docker::connect().await.expect("keine Engine");
+    let base = "code-pruefer-python:dev";
+    let repo = format!(
+        "ghcr.io/bernhardgoetz/code-pruefer-test-cleanup-{}",
+        std::process::id()
+    );
+    let tags = [
+        "1.2.0",
+        "1.1.0",
+        "1.0.0",
+        "0.9.0",
+        "1.1.0-qas.2",
+        "0.9.0-qas.1",
+        "2.0.0",
+        "dev",
+    ];
+    for tag in tags {
+        docker::tag_image(&docker, base, &format!("{repo}:{tag}"))
+            .await
+            .expect("taggen fehlgeschlagen");
+    }
+    let protect = vec![format!("{repo}:0.9.0-qas.1")];
+    let report = cleanup::remove_outdated_in(
+        &docker,
+        &semver::Version::parse("1.2.0").unwrap(),
+        &[repo.as_str()],
+        &protect,
+    )
+    .await
+    .expect("Aufräumen fehlgeschlagen");
+    assert!(report.failed.is_empty(), "{:?}", report.failed);
+    assert_eq!(
+        report.removed,
+        vec![format!("{repo}:0.9.0"), format!("{repo}:1.0.0")]
+    );
+    let left: Vec<String> = cleanup::list_refs(&docker)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|r| r.reference)
+        .filter(|r| r.starts_with(&format!("{repo}:")))
+        .collect();
+    for tag in tags {
+        let reference = format!("{repo}:{tag}");
+        let removed = tag == "0.9.0" || tag == "1.0.0";
+        assert_eq!(!left.contains(&reference), removed, "{reference}");
+        if !removed {
+            docker::remove_image(&docker, &reference).await;
+        }
+    }
+    // The base image itself is untouched (only tags were removed).
+    assert!(docker::image_exists(&docker, base).await.unwrap());
 }

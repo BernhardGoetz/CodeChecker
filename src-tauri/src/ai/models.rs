@@ -80,6 +80,8 @@ pub struct CatalogModel {
     /// Commit SHA of the Hugging Face repo.
     pub revision: String,
     /// One file, or the parts of a split GGUF (first part is loaded).
+    /// Older pins may list both the single file and its parts; only
+    /// [`effective_files`] is downloaded.
     pub files: Vec<CatalogFile>,
 }
 
@@ -104,19 +106,73 @@ fn is_hex(s: &str, len: usize) -> bool {
             .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
+/// The files of a catalog entry that make up the model: the single file if
+/// there is exactly one, otherwise the parts of the split GGUF. Pins made
+/// before the fix in `scripts/pin-models.sh` list both variants of the same
+/// model (single file and its parts); then only the single file counts.
+/// Several single files (not a valid pin) are returned unchanged.
+pub fn effective_files(files: &[CatalogFile]) -> Vec<&CatalogFile> {
+    let singles: Vec<&CatalogFile> = files
+        .iter()
+        .filter(|f| split_part(&f.name).is_none())
+        .collect();
+    if singles.len() == 1 {
+        singles
+    } else {
+        files.iter().collect()
+    }
+}
+
+/// Every complete variant of a catalog entry, preferred one first: the
+/// effective files and, for an entry listing both, the split parts (an
+/// earlier download of the parts stays usable).
+fn variants(files: &[CatalogFile]) -> Vec<Vec<&CatalogFile>> {
+    let effective = effective_files(files);
+    let parts: Vec<&CatalogFile> = files
+        .iter()
+        .filter(|f| split_part(&f.name).is_some())
+        .collect();
+    let mut v = vec![effective];
+    if !parts.is_empty() && v[0].len() == 1 && split_part(&v[0][0].name).is_none() {
+        let names: Vec<&str> = parts.iter().map(|f| f.name.as_str()).collect();
+        if matches!(part_set(&names), PartSet::Complete { .. }) {
+            v.push(parts);
+        }
+    }
+    v
+}
+
+/// The file llama.cpp loads from a variant: the single file or part 1.
+fn start_file<'a>(files: &[&'a CatalogFile]) -> Option<&'a CatalogFile> {
+    files
+        .iter()
+        .copied()
+        .find(|f| split_part(&f.name).is_some_and(|(_, i, _)| i == 1))
+        .or_else(|| files.first().copied())
+}
+
 impl CatalogModel {
-    /// Revision, sizes and hashes are filled in (`scripts/pin-models.sh`).
+    /// Revision, sizes and hashes are filled in (`scripts/pin-models.sh`);
+    /// at most one single file (an additional set of parts is tolerated,
+    /// see [`effective_files`]).
     pub fn is_pinned(&self) -> bool {
         is_hex(&self.revision, 40)
             && !self.files.is_empty()
             && self
                 .files
                 .iter()
+                .filter(|f| split_part(&f.name).is_none())
+                .count()
+                <= 1
+            && self
+                .files
+                .iter()
                 .all(|f| f.size > 0 && is_hex(&f.sha256, 64) && safe_file_name(&f.name))
     }
 
+    /// Download size (effective files only).
     pub fn size(&self) -> u64 {
-        self.files.iter().map(|f| f.size).sum()
+        effective_files(&self.files).iter().map(|f| f.size).sum()
     }
 
     pub fn url(&self, file: &CatalogFile) -> String {
@@ -499,13 +555,20 @@ pub fn unverified_parts(dir: &Path, config: &AiConfig, catalog_id: &str) -> Unve
     UnverifiedParts { present, state }
 }
 
-/// All files present with the catalog size (files only get there by an
-/// atomic rename after the hash check).
+/// The installed variant of a catalog entry: all its files present with the
+/// catalog size (files only get there by an atomic rename after the hash
+/// check). The single file is preferred; for an entry that also lists the
+/// parts, a complete set of parts counts as well.
+pub fn installed_files<'a>(dir: &Path, m: &'a CatalogModel) -> Option<Vec<&'a CatalogFile>> {
+    variants(&m.files).into_iter().find(|v| {
+        !v.is_empty()
+            && v.iter()
+                .all(|f| file_len(&dir.join(&f.name)) == Some(f.size))
+    })
+}
+
 pub fn catalog_installed(dir: &Path, m: &CatalogModel) -> bool {
-    !m.files.is_empty()
-        && m.files
-            .iter()
-            .all(|f| file_len(&dir.join(&f.name)) == Some(f.size))
+    installed_files(dir, m).is_some()
 }
 
 pub fn status() -> AiStatus {
@@ -516,15 +579,14 @@ pub fn status() -> AiStatus {
     let mut models: Vec<ModelInfo> = catalog()
         .iter()
         .map(|m| {
-            let (verified, partial) = match &dir {
-                Some(d) => (
-                    catalog_installed(d, m),
-                    m.files
-                        .iter()
-                        .filter_map(|f| file_len(&part_path(&d.join(&f.name))))
-                        .sum(),
-                ),
-                None => (false, 0),
+            let installed = dir.as_ref().and_then(|d| installed_files(d, m));
+            let verified = installed.is_some();
+            let partial = match &dir {
+                Some(d) if !verified => effective_files(&m.files)
+                    .iter()
+                    .filter_map(|f| file_len(&part_path(&d.join(&f.name))))
+                    .sum(),
+                _ => 0,
             };
             let parts = dir.as_ref().map(|d| unverified_parts(d, &config, &m.id));
             let unverified_size: u64 = config
@@ -547,7 +609,9 @@ pub fn status() -> AiStatus {
             ModelInfo {
                 id: m.id.clone(),
                 name: m.name.clone(),
-                size_bytes: if verified || m.is_pinned() {
+                size_bytes: if let Some(files) = &installed {
+                    files.iter().map(|f| f.size).sum()
+                } else if m.is_pinned() {
                     m.size()
                 } else {
                     unverified_size
@@ -647,9 +711,10 @@ pub fn selected_model() -> Result<SelectedModel, AiError> {
     let id = config.selected.clone().ok_or_else(not_ready)?;
     let dir = models_dir()?;
     if let Some(m) = catalog().iter().find(|m| m.id == id) {
-        let verified = catalog_installed(&dir, m);
-        let path = if verified {
-            dir.join(&m.files[0].name)
+        let start = installed_files(&dir, m).and_then(|v| start_file(&v));
+        let verified = start.is_some();
+        let path = if let Some(f) = start {
+            dir.join(&f.name)
         } else {
             let parts = unverified_parts(&dir, &config, &m.id);
             let first = parts.first().ok_or_else(not_ready)?;
@@ -1004,11 +1069,18 @@ pub async fn download(
     tokio::fs::create_dir_all(&dir)
         .await
         .map_err(|e| io_err("Modellordner konnte nicht angelegt werden", e))?;
+    // Already there (e.g. the parts from a download before the catalog
+    // listed only one variant): nothing to download twice.
+    if catalog_installed(&dir, m) {
+        select_if_none(&m.id);
+        return Ok(status());
+    }
     let client = http_client()?;
+    let files = effective_files(&m.files);
     let total = m.size();
     let mut done = 0u64;
-    let count = m.files.len();
-    for (i, f) in m.files.iter().enumerate() {
+    let count = files.len();
+    for (i, f) in files.into_iter().enumerate() {
         let dest = dir.join(&f.name);
         if file_len(&dest) == Some(f.size) {
             done += f.size;
@@ -1082,6 +1154,9 @@ pub enum Match<'a> {
     Unknown,
 }
 
+/// Matches against every pinned file, including the parts of an entry
+/// whose effective file is the single file: they are verified as well and
+/// count as installed once complete (see [`installed_files`]).
 pub fn match_hash<'a>(models: &'a [CatalogModel], sha256: &str) -> Match<'a> {
     for m in models.iter().filter(|m| m.is_pinned()) {
         if let Some(f) = m.files.iter().find(|f| f.sha256 == sha256) {
@@ -1542,6 +1617,22 @@ mod tests {
                     assert!(f.name.contains(&m.quant), "{}", f.name);
                     assert!(allowed_url(&reqwest::Url::parse(&m.url(f)).unwrap()));
                 }
+                // Downloaded is exactly one variant: one single file or
+                // the complete parts of one split file.
+                let eff = effective_files(&m.files);
+                let names: Vec<&str> = eff.iter().map(|f| f.name.as_str()).collect();
+                match names.as_slice() {
+                    [one] => assert!(split_part(one).is_none(), "{}: {one}", m.id),
+                    _ => {
+                        assert!(names.iter().all(|n| split_part(n).is_some()), "{}", m.id);
+                        assert!(
+                            matches!(part_set(&names), PartSet::Complete { .. }),
+                            "{}: {names:?}",
+                            m.id
+                        );
+                    }
+                }
+                assert_eq!(m.size(), eff.iter().map(|f| f.size).sum::<u64>());
             }
         }
         assert_eq!(models[0].solutions, 5);
@@ -1604,6 +1695,27 @@ mod tests {
                 ),
             ),
             (
+                "mixed",
+                model(
+                    &rev,
+                    vec![
+                        file("m-q4_k_m-00001-of-00002.gguf", 10.into(), &sha),
+                        file("m-q4_k_m-00002-of-00002.gguf", 11.into(), &sha),
+                        file("m-q4_k_m.gguf", 21.into(), &sha),
+                    ],
+                ),
+            ),
+            (
+                "two-singles",
+                model(
+                    &rev,
+                    vec![
+                        file("m-q4_k_m.gguf", 10.into(), &sha),
+                        file("n-q4_k_m.gguf", 11.into(), &sha),
+                    ],
+                ),
+            ),
+            (
                 "no-revision",
                 model("", vec![file("m-q4_k_m.gguf", 10.into(), &sha)]),
             ),
@@ -1646,7 +1758,11 @@ mod tests {
                 .unwrap_or(false);
             let script_ok = check(name, json);
             assert_eq!(script_ok, app, "{name}: Skript {script_ok}, App {app}");
-            assert_eq!(script_ok, *name == "ok" || *name == "split", "{name}");
+            assert_eq!(
+                script_ok,
+                matches!(*name, "ok" | "split" | "mixed"),
+                "{name}"
+            );
         }
         // The committed catalog (pinned via pin-models.yml, or not yet):
         // script and app agree.
@@ -1681,9 +1797,105 @@ mod tests {
         let mut bad = m.clone();
         bad.files[0].name = "../x.gguf".into();
         assert!(!bad.is_pinned());
-        let mut bad = m;
+        let mut bad = m.clone();
         bad.files.clear();
         assert!(!bad.is_pinned());
+        let two = pinned(
+            "m",
+            &[("m-q4_k_m.gguf", 10, 'b'), ("n-q4_k_m.gguf", 10, 'c')],
+        );
+        assert!(!two.is_pinned());
+        let mixed = pinned(
+            "m",
+            &[
+                ("m-q4_k_m-00001-of-00002.gguf", 4, 'b'),
+                ("m-q4_k_m-00002-of-00002.gguf", 6, 'c'),
+                ("m-q4_k_m.gguf", 10, 'd'),
+            ],
+        );
+        assert!(mixed.is_pinned());
+        assert_eq!(mixed.size(), 10);
+    }
+
+    #[test]
+    fn effective_files_keep_one_variant() {
+        let names = |m: &CatalogModel| -> Vec<String> {
+            effective_files(&m.files)
+                .iter()
+                .map(|f| f.name.clone())
+                .collect()
+        };
+        let single = pinned("m", &[("m-q4_k_m.gguf", 10, 'b')]);
+        assert_eq!(names(&single), ["m-q4_k_m.gguf"]);
+        let split = pinned(
+            "m",
+            &[
+                ("m-q4_k_m-00001-of-00002.gguf", 4, 'b'),
+                ("m-q4_k_m-00002-of-00002.gguf", 6, 'c'),
+            ],
+        );
+        assert_eq!(
+            names(&split),
+            [
+                "m-q4_k_m-00001-of-00002.gguf",
+                "m-q4_k_m-00002-of-00002.gguf"
+            ]
+        );
+        assert_eq!(split.size(), 10);
+        // Old pin listing both variants: only the single file.
+        let mixed = pinned(
+            "m",
+            &[
+                ("m-q4_k_m-00001-of-00002.gguf", 4, 'b'),
+                ("m-q4_k_m-00002-of-00002.gguf", 6, 'c'),
+                ("m-q4_k_m.gguf", 10, 'd'),
+            ],
+        );
+        assert_eq!(names(&mixed), ["m-q4_k_m.gguf"]);
+        assert_eq!(mixed.size(), 10);
+        assert!(effective_files(&[]).is_empty());
+    }
+
+    #[test]
+    fn mixed_entry_is_installed_with_single_file_or_parts() {
+        let dir = std::env::temp_dir().join(format!("cp-mixed-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let m = pinned(
+            "m",
+            &[
+                ("m-q4_k_m-00001-of-00002.gguf", 2, 'b'),
+                ("m-q4_k_m-00002-of-00002.gguf", 3, 'c'),
+                ("m-q4_k_m.gguf", 5, 'd'),
+            ],
+        );
+        let start = |dir: &Path| {
+            installed_files(dir, &m)
+                .and_then(|v| start_file(&v))
+                .map(|f| f.name.clone())
+        };
+        // Nothing.
+        assert!(!catalog_installed(&dir, &m));
+        assert_eq!(start(&dir), None);
+        // Only part 1: incomplete.
+        std::fs::write(dir.join("m-q4_k_m-00001-of-00002.gguf"), b"ab").unwrap();
+        assert!(!catalog_installed(&dir, &m));
+        // Only the parts (download before the fix).
+        std::fs::write(dir.join("m-q4_k_m-00002-of-00002.gguf"), b"abc").unwrap();
+        assert!(catalog_installed(&dir, &m));
+        assert_eq!(start(&dir).as_deref(), Some("m-q4_k_m-00001-of-00002.gguf"));
+        // Both: the single file is preferred.
+        std::fs::write(dir.join("m-q4_k_m.gguf"), b"abcde").unwrap();
+        assert_eq!(start(&dir).as_deref(), Some("m-q4_k_m.gguf"));
+        assert_eq!(installed_files(&dir, &m).unwrap().len(), 1);
+        // Only the single file.
+        std::fs::remove_file(dir.join("m-q4_k_m-00001-of-00002.gguf")).unwrap();
+        std::fs::remove_file(dir.join("m-q4_k_m-00002-of-00002.gguf")).unwrap();
+        assert_eq!(start(&dir).as_deref(), Some("m-q4_k_m.gguf"));
+        // Single file with wrong size and no parts: not installed.
+        std::fs::write(dir.join("m-q4_k_m.gguf"), b"abc").unwrap();
+        assert!(!catalog_installed(&dir, &m));
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
@@ -1773,16 +1985,17 @@ mod tests {
     fn installed_needs_all_parts_with_size() {
         let dir = std::env::temp_dir().join(format!("cp-models-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        let m = pinned(
-            "b",
-            &[("p1-q4_k_m.gguf", 3, 'b'), ("p2-q4_k_m.gguf", 2, 'c')],
+        let (p1, p2) = (
+            "p-q4_k_m-00001-of-00002.gguf",
+            "p-q4_k_m-00002-of-00002.gguf",
         );
+        let m = pinned("b", &[(p1, 3, 'b'), (p2, 2, 'c')]);
         assert!(!catalog_installed(&dir, &m));
-        std::fs::write(dir.join("p1-q4_k_m.gguf"), b"abc").unwrap();
+        std::fs::write(dir.join(p1), b"abc").unwrap();
         assert!(!catalog_installed(&dir, &m));
-        std::fs::write(dir.join("p2-q4_k_m.gguf"), b"abc").unwrap();
+        std::fs::write(dir.join(p2), b"abc").unwrap();
         assert!(!catalog_installed(&dir, &m), "wrong size");
-        std::fs::write(dir.join("p2-q4_k_m.gguf"), b"ab").unwrap();
+        std::fs::write(dir.join(p2), b"ab").unwrap();
         assert!(catalog_installed(&dir, &m));
         assert_eq!(part_path(&dir.join("x.gguf")), dir.join("x.gguf.part"));
         std::fs::remove_dir_all(&dir).unwrap();

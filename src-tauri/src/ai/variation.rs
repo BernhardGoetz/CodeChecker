@@ -34,7 +34,8 @@ use super::pipeline::{
 use super::prompts;
 use super::AiError;
 use crate::runner::compare::{line_diff, CompareMode, DiffLine};
-use crate::runner::template::OutputTemplate;
+use crate::runner::prompt_tolerance::{matches_ignoring_prompts, prompt_budget};
+use crate::runner::template::{check_output, OutputTemplate};
 use crate::runner::{languages, StepOutput, TestCase, MAX_INPUT_BYTES, MAX_TESTS};
 
 /// The task text in prompts is shortened to about this many characters
@@ -78,6 +79,9 @@ pub struct VariationRequest {
     /// helps the model write valid inputs.
     #[serde(default)]
     pub input_format: String,
+    /// Input limits from the test generation (`GenerateResult.inputConstraints`).
+    #[serde(default)]
+    pub input_constraints: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -798,15 +802,25 @@ impl<E: Executor> Ctx<'_, E> {
     }
 
     /// Compares the student's output with the reference output.
-    fn verdict(&self, reference: &StepOutput, student: &StepOutput) -> Verdict {
+    /// The reference always comes from the AI, so input prompts printed by
+    /// the student's program are tolerated as in AI tests (see
+    /// [`matches_ignoring_prompts`]); the findings still show the raw output.
+    fn verdict(&self, input: &str, reference: &StepOutput, student: &StepOutput) -> Verdict {
         if student.timed_out {
             Verdict::Unclear("Zeitüberschreitung")
         } else if student.exit_code != Some(0) {
             Verdict::Unclear("Laufzeitfehler")
         } else if student.stdout_truncated {
             Verdict::Unclear("Ausgabe abgeschnitten")
-        } else if self.mode.matches(&reference.stdout, &student.stdout)
-            && fits_templates(&self.req.output_templates, student)
+        } else if (self.mode.matches(&reference.stdout, &student.stdout)
+            && fits_templates(&self.req.output_templates, student))
+            || matches_ignoring_prompts(
+                &self.mode,
+                &reference.stdout,
+                &student.stdout,
+                prompt_budget(input),
+            )
+            .is_some_and(|s| check_output(&self.req.output_templates, &s.cleaned).is_none())
         {
             Verdict::Same
         } else {
@@ -861,7 +875,7 @@ impl Tally {
         reference: &StepOutput,
         student: &StepOutput,
     ) {
-        match ctx.verdict(reference, student) {
+        match ctx.verdict(input, reference, student) {
             Verdict::Same => self.clean += 1,
             Verdict::Differs => {
                 self.clean += 1;
@@ -929,7 +943,15 @@ async fn check_inputs<L: Llm + Sync, E: Executor>(
     let answer: Option<InputsAnswer> = ask(
         llm,
         json_request(
-            prompts::inputs_messages(task, &ctx.req.input_format, &existing),
+            prompts::inputs_messages(
+                task,
+                &prompts::InputsContext {
+                    input_format: &ctx.req.input_format,
+                    constraints: &ctx.req.input_constraints,
+                    known_inputs: &existing,
+                    ..prompts::InputsContext::default()
+                },
+            ),
             prompts::inputs_schema(),
             INPUTS_TEMPERATURE,
         ),
@@ -1322,6 +1344,20 @@ mod tests {
     }
 
     #[test]
+    fn java_class_name_survives_substitution() {
+        // Any class name (here from the task sheet): the variant keeps it, so
+        // it is stored and started under the same name.
+        let code = "public class Time {\n    public static void main(String... args) {\n        \
+                    int hour = 15;\n        System.out.println(hour);\n    }\n}\n";
+        let s = substitute(code, "java", &[ch("15", "3")]);
+        assert!(s.code.contains("int hour = 3;"));
+        let java = languages::get("java").unwrap();
+        let (entry, hint) = java.entry(&s.code);
+        assert_eq!(hint, None);
+        assert_eq!(java.source_file_for(&entry), "Time.java");
+    }
+
+    #[test]
     fn fields_negative_literals_and_for_heads() {
         let java = "class Main {\n    int hour;\n    void set() {\n        this.hour = 15;\n        \
                     other.hour = 15;\n        int t = -15;\n        int u = 3 -15;\n        \
@@ -1440,6 +1476,7 @@ mod tests {
                 tokens_per_second: None,
                 finish_reason: Some("stop".into()),
                 stopping_word: None,
+                ..ChatResponse::default()
             })
         }
     }
@@ -1496,6 +1533,11 @@ mod tests {
             step(&format!(
                 "{s} seconds have passed since midnight.\n{left} seconds are left until midnight.\n"
             ))
+        } else if code.contains("PROMPTDOUBLE") {
+            // input("Zahl eingeben: ") before the computation.
+            let n: i64 = input.trim().parse().unwrap_or(0);
+            let wrong = i64::from(code.contains("WRONG"));
+            step(&format!("Zahl eingeben: {}\n", n * 2 + wrong))
         } else if code.contains("DOUBLE") {
             let n: i64 = input.trim().parse().unwrap_or(0);
             step(&format!("{}\n", n * 2))
@@ -1584,8 +1626,10 @@ mod tests {
                 name: "KI-Test (ohne Eingabe)".into(),
                 input: String::new(),
                 expected: String::new(),
+                origin: None,
             }],
             input_format: String::new(),
+            input_constraints: String::new(),
         }
     }
 
@@ -1813,6 +1857,7 @@ mod tests {
             name: "t".into(),
             input: "21\n".into(),
             expected: "42\n".into(),
+            origin: None,
         }];
         req.input_format = "eine Zahl n".into();
         let (r, _) = run_check(Some(&model), &req);
@@ -1840,5 +1885,26 @@ mod tests {
         .unwrap();
         assert!(req.tests.is_empty() && req.output_templates.is_empty());
         assert!(req.skip_reason().is_none());
+    }
+
+    #[test]
+    fn variation_ignores_student_prompts() {
+        let model = || llm(|_: &ChatRequest| Ok(r#"{"inputs": ["3", "10"]}"#.into()));
+        let mut req = request("# PROMPTDOUBLE\nprint(int(input('Zahl eingeben: ')) * 2)\n");
+        req.reference_solution = Some("# DOUBLE\nprint(int(input()) * 2)\n".into());
+        req.tests = vec![TestCase {
+            name: "t".into(),
+            input: "21\n".into(),
+            expected: "42\n".into(),
+            origin: Some(crate::runner::TestOrigin::Ai),
+        }];
+        req.input_format = "eine Zahl n".into();
+        let (r, _) = run_check(Some(&model()), &req);
+        assert_eq!(r.state, VariationState::Ok, "{r:?}");
+        assert_eq!(r.checked, 2);
+        // A wrong value after the prompt is still a finding (raw output shown).
+        req.student_code = "# PROMPTDOUBLE WRONG\nprint(int(input('Zahl: ')) * 2 + 1)\n".into();
+        let (r, _) = run_check(Some(&model()), &req);
+        assert_eq!(r.state, VariationState::Failed, "{r:?}");
     }
 }

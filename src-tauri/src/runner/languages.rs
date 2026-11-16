@@ -4,6 +4,59 @@
 use serde::Serialize;
 use std::time::Duration;
 
+use super::java;
+
+/// Placeholder in [`LanguageConfig::source_file`], `compile_cmd` and
+/// `run_cmd` for the file stem of the source (Java: public class).
+pub const FILE_PLACEHOLDER: &str = "{file}";
+/// Placeholder in `run_cmd` for the (qualified) class to start (Java).
+pub const MAIN_PLACEHOLDER: &str = "{main}";
+
+/// Values for the placeholders, determined from the code.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EntryPoint {
+    /// Replaces [`FILE_PLACEHOLDER`].
+    pub file: String,
+    /// Replaces [`MAIN_PLACEHOLDER`].
+    pub main: String,
+}
+
+/// The code has no usable entry point: German `hint`, plus the placeholder
+/// values used anyway (compiling still shows the compiler's messages).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EntryError {
+    pub hint: String,
+    pub fallback: EntryPoint,
+}
+
+/// Entry point of languages without placeholders (fixed file names).
+fn fixed_entry(_code: &str) -> Result<EntryPoint, EntryError> {
+    Ok(EntryPoint {
+        file: "main".into(),
+        main: "main".into(),
+    })
+}
+
+/// Java: the top-level class with `public static void main(String[])`
+/// (any name); the file is named after the public class.
+fn java_entry(code: &str) -> Result<EntryPoint, EntryError> {
+    let program = java::analyze(code);
+    let file = program.file_stem().to_string();
+    match java::main_class(&program) {
+        Ok(main) => Ok(EntryPoint {
+            main: program.qualified(main),
+            file,
+        }),
+        Err(hint) => Err(EntryError {
+            hint,
+            fallback: EntryPoint {
+                main: program.qualified(&file),
+                file,
+            },
+        }),
+    }
+}
+
 /// Registry namespace of the published runner images (GHCR names must be
 /// lowercase). `.github/workflows/release.yml` checks that it matches the
 /// repository owner it pushes to.
@@ -35,14 +88,18 @@ pub struct LanguageConfig {
     /// used when the default image is neither present nor pullable (debug
     /// builds only).
     pub local_image: &'static str,
-    /// File name the source code is stored under inside `/work`.
+    /// File name the source code is stored under inside `/work`; may
+    /// contain [`FILE_PLACEHOLDER`].
     pub source_file: &'static str,
     /// File extensions accepted by the upload dialog.
     pub extensions: &'static [&'static str],
     /// Optional compile/syntax-check command (run once before the tests).
     pub compile_cmd: Option<&'static [&'static str]>,
-    /// Command executed once per test case, stdin = test input.
+    /// Command executed once per test case, stdin = test input. Both
+    /// commands may contain [`FILE_PLACEHOLDER`] and [`MAIN_PLACEHOLDER`].
     pub run_cmd: &'static [&'static str],
+    /// Determines the placeholder values from the code.
+    pub entry_point: fn(&str) -> Result<EntryPoint, EntryError>,
     pub compile_timeout: Duration,
     pub run_timeout: Duration,
     /// Starter code shown in the editor.
@@ -75,6 +132,30 @@ impl LanguageConfig {
             .unwrap_or_else(|| self.default_image.to_string())
     }
 
+    /// Placeholder values for `code` and, if the code cannot be started,
+    /// the German hint (see [`precheck`]).
+    pub fn entry(&self, code: &str) -> (EntryPoint, Option<String>) {
+        match (self.entry_point)(code) {
+            Ok(e) => (e, None),
+            Err(e) => (e.fallback, Some(e.hint)),
+        }
+    }
+
+    fn fill(&self, part: &str, entry: &EntryPoint) -> String {
+        part.replace(FILE_PLACEHOLDER, &entry.file)
+            .replace(MAIN_PLACEHOLDER, &entry.main)
+    }
+
+    /// Source file name for `entry` (e.g. `Time.java`).
+    pub fn source_file_for(&self, entry: &EntryPoint) -> String {
+        self.fill(self.source_file, entry)
+    }
+
+    /// `cmd` (compile or run command) with the placeholders filled in.
+    pub fn command(&self, cmd: &[&str], entry: &EntryPoint) -> Vec<String> {
+        cmd.iter().map(|p| self.fill(p, entry)).collect()
+    }
+
     /// File name of the bundled image archive for an OCI architecture
     /// (`amd64` / `arm64`), see `runner::images`.
     pub fn archive_name(&self, arch: &str) -> String {
@@ -96,6 +177,7 @@ pub static LANGUAGES: &[LanguageConfig] = &[
         extensions: &["py"],
         compile_cmd: Some(&["python", "-m", "py_compile", "main.py"]),
         run_cmd: &["python", "-u", "main.py"],
+        entry_point: fixed_entry,
         compile_timeout: Duration::from_secs(30),
         run_timeout: Duration::from_secs(5),
         template: "# Liest eine Zeile von der Standardeingabe und gibt sie aus\nname = input()\nprint(f\"Hallo, {name}!\")\n",
@@ -109,7 +191,7 @@ pub static LANGUAGES: &[LanguageConfig] = &[
         ),
         image_env: "CODE_PRUEFER_JAVA_IMAGE",
         local_image: "code-pruefer-java:dev",
-        source_file: "Main.java",
+        source_file: "{file}.java",
         extensions: &["java"],
         compile_cmd: Some(&[
             "javac",
@@ -119,7 +201,10 @@ pub static LANGUAGES: &[LanguageConfig] = &[
             "-J-XX:-UsePerfData",
             "-encoding",
             "UTF-8",
-            "Main.java",
+            // Class files go to package directories (`package a.b;`).
+            "-d",
+            ".",
+            "{file}.java",
         ]),
         run_cmd: &[
             "java",
@@ -130,11 +215,12 @@ pub static LANGUAGES: &[LanguageConfig] = &[
             "-XX:-UsePerfData",
             "-Dfile.encoding=UTF-8",
             "-Dstdout.encoding=UTF-8",
-            "Main",
+            "{main}",
         ],
+        entry_point: java_entry,
         compile_timeout: Duration::from_secs(30),
         run_timeout: Duration::from_secs(8),
-        template: "import java.util.Scanner;\n\n// Die Klasse muss \"Main\" heißen (Datei Main.java).\npublic class Main {\n    public static void main(String[] args) {\n        Scanner sc = new Scanner(System.in);\n        String name = sc.nextLine();\n        System.out.println(\"Hallo, \" + name + \"!\");\n    }\n}\n",
+        template: "import java.util.Scanner;\n\n// Der Klassenname ist frei wählbar; gestartet wird die Klasse mit main.\npublic class Main {\n    public static void main(String[] args) {\n        Scanner sc = new Scanner(System.in);\n        String name = sc.nextLine();\n        System.out.println(\"Hallo, \" + name + \"!\");\n    }\n}\n",
     },
 ];
 
@@ -142,23 +228,11 @@ pub fn get(id: &str) -> Option<&'static LanguageConfig> {
     LANGUAGES.iter().find(|l| l.id == id)
 }
 
-/// Language-specific sanity check before running; returns a German hint.
+/// Language-specific sanity check before running; returns a German hint
+/// if the code has no usable entry point (Java: no or several classes with
+/// `main`).
 pub fn precheck(lang: &LanguageConfig, code: &str) -> Option<String> {
-    if lang.id == "java" && !has_public_main_class(code) {
-        return Some(
-            "Java-Code muss eine Klasse namens \"Main\" enthalten (z. B. `public class Main { public static void main(String[] args) { ... } }`), \
-             da die Datei als Main.java gespeichert wird."
-                .to_string(),
-        );
-    }
-    None
-}
-
-fn has_public_main_class(code: &str) -> bool {
-    code.split(|c: char| !(c.is_alphanumeric() || c == '_'))
-        .collect::<Vec<_>>()
-        .windows(2)
-        .any(|w| w[0] == "class" && w[1] == "Main")
+    lang.entry(code).1
 }
 
 /// Serializable summary for the frontend.
@@ -180,7 +254,8 @@ pub fn infos() -> Vec<LanguageInfo> {
         .map(|l| LanguageInfo {
             id: l.id.into(),
             name: l.name.into(),
-            source_file: l.source_file.into(),
+            // Display only: the real name depends on the code.
+            source_file: l.source_file.replace(FILE_PLACEHOLDER, "<Klassenname>"),
             extensions: l.extensions.iter().map(|e| e.to_string()).collect(),
             template: l.template.into(),
             image: l.image(),
@@ -199,7 +274,7 @@ mod tests {
         assert_eq!(py.source_file, "main.py");
         assert_eq!(py.run_timeout, Duration::from_secs(5));
         let java = get("java").unwrap();
-        assert_eq!(java.source_file, "Main.java");
+        assert_eq!(java.source_file, "{file}.java");
         assert_eq!(java.run_timeout, Duration::from_secs(8));
         assert!(get("cobol").is_none());
     }
@@ -257,12 +332,59 @@ mod tests {
     }
 
     #[test]
-    fn java_requires_class_main() {
+    fn java_entry_point_from_code() {
         let java = get("java").unwrap();
-        assert!(precheck(java, "public class Main { }").is_none());
-        assert!(precheck(java, "class Main{}").is_none());
-        assert!(precheck(java, "public class Aufgabe1 { }").is_some());
-        assert!(precheck(java, "public class MainApp { }").is_some());
-        assert!(precheck(get("python").unwrap(), "print(1)").is_none());
+        let code = "public class Time { public static void main(String... args) { } }";
+        let (e, hint) = java.entry(code);
+        assert_eq!(hint, None);
+        assert_eq!(java.source_file_for(&e), "Time.java");
+        let run = java.command(java.run_cmd, &e);
+        assert_eq!(run.last().unwrap(), "Time");
+        let compile = java.command(java.compile_cmd.unwrap(), &e);
+        assert_eq!(compile.last().unwrap(), "Time.java");
+        assert!(compile.windows(2).any(|w| w == ["-d", "."]));
+        assert!(precheck(java, code).is_none());
+        assert!(precheck(java, "class Main{ public static void main(String[] a){} }").is_none());
+
+        // Package: class files in the package directory, qualified start.
+        let (e, hint) = java
+            .entry("package de.uni;\npublic class Time { public static void main(String[] a) {} }");
+        assert_eq!(hint, None);
+        assert_eq!(java.source_file_for(&e), "Time.java");
+        assert_eq!(
+            java.command(java.run_cmd, &e).last().unwrap(),
+            "de.uni.Time"
+        );
+
+        // No main: hint, file still named after the public class (javac
+        // then reports real syntax errors instead of a file-name error).
+        let (e, hint) = java.entry("public class Aufgabe1 { }");
+        assert!(hint.unwrap().contains("main-Methode"));
+        assert_eq!(java.source_file_for(&e), "Aufgabe1.java");
+        let two = "class A { public static void main(String[] a) {} }\n\
+                   class B { public static void main(String[] a) {} }";
+        assert!(precheck(java, two).unwrap().contains("Mehrere Klassen"));
+        assert_eq!(java.source_file_for(&java.entry("").0), "Main.java");
+
+        // Python has fixed names.
+        let py = get("python").unwrap();
+        let (e, hint) = py.entry("print(1)");
+        assert_eq!(hint, None);
+        assert_eq!(py.source_file_for(&e), "main.py");
+        assert_eq!(py.command(py.run_cmd, &e), vec!["python", "-u", "main.py"]);
+        assert!(precheck(py, "print(1)").is_none());
+    }
+
+    #[test]
+    fn template_and_infos() {
+        let java = get("java").unwrap();
+        assert_eq!(java.entry(java.template).1, None);
+        assert_eq!(
+            java.source_file_for(&java.entry(java.template).0),
+            "Main.java"
+        );
+        let info = infos();
+        let j = info.iter().find(|i| i.id == "java").unwrap();
+        assert_eq!(j.source_file, "<Klassenname>.java");
     }
 }

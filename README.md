@@ -234,6 +234,8 @@ Der Code-Prüfer sucht beim Start selbst nach der gewählten Engine (Einzelheite
 
 Der Code-Prüfer bringt „Bauanleitungen“ für die Container (sogenannte **Images**) für Python und Java gleich im Installationspaket mit. Beim ersten Start mit laufendem Docker lädt er sie automatisch in Docker. Dafür brauchst du **kein Internet**. Der Fortschritt steht neben dem Knopf „Prüfen“. Solange das läuft, ist „Prüfen“ kurz gesperrt.
 
+Damit nach Updates kein Speicherplatz verloren geht, **löscht der Code-Prüfer alte Prüf-Umgebungen automatisch** (in Docker und Podman): Er behält die Images der aktuellen und der vorherigen Version und entfernt ältere Versionen im Hintergrund, nachdem die aktuellen Images bereitstehen. Images neuerer Versionen, selbst gebaute Images und Images anderer Programme rührt er nicht an; ein Image, das gerade von einem Container benutzt wird, bleibt ebenfalls stehen.
+
 ### KI-Modell einrichten (freiwillig)
 
 Das brauchst du nur, wenn du die KI-Funktionen nutzen willst (Testfälle erzeugen lassen, Texterkennungsfehler korrigieren lassen). Zum Prüfen von Code ist die KI **nicht** nötig.
@@ -278,7 +280,7 @@ flowchart TD
 
 So kann auch fremder oder fehlerhafter Code deinen Rechner nicht beschädigen.
 
-**Python und Java.** Für jede Programmiersprache gibt es ein eigenes Container-Paket (Image). Bei Java muss die Hauptklasse **`Main`** heißen (die Datei wird intern als `Main.java` gespeichert), sonst gibt es einen Hinweis.
+**Python und Java.** Für jede Programmiersprache gibt es ein eigenes Container-Paket (Image). Bei Java ist der **Klassenname frei wählbar** (z. B. `Time`, wenn das Aufgabenblatt das verlangt): Gestartet wird die Klasse mit `public static void main(String[] args)`, und die Datei wird intern nach der öffentlichen (`public`) Klasse benannt (z. B. `Time.java`). Eine `package`-Zeile ist erlaubt. Fehlt eine `main`-Methode oder haben mehrere Klassen eine, gibt es einen Hinweis.
 
 **Testfälle.** Du kannst bis zu **50 Testfälle** pro Prüfung anlegen, von Hand oder mit der KI. Ein Testfall besteht aus Name, Eingabe und erwarteter Ausgabe.
 
@@ -291,6 +293,8 @@ So kann auch fremder oder fehlerhafter Code deinen Rechner nicht beschädigen.
 | **Zahlen mit Toleranz** | Wie „Wörter“, aber Zahlen dürfen leicht abweichen (z. B. `0.3333334` statt `0.3333333`). Die erlaubte Abweichung stellst du als „Toleranz“ ein (Voreinstellung `1e-6`, also 0,000001). Alles, was keine Zahl ist, muss exakt passen. |
 
 Zusätzlich gibt es die Option **„Zeilenumbruch am Ende verbieten“**: Dann gilt eine Ausgabe, die mit einem Zeilenumbruch endet (z. B. durch `println` oder `print()`), als nicht bestanden – egal, was erwartet wird.
+
+**Eingabeaufforderungen bei KI-Testfällen.** Viele Programme schreiben vor dem Einlesen eine Aufforderung wie „Zahl eingeben: “ (Python `input("Zahl eingeben: ")`, Java `System.out.print("Name: ")`). Bei **KI-Testfällen** (Markierung „KI“) zählt so ein Text nicht als Ausgabe: Passt die Ausgabe erst ohne ihn, gilt der Test als bestanden, und im Ergebnis steht „Eingabeaufforderungen wurden ignoriert (KI-Testfall)“ mit dem ignorierten Text. Ein falscher Wert besteht nie, Beschriftungen wie „Ergebnis:“ oder „Summe:“ gelten nie als Aufforderung, und ohne Eingabe wird nichts ignoriert. **Selbst geschriebene Testfälle werden immer streng geprüft.** Ein KI-Testfall bleibt auch nach dem Bearbeiten (auch der erwarteten Ausgabe) ein KI-Testfall; streng geprüft wird er erst, wenn du bei ihm das Häkchen „KI-Markierung entfernen“ setzt.
 
 **Ergebnisse.** Pro Testfall siehst du einen Status:
 
@@ -309,14 +313,16 @@ Lässt sich dein Code gar nicht übersetzen, siehst du statt der Testfälle eine
 **Aufgabenblatt hochladen (Tab „Aufgabe“).** Du kannst die Aufgabenstellung einfügen oder über **„Aufgabe hochladen …“** eine Datei laden: **Word (.docx), PDF oder Bild (PNG, JPEG)**, höchstens 20 MB und 20 Seiten. Der Text wird auf deinem Computer gelesen. Bei Bildern und eingescannten PDF-Seiten benutzt die App die **Texterkennung (OCR)** von Windows bzw. macOS. Unter Windows muss dafür eine Sprache mit Texterkennung installiert sein (*Einstellungen → Zeit und Sprache → Sprache*). Erkannter Text kann Fehler enthalten (z. B. `0` statt `O` oder `1` statt `l`) – deshalb musst du ihn prüfen und das Häkchen **„Text geprüft und korrigiert“** setzen.
 
 **KI: „Testfälle mit KI erzeugen“ (Tab „Testfälle“).** Die KI geht so vor – und die Reihenfolge ist wichtig:
-1. Sie liest die Aufgabe und schreibt **mehrere eigene Lösungen** (je nach Modell 5 oder 3) und **Testeingaben**.
+1. Sie liest die Aufgabe und schreibt **mehrere eigene Lösungen** (je nach Modell 5 oder 3) und **Testeingaben**. Nennt das Blatt bei Java eine Klasse (z. B. „Klasse `Time`“ oder „Time.java“), verwendet die KI diesen Klassennamen, sonst `Main`.
 2. Die Lösungen werden in der Sandbox (im Container) wirklich **ausgeführt**.
 3. Die **erwartete Ausgabe** ist die, auf die sich die Mehrheit der Lösungen einigt. Die KI *schreibt* die erwarteten Ausgaben also nie selbst.
 4. Du bekommst eine **Konfidenz** (Vertrauensstufe): **Grün** = hohe Sicherheit (die Beispiele des Aufgabenblatts bestanden, die Lösungen sind sich einig), **Gelb** = nur ein Hinweis, bitte die erwarteten Ausgaben prüfen, **Rot** = keine verlässlichen Testfälle möglich (dann gibt es auch keine).
 
-Die erzeugten Testfälle werden an deine vorhandenen angehängt und mit **„KI“** markiert. Du kannst sie bearbeiten. Bei Aufgaben ohne Beispiele, mit mehreren richtigen Lösungen, mit Zufall, GUI oder Dateien ist das Ergebnis höchstens ein Hinweis.
+Die erzeugten Testfälle werden an deine vorhandenen angehängt und mit **„KI“** markiert. Du kannst sie bearbeiten. Die Musterlösung der KI ist zunächst verborgen; mit **„Musterlösung anzeigen“** blendest du sie ein und mit **„Musterlösung ausblenden“** wieder aus (bei jeder neuen Erzeugung ist sie wieder verborgen). Bei Aufgaben ohne Beispiele, mit mehreren richtigen Lösungen, mit Zufall, GUI oder Dateien ist das Ergebnis höchstens ein Hinweis. Liest eine Aufgabe keine Eingabe, erzeugt die KI keine Testeingaben (das spart Zeit); es gibt dann einen Testfall mit leerer Eingabe. Unter „Zeit je Schritt“ siehst du, wie lange die einzelnen Schritte gedauert haben.
 
-**Ausgabevorlagen.** Manche Aufgabenblätter zeigen nur das *Format* der Ausgabe mit einem Platzhalter, z. B. „12345678 seconds have passed“. Erkennt die KI so eine Vorlage, wird sie beim Prüfen nur als **Formatprüfung** genutzt (nicht als feste Erwartung). Unter „Testfälle mit KI“ siehst du die erkannte Vorlage und kannst sie mit **„Vorlage nicht verwenden“** verwerfen. Das ist nützlich, wenn eigene Randfälle (z. B. „Ungültige Eingabe“) absichtlich etwas anderes ausgeben.
+**Passende Testeingaben.** Die KI bekommt für die Testeingaben das Ausgabeformat, die Beispiele des Blatts und die Grenzen der Eingabe (z. B. „1 ≤ n ≤ 1000“), sofern das Blatt welche nennt. Ein Beispiel aus dem Blatt zählt nur, wenn Eingabe und Ausgabe im Text nahe beieinanderstehen (die Ausgabe nach der Eingabe). Brechen **alle** Lösungen bei einer KI-Eingabe ab, passt die Eingabe wohl nicht zur Aufgabe: Sie wird nicht übernommen und nur als Hinweis genannt (die Konfidenz wird dadurch nicht schlechter). Haben mehr als drei KI-Testfälle dieselbe erwartete Ausgabe, werden nur die ersten drei übernommen.
+
+**Ausgabevorlagen.** Manche Aufgabenblätter zeigen nur das *Format* der Ausgabe mit einem Platzhalter, z. B. „12345678 seconds have passed“. Erkennt die KI so eine Vorlage, wird sie beim Prüfen nur als **Formatprüfung** genutzt (nicht als feste Erwartung). Steht im Blatt ausdrücklich, dass ein Wert nur ein Platzhalter ist, oder stehen nach „Ausgabe:“ eindeutige Platzhalter wie `<n>` oder `___`, findet der Code-Prüfer die Vorlage auch selbst. Zeilen, die erst einzeln in den Teilaufgaben und dann zusammen als Block stehen, werden zu einer Vorlage zusammengeführt; mehrere Vorlagen dürfen in der Reihenfolge des Blatts nacheinander ausgegeben werden. Passt keine einzige Ausgabe der KI-Lösungen zur Vorlage, wird sie verworfen und die Konfidenz ist höchstens „Gelb“. Unter „Testfälle mit KI“ siehst du die erkannte Vorlage und kannst sie mit **„Vorlage nicht verwenden“** verwerfen. Das ist nützlich, wenn eigene Randfälle (z. B. „Ungültige Eingabe“) absichtlich etwas anderes ausgeben.
 
 **Variationstest.** Ein Programm kann *zufällig* das richtige Ergebnis liefern, obwohl die Rechnung falsch ist. Beispiel: Mit einer falschen Formel kommt für genau die Zahlen der Aufgabe das richtige Ergebnis heraus, mit anderen Zahlen aber nicht. Der Variationstest ändert deshalb Werte und lässt deinen Code **und** die Musterlösung der KI laufen. Weicht dein Code ab, bekommen bisher bestandene Tests den Status „Nur für die gegebenen Werte richtig“. Der Variationstest läuft nur, wenn
 - dein Code kompiliert und mindestens ein Test bestanden ist,
@@ -338,7 +344,7 @@ Er ist ein starker Hinweis, aber kein Beweis (die Musterlösung ist ja selbst vo
 So sieht ein typischer Ablauf aus. Das Fenster hat oben den **Code-Editor** mit dem Knopf **„Prüfen“** und darunter drei Reiter: **Aufgabe**, **Testfälle**, **Ergebnis**.
 
 1. **Docker prüfen:** Oben rechts muss stehen, dass Docker läuft (grünes Lämpchen). Wenn nicht, siehe [Erster Start](#4-erster-start).
-2. **Sprache wählen:** Links über dem Editor wählst du **Python** oder **Java**. Im Editor steht schon ein kleines Beispielprogramm, das du überschreiben kannst. Bei Java muss die Klasse `Main` heißen.
+2. **Sprache wählen:** Links über dem Editor wählst du **Python** oder **Java**. Im Editor steht schon ein kleines Beispielprogramm, das du überschreiben kannst. Bei Java darf die Klasse beliebig heißen; sie braucht eine `main`-Methode.
 3. **Code eingeben** – oder eine Datei (`.py` bzw. `.java`) in den Editor laden.
 4. **Aufgabe eintragen (optional, nötig für die KI):** Im Tab **„Aufgabe“** den Text einfügen oder mit **„Aufgabe hochladen …“** laden. Den Text kontrollieren, ggf. korrigieren und **„Text geprüft und korrigiert“** anhaken.
 5. **Testfälle anlegen:** Im Tab **„Testfälle“** mit **„+ Testfall hinzufügen“** einen Testfall erstellen. Trage die **Eingabe (stdin)** und die **erwartete Ausgabe (stdout)** ein. Beispiel: Eingabe `Welt`, erwartete Ausgabe `Hallo, Welt!`. Oder: mit **„Testfälle mit KI erzeugen“** vorschlagen lassen (dafür siehe KI-Einrichtung oben) und die Ergebnisse kritisch prüfen.
@@ -403,7 +409,7 @@ Der Code-Prüfer speichert Code, Aufgaben und Testfälle nicht. Kopiere deinen C
 
 ## 8. Bekannte Einschränkungen und Pläne
 
-- Nur **Python** und **Java**. Die Prüf-Umgebungen enthalten Python 3.15 bzw. Java 24 (Eclipse Temurin), siehe `images/python/Dockerfile` und `images/java/Dockerfile`. Java-Code muss eine Klasse `Main` enthalten (Datei `Main.java`).
+- Nur **Python** und **Java**. Die Prüf-Umgebungen enthalten Python 3.15 bzw. Java 24 (Eclipse Temurin), siehe `images/python/Dockerfile` und `images/java/Dockerfile`. Java-Code braucht genau eine Klasse mit `public static void main(String[] args)` (Name frei wählbar).
 - Aufgaben und Testfälle werden nicht gespeichert (siehe Abschnitt 5, „Was wird gespeichert?“).
 - Verglichen wird nur die Standardausgabe (Zeilen, Wörter oder Zahlen mit Toleranz, optional gegen eine Ausgabevorlage).
 - Ausgabevorlagen erkennt nur die KI; von Hand lässt sich keine Vorlage anlegen. Die Vorlagenprüfung gilt für alle Testfälle, auch für Randfälle mit anderer Ausgabe – dann „Vorlage nicht verwenden“.

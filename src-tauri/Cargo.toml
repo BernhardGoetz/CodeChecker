@@ -1,6 +1,6 @@
 [package]
 name = "code-pruefer"
-version = "1.0.3"
+version = "1.1.0"
 description = "Code-Prüfer: Programmieraufgaben lokal in Docker-Containern testen"
 authors = ["Bernhard Goetz"]
 edition = "2021"
@@ -41,6 +41,9 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-
 tokio-util = "0.7"
 sysinfo = { version = "0.40.1", default-features = false, features = ["system"] }
 getrandom = "0.4"
+# Version comparison for the automatic removal of outdated runner images
+# (runner/cleanup.rs); already a transitive dependency.
+semver = "1"
 # Already used by tauri-plugin-updater; needed for its types (endpoint URL,
 # release date).
 url = "2"

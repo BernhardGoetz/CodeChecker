@@ -222,6 +222,10 @@ export function EngineSettings({
         <p className={images.note.error ? "note warn" : "note ok"}>{images.note.text}</p>
       )}
       <p className="setting-hint muted">
+        Ältere Versionen der Images werden automatisch gelöscht; behalten werden die aktuelle und die
+        vorherige Version.
+      </p>
+      <p className="setting-hint muted">
         Noch nicht installiert? Download: <DownloadLinks />. Docker Desktop ist kostenlos für private
         Nutzung/Bildung – bitte Lizenzbedingungen selbst prüfen.
       </p>
