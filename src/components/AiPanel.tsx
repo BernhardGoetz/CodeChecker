@@ -99,7 +99,8 @@ function progressLine(p: AiProgress | null, seconds: number): string {
   if (!p) return `KI wird gestartet … (${seconds} s)`;
   const parts = [p.message];
   if (p.tokensPerSecond !== null) parts.push(`${p.tokensPerSecond.toFixed(1).replace(".", ",")} Token/s`);
-  if (p.etaSeconds !== null && p.etaSeconds > 0) parts.push(`noch ca. ${formatDuration(p.etaSeconds)}`);
+  if (p.etaText) parts.push(`noch ${p.etaText}`);
+  else if (p.etaSeconds !== null && p.etaSeconds > 0) parts.push(`noch ca. ${formatDuration(p.etaSeconds)}`);
   parts.push(`${formatDuration(seconds)} vergangen`);
   return parts.join(" · ");
 }

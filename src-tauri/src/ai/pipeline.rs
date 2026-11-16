@@ -27,6 +27,7 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
 
+use super::eta;
 use super::llama::{ChatRequest, ChatResponse, Llm};
 use super::no_input;
 use super::prompts::{self, SolutionContext, MAX_EXAMPLES, MAX_INPUTS};
@@ -220,6 +221,9 @@ pub struct Stats {
     pub duration_ms: u64,
     /// Duration per step (for measuring where the time goes).
     pub phase_ms: PhaseTimes,
+    /// Measured throughput of the server (all slots together), stored as
+    /// the start value of the next run; `None` if too little was measured.
+    pub measured_speeds: Option<eta::Speeds>,
 }
 
 /// Duration of the steps in milliseconds. The inputs are requested while
@@ -286,8 +290,13 @@ pub struct AiProgress {
     pub current: Option<usize>,
     pub total: Option<usize>,
     pub tokens_per_second: Option<f64>,
-    /// Rough remaining time of the model work (see [`eta_seconds`]).
+    /// Remaining time of the test generation, upper end of the range (see
+    /// [`eta`]).
     pub eta_seconds: Option<u64>,
+    /// Lower end of the range.
+    pub eta_low_seconds: Option<u64>,
+    /// The range as German text ("ca. 4–6 Min.").
+    pub eta_text: Option<String>,
 }
 
 impl AiProgress {
@@ -299,6 +308,8 @@ impl AiProgress {
             total: None,
             tokens_per_second: None,
             eta_seconds: None,
+            eta_low_seconds: None,
+            eta_text: None,
         }
     }
 }
@@ -673,6 +684,9 @@ fn engine_progress_text(p: &runner::Progress) -> String {
 pub struct Settings {
     pub solutions: usize,
     pub repair_rounds: usize,
+    /// Server throughput for the remaining-time estimate before anything
+    /// is measured (last run of the model); `None`: conservative defaults.
+    pub speeds: Option<eta::Speeds>,
 }
 
 // ---------------------------------------------------------------------------
@@ -1320,25 +1334,146 @@ pub fn decide_confidence(e: &Evidence) -> Confidence {
 // ---------------------------------------------------------------------------
 // Flow
 
-/// Expected answer lengths for the time estimate (tokens).
-const STRUCTURE_EXPECTED_TOKENS: f64 = 200.0;
+/// Expected answer lengths for the remaining-time estimate (tokens) until
+/// real answers are known.
+const STRUCTURE_EXPECTED_TOKENS: f64 = 250.0;
 const SOLUTION_EXPECTED_TOKENS: f64 = 350.0;
+const INPUTS_EXPECTED_TOKENS: f64 = 250.0;
+/// Characters per prompt token until the structure step measured it
+/// (German task text, code: rather 3.5; fewer means more tokens).
+const CHARS_PER_TOKEN: f64 = 3.0;
+/// Chat template tokens per request.
+const TEMPLATE_TOKENS: f64 = 30.0;
+/// A repair request also carries the first answer and the error.
+const REPAIR_EXTRA_CHARS: f64 = 2000.0;
+/// Sandbox time of the solution check (compile, examples, probe) and of
+/// the majority vote, for compiled languages (Java) and others.
+const CHECK_SECONDS: (f64, f64) = (10.0, 4.0);
+const MAJORITY_SECONDS: (f64, f64) = (10.0, 5.0);
+/// How often the progress line (and its remaining time) is refreshed
+/// while nothing else happens.
+const ETA_TICK: Duration = Duration::from_secs(5);
 
-/// Rough remaining time in seconds from the measured generation speed (per
-/// sequence; parallel solutions finish at about the same time). `None`
-/// while the speed is unknown or the rest is sandbox work. Pure,
-/// unit-tested.
-pub fn eta_seconds(phase: Phase, done: usize, total: usize, tps: Option<f64>) -> Option<u64> {
-    let tps = tps.filter(|t| *t > 0.0)?;
-    let tokens = match phase {
-        Phase::Structure => STRUCTURE_EXPECTED_TOKENS + SOLUTION_EXPECTED_TOKENS,
-        Phase::Solutions => {
-            let left = total.saturating_sub(done) as f64 / total.max(1) as f64;
-            SOLUTION_EXPECTED_TOKENS * left
+/// Step of a run, for the remaining-time estimate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Step {
+    Structure,
+    /// All solutions at once (and the inputs, if requested alongside).
+    Round,
+    /// Repairs of this many solutions.
+    Repairs(usize),
+    /// Inputs requested after the solutions (no-input guess was wrong).
+    Inputs,
+    Majority,
+}
+
+/// What the remaining-time estimate knows about the run (see [`eta`]).
+struct Plan {
+    step: Step,
+    step_started: Instant,
+    chars_per_token: f64,
+    structure_chars: f64,
+    solution_chars: f64,
+    inputs_chars: f64,
+    solutions: usize,
+    /// The inputs are requested alongside the solutions.
+    parallel_inputs: bool,
+    /// Output tokens of the solution answers so far.
+    solution_tokens: Vec<f64>,
+    compiled: bool,
+    prior: eta::Speeds,
+}
+
+fn chars(messages: &[super::llama::ChatMessage]) -> f64 {
+    messages
+        .iter()
+        .map(|m| m.content.chars().count())
+        .sum::<usize>() as f64
+}
+
+impl Plan {
+    fn prompt(&self, chars: f64) -> f64 {
+        chars / self.chars_per_token + TEMPLATE_TOKENS
+    }
+
+    /// Realistic output of one solution: the mean of the answers so far.
+    fn solution_gen(&self) -> f64 {
+        if self.solution_tokens.is_empty() {
+            SOLUTION_EXPECTED_TOKENS
+        } else {
+            self.solution_tokens.iter().sum::<f64>() / self.solution_tokens.len() as f64
         }
-        _ => return None,
-    };
-    Some((tokens / tps).ceil() as u64)
+    }
+
+    fn sandbox(&self, s: (f64, f64)) -> f64 {
+        if self.compiled {
+            s.0
+        } else {
+            s.1
+        }
+    }
+
+    fn work(&self, step: Step) -> eta::Work {
+        let solution = eta::Work {
+            prompt_tokens: self.prompt(self.solution_chars),
+            gen_tokens: self.solution_gen(),
+            sandbox_seconds: 0.0,
+        };
+        let inputs = eta::Work {
+            prompt_tokens: self.prompt(self.inputs_chars),
+            gen_tokens: INPUTS_EXPECTED_TOKENS,
+            sandbox_seconds: 0.0,
+        };
+        let check = eta::Work {
+            sandbox_seconds: self.sandbox(CHECK_SECONDS),
+            ..eta::Work::default()
+        };
+        match step {
+            Step::Structure => eta::Work {
+                prompt_tokens: self.prompt(self.structure_chars),
+                gen_tokens: STRUCTURE_EXPECTED_TOKENS,
+                sandbox_seconds: 0.0,
+            },
+            Step::Round => {
+                let round = solution.times(self.solutions as f64).plus(check);
+                if self.parallel_inputs {
+                    round.plus(inputs)
+                } else {
+                    round
+                }
+            }
+            Step::Repairs(k) => eta::Work {
+                prompt_tokens: self.prompt(self.solution_chars + REPAIR_EXTRA_CHARS),
+                ..solution
+            }
+            .times(k as f64)
+            .plus(check),
+            Step::Inputs => inputs,
+            Step::Majority => eta::Work {
+                sandbox_seconds: self.sandbox(MAJORITY_SECONDS),
+                ..eta::Work::default()
+            },
+        }
+    }
+
+    /// Work of the steps after `step` (repairs are only counted once they
+    /// start).
+    fn later(&self, step: Step) -> eta::Work {
+        let majority = self.work(Step::Majority);
+        match step {
+            Step::Structure => self.work(Step::Round).plus(majority),
+            Step::Round | Step::Repairs(_) | Step::Inputs => majority,
+            Step::Majority => eta::Work::default(),
+        }
+    }
+}
+
+/// Last progress line, repeated with a fresh remaining time.
+#[derive(Clone)]
+struct LastProgress {
+    phase: Phase,
+    message: String,
+    step: Option<(usize, usize)>,
 }
 
 /// Repair rounds are skipped once a clear majority of the solutions passed
@@ -1353,6 +1488,28 @@ struct Shared<P> {
     tps_sum: f64,
     tps_n: usize,
     on_progress: P,
+    plan: Plan,
+    meter: eta::Meter,
+    /// Start of the run (time base of the meter).
+    clock: Instant,
+    last: Option<LastProgress>,
+}
+
+/// Ends a request on the meter also when it is dropped (cancelled, early
+/// end): the concurrency must not stay counted.
+struct InFlight<'s, P> {
+    shared: &'s Mutex<Shared<P>>,
+    started: f64,
+    sample: Option<eta::Sample>,
+}
+
+impl<P> Drop for InFlight<'_, P> {
+    fn drop(&mut self) {
+        let mut s = self.shared.lock().unwrap_or_else(|e| e.into_inner());
+        let now = s.clock.elapsed().as_secs_f64();
+        let (started, sample) = (self.started, self.sample.take());
+        s.meter.finish(now, started, sample);
+    }
 }
 
 /// State of one test generation, shared by the concurrent solution tasks.
@@ -1433,27 +1590,88 @@ where
 
     fn progress(&self, phase: Phase, message: String, step: Option<(usize, usize)>) {
         let tps = self.tps();
-        let eta = eta_seconds(phase, step.map_or(0, |s| s.0), step.map_or(1, |s| s.1), tps);
         let mut s = self.shared();
+        s.last = Some(LastProgress {
+            phase,
+            message: message.clone(),
+            step,
+        });
+        let eta = {
+            let p = &s.plan;
+            let speeds = s.meter.blended(p.prior);
+            eta::eta_range(
+                p.work(p.step),
+                p.step_started.elapsed().as_secs_f64(),
+                p.later(p.step),
+                speeds,
+            )
+        };
         (s.on_progress)(AiProgress {
             phase,
             message,
             current: step.map(|s| s.0),
             total: step.map(|s| s.1),
             tokens_per_second: tps,
-            eta_seconds: eta,
+            eta_seconds: eta.map(|e| e.high),
+            eta_low_seconds: eta.map(|e| e.low),
+            eta_text: eta.map(eta::format_range),
         });
+    }
+
+    /// Enters the next step of the remaining-time estimate.
+    fn step(&self, step: Step) {
+        let mut s = self.shared();
+        s.plan.step = step;
+        s.plan.step_started = Instant::now();
+    }
+
+    /// Repeats the last progress line with a fresh remaining time.
+    fn tick(&self) {
+        let last = self.shared().last.clone();
+        if let Some(l) = last {
+            self.progress(l.phase, l.message, l.step);
+        }
     }
 
     async fn chat(&self, req: ChatRequest) -> Result<ChatResponse, AiError> {
         self.check()?;
+        let started = {
+            let mut s = self.shared();
+            let now = s.clock.elapsed().as_secs_f64();
+            s.meter.start(now)
+        };
+        let mut flight = InFlight {
+            shared: &self.shared,
+            started,
+            sample: None,
+        };
         let r = tokio::select! {
             biased;
             _ = self.cancel.cancelled() => Err(AiError::Cancelled),
             r = self.llm.chat(&req) => r,
-        }?;
+        };
+        if let Ok(r) = &r {
+            flight.sample = Some(eta::Sample {
+                prompt_tokens: r.prompt_tokens,
+                prompt_ms: r.prompt_ms,
+                gen_tokens: r.completion_tokens,
+                gen_tps: r.tokens_per_second,
+            });
+        }
+        drop(flight);
+        let r = r?;
         {
             let mut s = self.shared();
+            if let Some(t) = r.completion_tokens.filter(|_| req.prefill.is_some()) {
+                // A solution answer: realistic length for the estimate.
+                s.plan.solution_tokens.push(t as f64);
+            }
+            if s.plan.step == Step::Structure {
+                if let Some(n) = r.prompt_tokens.filter(|n| *n > 50) {
+                    let cpt = s.plan.structure_chars / n as f64;
+                    s.plan.chars_per_token = cpt.clamp(1.5, 4.5);
+                }
+            }
             s.stats.llm_calls += 1;
             s.stats.completion_tokens += r.completion_tokens.unwrap_or(0);
             s.stats.prompt_tokens += r.prompt_tokens.unwrap_or(0);
@@ -1800,589 +2018,645 @@ pub async fn generate<L: Llm + Sync, E: Executor>(
             tps_sum: 0.0,
             tps_n: 0,
             on_progress,
+            plan: {
+                let structure_chars = chars(&prompts::structure_messages(&req.task_text));
+                Plan {
+                    step: Step::Structure,
+                    step_started: Instant::now(),
+                    chars_per_token: CHARS_PER_TOKEN,
+                    structure_chars,
+                    // Until the prompts are known: about the same size.
+                    solution_chars: structure_chars,
+                    inputs_chars: structure_chars,
+                    solutions: settings.solutions,
+                    parallel_inputs: true,
+                    solution_tokens: Vec::new(),
+                    compiled: lang.id == "java",
+                    prior: settings.speeds.unwrap_or_else(|| eta::default_speeds("")),
+                }
+            },
+            meter: eta::Meter::default(),
+            clock: Instant::now(),
+            last: None,
         }),
     };
-
-    // 1. Structure.
-    run.progress(
-        Phase::Structure,
-        "Aufgabe wird analysiert (Ein-/Ausgabe, Beispiele) …".into(),
-        None,
-    );
-    let phase = Instant::now();
-    let structure: Structure = run
-        .json_step(
-            prompts::structure_messages(&req.task_text),
-            prompts::structure_schema(),
-            STRUCTURE_TEMPERATURE,
-            STRUCTURE_MAX_TOKENS,
-        )
-        .await?
-        .unwrap_or_default();
-    let (examples, discarded) = verify_examples(&req.task_text, &structure.examples);
-    // Templates of the model plus the ones found without it, joined and
-    // checked the same way.
-    let detected = template::detect_templates(&req.task_text);
-    let report =
-        template::verify_templates_with(&req.task_text, &structure.output_templates, &detected);
-    let declared = template::declared_placeholder_tokens(&req.task_text);
-    let (templates, contradicted) =
-        drop_contradicted_templates(report.templates, &report.from_model, &declared, &examples);
-    // Templates never become examples or tests.
-    let (examples, template_examples) = drop_template_examples(examples, &templates);
-    {
-        let mut s = run.shared();
-        s.stats.examples_found = examples.len();
-        s.stats.examples_discarded = discarded + template_examples;
-        s.stats.templates_found = templates.len();
-        s.stats.templates_discarded = report.discarded + contradicted;
-        s.stats.templates_merged = report.merged;
-        s.stats.phase_ms.structure = ms(phase.elapsed());
-    }
-    let suggested = suggested_mode(&structure);
-    let mode = req.compare_mode.or(suggested).unwrap_or_default();
-    // Sheet text cannot show trailing spaces: examples are checked leniently.
-    let example_mode = match mode {
-        CompareMode::Lines { .. } => CompareMode::Lines { trim: true },
-        m => m,
-    };
-    let example_inputs: Vec<String> = examples.iter().map(|e| as_stdin(&e.input)).collect();
-    // Without input the model writes no inputs; this is confirmed by
-    // running the solutions on a probe input (see below).
-    // Fixed values and no input hint in the text: this wins over the
-    // model's `readsInput` (regression „Aufgabe 2.2 Time“, 1.5B model: the
-    // solutions read the given time from stdin and the probe run only
-    // confirmed that). A verified example with an input still means input.
-    let fixed_values = examples
-        .iter()
-        .all(|e| normalize_for_match(&e.input).is_empty())
-        && no_input::task_without_input(&req.task_text);
-    let no_input = fixed_values || input_need(&structure, &examples) == InputNeed::NoInput;
-    let empty_example = example_inputs
-        .iter()
-        .position(|i| normalize_for_match(i).is_empty());
-    // With an output template (or without input) but no example without
-    // input, a test with empty input is forced: the solutions run it right
-    // away, its expectation comes from the majority.
-    let force_empty = (no_input || (!templates.is_empty() && !reads_input(&structure)))
-        && empty_example.is_none();
-    let check_inputs: Vec<String> = example_inputs
-        .iter()
-        .cloned()
-        .chain(force_empty.then(String::new))
-        .collect();
-    let empty_index = empty_example.unwrap_or(example_inputs.len());
-    let probe_index = check_inputs.len();
-    let strict = fixed_values.then_some(NoInputCheck {
-        empty: empty_index,
-        probe: probe_index,
-    });
-    // The probe runs with the check inputs, but is never a test.
-    let run_inputs: Vec<String> = check_inputs
-        .iter()
-        .cloned()
-        .chain(no_input.then(|| PROBE_INPUT.to_string()))
-        .collect();
-    let example_pairs: Vec<(String, String)> = examples
-        .iter()
-        .map(|e| (e.input.clone(), e.output.clone()))
-        .collect();
-    // The inputs prompt sees the verified sheet pairs (never model outputs).
-    let inputs_ctx = prompts::InputsContext {
-        input_format: &structure.input_format,
-        output_format: &structure.output_format,
-        constraints: &structure.input_constraints,
-        examples: &example_pairs,
-        known_inputs: &[],
-    };
-
-    // 2.–4. Solutions, all at the same time (llama-server has a slot per
-    // solution): generate while the containers start, check each one as
-    // soon as it is written. The test inputs (5.) only need the task, so
-    // they are generated alongside – unless the task reads no input.
-    // Java: the class named by the task sheet (e.g. „Klasse Time“), else Main.
-    let class_name = (lang.id == "java")
-        .then(|| prompts::class_name_from_task(&req.task_text))
-        .flatten();
-    let ctx = SolutionContext {
-        input_format: &structure.input_format,
-        output_format: &structure.output_format,
-        examples: &example_pairs,
-        output_templates: &templates,
-        class_name: class_name.as_deref(),
-        no_input,
-    };
-    let base_messages = prompts::solution_messages(&req.task_text, lang.id, &ctx);
-    let n = settings.solutions;
-    run.progress(
-        Phase::Solutions,
-        format!("{n} Lösungen werden gleichzeitig geschrieben …"),
-        Some((0, n)),
-    );
-    let done = AtomicUsize::new(0);
-    // Early end: only without input, where the check inputs are all
-    // inputs (the tests are then the same as in a full run).
-    let early = EarlyStop {
-        enabled: no_input,
-        token: CancellationToken::new(),
-        finished: Mutex::new(Vec::new()),
-    };
-    let has_examples = !examples.is_empty();
-    let first_round = (0..n).map(|_| {
-        let run = &run;
-        let messages = base_messages.clone();
-        let (examples, example_mode, run_inputs, templates, done, early) = (
-            &examples,
-            &example_mode,
-            &run_inputs,
-            &templates,
-            &done,
-            &early,
-        );
-        async move {
-            let mut a = Attempt::new(messages.clone());
-            let chat = async {
-                let chat = run.chat(run.solution_request(messages));
-                if !early.enabled {
-                    return Some(chat.await);
-                }
-                // The answer first: a finished answer is never thrown away.
-                tokio::select! {
-                    biased;
-                    r = chat => Some(r),
-                    _ = early.token.cancelled() => None,
-                }
-            };
-            let (answer, session) = futures_util::future::join(chat, async {
-                run.check()?;
-                tokio::select! {
-                    biased;
-                    _ = run.cancel.cancelled() => Err(AiError::Cancelled),
-                    s = run.exec.open(lang.id) => s,
-                }
-            })
-            .await;
-            match session {
-                Ok(s) => a.session = Some(s),
-                Err(e) => run.record_error(&mut a, e, false),
-            }
-            match answer {
-                Some(Ok(r)) => a.answer = Some(r.content),
-                Some(Err(e)) => run.record_error(&mut a, e, true),
-                None => a.cancelled_early = true,
-            }
-            if a.fatal.is_none() && a.llm_error.is_none() && !a.cancelled_early {
-                if let Err(e) = run
-                    .check_answer(
-                        &mut a,
-                        examples,
-                        example_mode,
-                        run_inputs,
-                        templates,
-                        strict,
-                    )
-                    .await
-                {
-                    run.record_error(&mut a, e, false);
-                }
-            }
-            if early.enabled && !a.cancelled_early {
-                let mut f = early.finished.lock().unwrap_or_else(|e| e.into_inner());
-                f.push(a.passes.then(|| a.example_outputs.clone()));
-                let outs: Vec<&[StepOutput]> = f.iter().flatten().map(Vec::as_slice).collect();
-                let g = agreeing_group(
-                    &mode,
-                    templates,
-                    &outs,
-                    examples.len()..probe_index,
-                    empty_index,
-                    probe_index,
-                );
-                if can_stop(g, f.len(), n, has_examples) {
-                    early.token.cancel();
-                }
-            }
-            let d = done.fetch_add(1, AtomicOrdering::SeqCst) + 1;
-            let message = if a.cancelled_early {
-                format!("Lösung {d} von {n} nicht abgewartet (Mehrheit steht fest) …")
-            } else {
-                format!("Lösung {d} von {n} geschrieben und geprüft …")
-            };
-            run.progress(Phase::Solutions, message, Some((d, n)));
-            a
-        }
-    });
-    let inputs_step = async {
-        if no_input {
-            return Ok(Some(InputsAnswer::default()));
-        }
-        let phase = Instant::now();
-        let r = run
-            .json_step::<InputsAnswer>(
-                prompts::inputs_messages(&req.task_text, &inputs_ctx),
-                prompts::inputs_schema(),
-                INPUTS_TEMPERATURE,
-                INPUTS_MAX_TOKENS,
-            )
-            .await;
-        run.shared().stats.phase_ms.inputs = ms(phase.elapsed());
-        r
-    };
-    let solutions_step = async {
-        let phase = Instant::now();
-        let mut attempts = futures_util::future::join_all(first_round).await;
-        run.shared().stats.phase_ms.solutions = ms(phase.elapsed());
-        let phase = Instant::now();
-        // Repair rounds only for programs that did not compile, only if no
-        // clear majority passed already, and never after an early end.
-        for _ in 0..settings.repair_rounds {
-            let passed = attempts.iter().filter(|a| a.passes).count();
-            if attempts
-                .iter()
-                .any(|a| a.fatal.is_some() || a.cancelled_early)
-                || !repairs_needed(n, passed)
-            {
-                break;
-            }
-            let repairs = attempts
-                .iter_mut()
-                .enumerate()
-                .filter(|(_, a)| a.failure.is_some() && a.session.is_some())
-                .map(|(i, a)| {
-                    let run = &run;
-                    let (examples, example_mode, run_inputs, templates) =
-                        (&examples, &example_mode, &run_inputs, &templates);
-                    async move {
-                        run.progress(
-                            Phase::Solutions,
-                            format!("Lösung {} von {n} wird repariert …", i + 1),
-                            Some((i + 1, n)),
-                        );
-                        let failure = a.failure.clone().unwrap_or_default();
-                        let answer = a.answer.clone().unwrap_or_default();
-                        a.messages = if a.reads_input {
-                            prompts::no_input_repair_messages(
-                                std::mem::take(&mut a.messages),
-                                &answer,
-                                lang.id,
-                            )
-                        } else {
-                            prompts::repair_messages(
-                                std::mem::take(&mut a.messages),
-                                &answer,
-                                &failure,
-                                lang.id,
-                            )
-                        };
-                        match run.chat(run.solution_request(a.messages.clone())).await {
-                            Ok(r) => {
-                                a.answer = Some(r.content);
-                                run.shared().stats.solutions_repaired += 1;
-                                if let Err(e) = run
-                                    .check_answer(
-                                        a,
-                                        examples,
-                                        example_mode,
-                                        run_inputs,
-                                        templates,
-                                        strict,
-                                    )
-                                    .await
-                                {
-                                    run.record_error(a, e, false);
-                                }
-                            }
-                            Err(e) => {
-                                a.failure = None;
-                                run.record_error(a, e, true);
-                            }
-                        }
-                    }
-                });
-            futures_util::future::join_all(repairs).await;
-        }
-        run.shared().stats.phase_ms.repairs = ms(phase.elapsed());
-        attempts
-    };
-    let (mut attempts, inputs_answer) =
-        futures_util::future::join(solutions_step, inputs_step).await;
-
-    let sessions_of = |attempts: &mut Vec<Attempt<E::Session>>, keep: bool| -> Vec<E::Session> {
-        attempts
-            .iter_mut()
-            .filter(|a| keep || !a.passes)
-            .filter_map(|a| a.session.take())
-            .collect()
-    };
-    if let Some(e) = first_fatal(&mut attempts) {
-        close_all(sessions_of(&mut attempts, true)).await;
-        return Err(e);
-    }
-    if attempts
-        .iter()
-        .all(|a| a.llm_error.is_some() || a.cancelled_early)
-    {
-        close_all(sessions_of(&mut attempts, true)).await;
-        if let Some(e) = attempts.iter_mut().find_map(|a| a.llm_error.take()) {
-            return Err(e);
-        }
-    }
-    let compiled = attempts.iter().filter(|a| a.compiled).count();
-    let reading = attempts.iter().filter(|a| a.reads_input).count();
-    let cancelled = attempts.iter().filter(|a| a.cancelled_early).count();
-    // "No input" is confirmed if a strict majority of the compiled
-    // solutions prints the same on the empty input and on the probe.
-    // With fixed values every surviving solution ignored its input already.
-    let no_input_confirmed = no_input
-        && (fixed_values || {
-            let ran: Vec<&[StepOutput]> = attempts
-                .iter()
-                .filter(|a| a.compiled && a.example_outputs.len() == run_inputs.len())
-                .map(|a| a.example_outputs.as_slice())
-                .collect();
-            let independent = ran
-                .iter()
-                .filter(|o| {
-                    let (e, p) = (&o[empty_index], &o[probe_index]);
-                    valid(e) && valid(p) && mode.matches(&e.stdout, &p.stdout)
-                })
-                .count();
-            independent * 2 > ran.len()
-        });
-    if no_input {
-        // The probe is no test.
-        for a in &mut attempts {
-            a.example_outputs.truncate(check_inputs.len());
-        }
-    }
-    // Containers of failed solutions are no longer needed.
-    close_all(sessions_of(&mut attempts, false)).await;
-    let survivors: Vec<(String, Vec<StepOutput>, E::Session)> = attempts
-        .into_iter()
-        .filter(|a| a.passes)
-        .filter_map(|a| Some((a.code?, a.example_outputs, a.session?)))
-        .collect();
-    {
-        let mut s = run.shared();
-        s.stats.solutions_compiled = compiled;
-        s.stats.solutions_passed = survivors.len();
-        s.stats.solutions_cancelled = cancelled;
-        s.stats.no_input = no_input_confirmed;
-        s.stats.fixed_values = fixed_values;
-        s.stats.solutions_read_input = reading;
-    }
-
-    let finish = |run: Run<'_, L, E, _>,
-                  tests: Vec<GeneratedTest>,
-                  reference: Option<String>,
-                  ev: Evidence| {
-        let shared = run.shared.into_inner().unwrap_or_else(|e| e.into_inner());
-        let mut stats = shared.stats;
-        stats.tokens_per_second = (shared.tps_n > 0).then(|| shared.tps_sum / shared.tps_n as f64);
-        stats.duration_ms = ms(started.elapsed());
-        let mut confidence = decide_confidence(&ev);
-        if !templates.is_empty() && !ev.template_fallback {
-            confidence.reasons.push(TEMPLATE_REASON.into());
-        }
-        if fixed_values {
-            confidence.reasons.push(FIXED_VALUES_REASON.into());
-        }
-        // Red: no tests, no reference solution – only the honest message.
-        let red = confidence.level == ConfidenceLevel::Red;
-        GenerateResult {
-            tests: if red { Vec::new() } else { tests },
-            reference_solution: if red { None } else { reference },
-            confidence,
-            suggested_compare_mode: suggested,
-            compare_mode: mode,
-            output_templates: if ev.template_fallback {
-                Vec::new()
-            } else {
-                templates.clone()
-            },
-            input_format: structure.input_format.clone(),
-            input_constraints: structure.input_constraints.clone(),
-            stats,
+    // The progress line (and its remaining time) is refreshed while the
+    // steps run; the ticker ends with the body.
+    let ticker = async {
+        loop {
+            tokio::time::sleep(ETA_TICK).await;
+            run.tick();
         }
     };
-    let mut evidence = Evidence {
-        solutions: n,
-        compiled,
-        survivors: survivors.len(),
-        examples: examples.len(),
-        cancelled,
-        ..Evidence::default()
-    };
-    if survivors.is_empty() {
-        return Ok(finish(run, Vec::new(), None, evidence));
-    }
-
-    // 5. Test inputs (the model writes inputs only). If the task was
-    // wrongly taken for one without input, they are requested now.
-    let inputs_answer = if no_input && !no_input_confirmed {
+    let body = async {
+        // 1. Structure.
         run.progress(
-            Phase::Inputs,
-            "Die Aufgabe liest doch eine Eingabe – Testeingaben werden erzeugt …".into(),
+            Phase::Structure,
+            "Aufgabe wird analysiert (Ein-/Ausgabe, Beispiele) …".into(),
             None,
         );
         let phase = Instant::now();
-        let r = run
-            .json_step::<InputsAnswer>(
-                prompts::inputs_messages(&req.task_text, &inputs_ctx),
-                prompts::inputs_schema(),
-                INPUTS_TEMPERATURE,
-                INPUTS_MAX_TOKENS,
+        let structure: Structure = run
+            .json_step(
+                prompts::structure_messages(&req.task_text),
+                prompts::structure_schema(),
+                STRUCTURE_TEMPERATURE,
+                STRUCTURE_MAX_TOKENS,
             )
-            .await;
-        run.shared().stats.phase_ms.inputs = ms(phase.elapsed());
-        r
-    } else {
-        inputs_answer
-    };
-    let generated = match inputs_answer {
-        Ok(answer) => clean_inputs(&answer.map(|a| a.inputs).unwrap_or_default(), &check_inputs),
-        Err(e) => {
-            close_all(survivors.into_iter().map(|s| s.2)).await;
+            .await?
+            .unwrap_or_default();
+        let (examples, discarded) = verify_examples(&req.task_text, &structure.examples);
+        // Templates of the model plus the ones found without it, joined and
+        // checked the same way.
+        let detected = template::detect_templates(&req.task_text);
+        let report =
+            template::verify_templates_with(&req.task_text, &structure.output_templates, &detected);
+        let declared = template::declared_placeholder_tokens(&req.task_text);
+        let (templates, contradicted) =
+            drop_contradicted_templates(report.templates, &report.from_model, &declared, &examples);
+        // Templates never become examples or tests.
+        let (examples, template_examples) = drop_template_examples(examples, &templates);
+        {
+            let mut s = run.shared();
+            s.stats.examples_found = examples.len();
+            s.stats.examples_discarded = discarded + template_examples;
+            s.stats.templates_found = templates.len();
+            s.stats.templates_discarded = report.discarded + contradicted;
+            s.stats.templates_merged = report.merged;
+            s.stats.phase_ms.structure = ms(phase.elapsed());
+        }
+        let suggested = suggested_mode(&structure);
+        let mode = req.compare_mode.or(suggested).unwrap_or_default();
+        // Sheet text cannot show trailing spaces: examples are checked leniently.
+        let example_mode = match mode {
+            CompareMode::Lines { .. } => CompareMode::Lines { trim: true },
+            m => m,
+        };
+        let example_inputs: Vec<String> = examples.iter().map(|e| as_stdin(&e.input)).collect();
+        // Without input the model writes no inputs; this is confirmed by
+        // running the solutions on a probe input (see below).
+        // Fixed values and no input hint in the text: this wins over the
+        // model's `readsInput` (regression „Aufgabe 2.2 Time“, 1.5B model: the
+        // solutions read the given time from stdin and the probe run only
+        // confirmed that). A verified example with an input still means input.
+        let fixed_values = examples
+            .iter()
+            .all(|e| normalize_for_match(&e.input).is_empty())
+            && no_input::task_without_input(&req.task_text);
+        let no_input = fixed_values || input_need(&structure, &examples) == InputNeed::NoInput;
+        let empty_example = example_inputs
+            .iter()
+            .position(|i| normalize_for_match(i).is_empty());
+        // With an output template (or without input) but no example without
+        // input, a test with empty input is forced: the solutions run it right
+        // away, its expectation comes from the majority.
+        let force_empty = (no_input || (!templates.is_empty() && !reads_input(&structure)))
+            && empty_example.is_none();
+        let check_inputs: Vec<String> = example_inputs
+            .iter()
+            .cloned()
+            .chain(force_empty.then(String::new))
+            .collect();
+        let empty_index = empty_example.unwrap_or(example_inputs.len());
+        let probe_index = check_inputs.len();
+        let strict = fixed_values.then_some(NoInputCheck {
+            empty: empty_index,
+            probe: probe_index,
+        });
+        // The probe runs with the check inputs, but is never a test.
+        let run_inputs: Vec<String> = check_inputs
+            .iter()
+            .cloned()
+            .chain(no_input.then(|| PROBE_INPUT.to_string()))
+            .collect();
+        let example_pairs: Vec<(String, String)> = examples
+            .iter()
+            .map(|e| (e.input.clone(), e.output.clone()))
+            .collect();
+        // The inputs prompt sees the verified sheet pairs (never model outputs).
+        let inputs_ctx = prompts::InputsContext {
+            input_format: &structure.input_format,
+            output_format: &structure.output_format,
+            constraints: &structure.input_constraints,
+            examples: &example_pairs,
+            known_inputs: &[],
+        };
+
+        // 2.–4. Solutions, all at the same time (llama-server has a slot per
+        // solution): generate while the containers start, check each one as
+        // soon as it is written. The test inputs (5.) only need the task, so
+        // they are generated alongside – unless the task reads no input.
+        // Java: the class named by the task sheet (e.g. „Klasse Time“), else Main.
+        let class_name = (lang.id == "java")
+            .then(|| prompts::class_name_from_task(&req.task_text))
+            .flatten();
+        let ctx = SolutionContext {
+            input_format: &structure.input_format,
+            output_format: &structure.output_format,
+            examples: &example_pairs,
+            output_templates: &templates,
+            class_name: class_name.as_deref(),
+            no_input,
+        };
+        let base_messages = prompts::solution_messages(&req.task_text, lang.id, &ctx);
+        let n = settings.solutions;
+        {
+            let mut s = run.shared();
+            s.plan.solution_chars = chars(&base_messages);
+            s.plan.inputs_chars = chars(&prompts::inputs_messages(&req.task_text, &inputs_ctx));
+            s.plan.parallel_inputs = !no_input;
+        }
+        run.step(Step::Round);
+        run.progress(
+            Phase::Solutions,
+            format!("{n} Lösungen werden gleichzeitig geschrieben …"),
+            Some((0, n)),
+        );
+        let done = AtomicUsize::new(0);
+        // Early end: only without input, where the check inputs are all
+        // inputs (the tests are then the same as in a full run).
+        let early = EarlyStop {
+            enabled: no_input,
+            token: CancellationToken::new(),
+            finished: Mutex::new(Vec::new()),
+        };
+        let has_examples = !examples.is_empty();
+        let first_round = (0..n).map(|_| {
+            let run = &run;
+            let messages = base_messages.clone();
+            let (examples, example_mode, run_inputs, templates, done, early) = (
+                &examples,
+                &example_mode,
+                &run_inputs,
+                &templates,
+                &done,
+                &early,
+            );
+            async move {
+                let mut a = Attempt::new(messages.clone());
+                let chat = async {
+                    let chat = run.chat(run.solution_request(messages));
+                    if !early.enabled {
+                        return Some(chat.await);
+                    }
+                    // The answer first: a finished answer is never thrown away.
+                    tokio::select! {
+                        biased;
+                        r = chat => Some(r),
+                        _ = early.token.cancelled() => None,
+                    }
+                };
+                let (answer, session) = futures_util::future::join(chat, async {
+                    run.check()?;
+                    tokio::select! {
+                        biased;
+                        _ = run.cancel.cancelled() => Err(AiError::Cancelled),
+                        s = run.exec.open(lang.id) => s,
+                    }
+                })
+                .await;
+                match session {
+                    Ok(s) => a.session = Some(s),
+                    Err(e) => run.record_error(&mut a, e, false),
+                }
+                match answer {
+                    Some(Ok(r)) => a.answer = Some(r.content),
+                    Some(Err(e)) => run.record_error(&mut a, e, true),
+                    None => a.cancelled_early = true,
+                }
+                if a.fatal.is_none() && a.llm_error.is_none() && !a.cancelled_early {
+                    if let Err(e) = run
+                        .check_answer(
+                            &mut a,
+                            examples,
+                            example_mode,
+                            run_inputs,
+                            templates,
+                            strict,
+                        )
+                        .await
+                    {
+                        run.record_error(&mut a, e, false);
+                    }
+                }
+                if early.enabled && !a.cancelled_early {
+                    let mut f = early.finished.lock().unwrap_or_else(|e| e.into_inner());
+                    f.push(a.passes.then(|| a.example_outputs.clone()));
+                    let outs: Vec<&[StepOutput]> = f.iter().flatten().map(Vec::as_slice).collect();
+                    let g = agreeing_group(
+                        &mode,
+                        templates,
+                        &outs,
+                        examples.len()..probe_index,
+                        empty_index,
+                        probe_index,
+                    );
+                    if can_stop(g, f.len(), n, has_examples) {
+                        early.token.cancel();
+                    }
+                }
+                let d = done.fetch_add(1, AtomicOrdering::SeqCst) + 1;
+                let message = if a.cancelled_early {
+                    format!("Lösung {d} von {n} nicht abgewartet (Mehrheit steht fest) …")
+                } else {
+                    format!("Lösung {d} von {n} geschrieben und geprüft …")
+                };
+                run.progress(Phase::Solutions, message, Some((d, n)));
+                a
+            }
+        });
+        let inputs_step = async {
+            if no_input {
+                return Ok(Some(InputsAnswer::default()));
+            }
+            let phase = Instant::now();
+            let r = run
+                .json_step::<InputsAnswer>(
+                    prompts::inputs_messages(&req.task_text, &inputs_ctx),
+                    prompts::inputs_schema(),
+                    INPUTS_TEMPERATURE,
+                    INPUTS_MAX_TOKENS,
+                )
+                .await;
+            run.shared().stats.phase_ms.inputs = ms(phase.elapsed());
+            r
+        };
+        let solutions_step = async {
+            let phase = Instant::now();
+            let mut attempts = futures_util::future::join_all(first_round).await;
+            run.shared().stats.phase_ms.solutions = ms(phase.elapsed());
+            let phase = Instant::now();
+            // Repair rounds only for programs that did not compile, only if no
+            // clear majority passed already, and never after an early end.
+            for _ in 0..settings.repair_rounds {
+                let passed = attempts.iter().filter(|a| a.passes).count();
+                if attempts
+                    .iter()
+                    .any(|a| a.fatal.is_some() || a.cancelled_early)
+                    || !repairs_needed(n, passed)
+                {
+                    break;
+                }
+                let k = attempts
+                    .iter()
+                    .filter(|a| a.failure.is_some() && a.session.is_some())
+                    .count();
+                if k > 0 {
+                    run.step(Step::Repairs(k));
+                }
+                let repairs = attempts
+                    .iter_mut()
+                    .enumerate()
+                    .filter(|(_, a)| a.failure.is_some() && a.session.is_some())
+                    .map(|(i, a)| {
+                        let run = &run;
+                        let (examples, example_mode, run_inputs, templates) =
+                            (&examples, &example_mode, &run_inputs, &templates);
+                        async move {
+                            run.progress(
+                                Phase::Solutions,
+                                format!("Lösung {} von {n} wird repariert …", i + 1),
+                                Some((i + 1, n)),
+                            );
+                            let failure = a.failure.clone().unwrap_or_default();
+                            let answer = a.answer.clone().unwrap_or_default();
+                            a.messages = if a.reads_input {
+                                prompts::no_input_repair_messages(
+                                    std::mem::take(&mut a.messages),
+                                    &answer,
+                                    lang.id,
+                                )
+                            } else {
+                                prompts::repair_messages(
+                                    std::mem::take(&mut a.messages),
+                                    &answer,
+                                    &failure,
+                                    lang.id,
+                                )
+                            };
+                            match run.chat(run.solution_request(a.messages.clone())).await {
+                                Ok(r) => {
+                                    a.answer = Some(r.content);
+                                    run.shared().stats.solutions_repaired += 1;
+                                    if let Err(e) = run
+                                        .check_answer(
+                                            a,
+                                            examples,
+                                            example_mode,
+                                            run_inputs,
+                                            templates,
+                                            strict,
+                                        )
+                                        .await
+                                    {
+                                        run.record_error(a, e, false);
+                                    }
+                                }
+                                Err(e) => {
+                                    a.failure = None;
+                                    run.record_error(a, e, true);
+                                }
+                            }
+                        }
+                    });
+                futures_util::future::join_all(repairs).await;
+            }
+            run.shared().stats.phase_ms.repairs = ms(phase.elapsed());
+            attempts
+        };
+        let (mut attempts, inputs_answer) =
+            futures_util::future::join(solutions_step, inputs_step).await;
+
+        let sessions_of =
+            |attempts: &mut Vec<Attempt<E::Session>>, keep: bool| -> Vec<E::Session> {
+                attempts
+                    .iter_mut()
+                    .filter(|a| keep || !a.passes)
+                    .filter_map(|a| a.session.take())
+                    .collect()
+            };
+        if let Some(e) = first_fatal(&mut attempts) {
+            close_all(sessions_of(&mut attempts, true)).await;
             return Err(e);
         }
-    };
-    run.shared().stats.inputs_generated = generated.len();
-
-    // 6. Majority vote: every surviving solution runs the new inputs in its
-    // container (compiled once; the example outputs are reused).
-    let phase = Instant::now();
-    let s = survivors.len();
-    run.progress(
-        Phase::Majority,
-        format!(
-            "Mehrheitsentscheid: {s} Lösungen laufen auf {} Eingaben …",
-            generated.len()
-        ),
-        Some((0, s)),
-    );
-    let majority_done = AtomicUsize::new(0);
-    let runs = survivors.iter().map(|(_, _, session)| {
-        let (run, generated, majority_done) = (&run, &generated, &majority_done);
-        async move {
-            let r = if generated.is_empty() {
-                Ok(Vec::new())
-            } else {
-                run.check()?;
-                tokio::select! {
-                    biased;
-                    _ = run.cancel.cancelled() => Err(AiError::Cancelled),
-                    r = session.run(generated) => r,
-                }
-            };
-            if r.is_err() {
-                run.cancel.cancel();
+        if attempts
+            .iter()
+            .all(|a| a.llm_error.is_some() || a.cancelled_early)
+        {
+            close_all(sessions_of(&mut attempts, true)).await;
+            if let Some(e) = attempts.iter_mut().find_map(|a| a.llm_error.take()) {
+                return Err(e);
             }
-            let d = majority_done.fetch_add(1, AtomicOrdering::SeqCst) + 1;
+        }
+        let compiled = attempts.iter().filter(|a| a.compiled).count();
+        let reading = attempts.iter().filter(|a| a.reads_input).count();
+        let cancelled = attempts.iter().filter(|a| a.cancelled_early).count();
+        // "No input" is confirmed if a strict majority of the compiled
+        // solutions prints the same on the empty input and on the probe.
+        // With fixed values every surviving solution ignored its input already.
+        let no_input_confirmed = no_input
+            && (fixed_values || {
+                let ran: Vec<&[StepOutput]> = attempts
+                    .iter()
+                    .filter(|a| a.compiled && a.example_outputs.len() == run_inputs.len())
+                    .map(|a| a.example_outputs.as_slice())
+                    .collect();
+                let independent = ran
+                    .iter()
+                    .filter(|o| {
+                        let (e, p) = (&o[empty_index], &o[probe_index]);
+                        valid(e) && valid(p) && mode.matches(&e.stdout, &p.stdout)
+                    })
+                    .count();
+                independent * 2 > ran.len()
+            });
+        if no_input {
+            // The probe is no test.
+            for a in &mut attempts {
+                a.example_outputs.truncate(check_inputs.len());
+            }
+        }
+        // Containers of failed solutions are no longer needed.
+        close_all(sessions_of(&mut attempts, false)).await;
+        let survivors: Vec<(String, Vec<StepOutput>, E::Session)> = attempts
+            .into_iter()
+            .filter(|a| a.passes)
+            .filter_map(|a| Some((a.code?, a.example_outputs, a.session?)))
+            .collect();
+        {
+            let mut s = run.shared();
+            s.stats.solutions_compiled = compiled;
+            s.stats.solutions_passed = survivors.len();
+            s.stats.solutions_cancelled = cancelled;
+            s.stats.no_input = no_input_confirmed;
+            s.stats.fixed_values = fixed_values;
+            s.stats.solutions_read_input = reading;
+        }
+
+        let finish = |run: &Run<'_, L, E, _>,
+                      tests: Vec<GeneratedTest>,
+                      reference: Option<String>,
+                      ev: Evidence| {
+            let mut shared = run.shared();
+            let mut stats = std::mem::take(&mut shared.stats);
+            stats.tokens_per_second =
+                (shared.tps_n > 0).then(|| shared.tps_sum / shared.tps_n as f64);
+            stats.duration_ms = ms(started.elapsed());
+            stats.measured_speeds = shared.meter.measured(shared.plan.prior);
+            drop(shared);
+            let mut confidence = decide_confidence(&ev);
+            if !templates.is_empty() && !ev.template_fallback {
+                confidence.reasons.push(TEMPLATE_REASON.into());
+            }
+            if fixed_values {
+                confidence.reasons.push(FIXED_VALUES_REASON.into());
+            }
+            // Red: no tests, no reference solution – only the honest message.
+            let red = confidence.level == ConfidenceLevel::Red;
+            GenerateResult {
+                tests: if red { Vec::new() } else { tests },
+                reference_solution: if red { None } else { reference },
+                confidence,
+                suggested_compare_mode: suggested,
+                compare_mode: mode,
+                output_templates: if ev.template_fallback {
+                    Vec::new()
+                } else {
+                    templates.clone()
+                },
+                input_format: structure.input_format.clone(),
+                input_constraints: structure.input_constraints.clone(),
+                stats,
+            }
+        };
+        let mut evidence = Evidence {
+            solutions: n,
+            compiled,
+            survivors: survivors.len(),
+            examples: examples.len(),
+            cancelled,
+            ..Evidence::default()
+        };
+        if survivors.is_empty() {
+            return Ok(finish(&run, Vec::new(), None, evidence));
+        }
+
+        // 5. Test inputs (the model writes inputs only). If the task was
+        // wrongly taken for one without input, they are requested now.
+        let inputs_answer = if no_input && !no_input_confirmed {
+            run.step(Step::Inputs);
             run.progress(
-                Phase::Majority,
-                format!("Mehrheitsentscheid: Lösung {d} von {s} ausgeführt …"),
-                Some((d, s)),
+                Phase::Inputs,
+                "Die Aufgabe liest doch eine Eingabe – Testeingaben werden erzeugt …".into(),
+                None,
             );
+            let phase = Instant::now();
+            let r = run
+                .json_step::<InputsAnswer>(
+                    prompts::inputs_messages(&req.task_text, &inputs_ctx),
+                    prompts::inputs_schema(),
+                    INPUTS_TEMPERATURE,
+                    INPUTS_MAX_TOKENS,
+                )
+                .await;
+            run.shared().stats.phase_ms.inputs = ms(phase.elapsed());
             r
-        }
-    });
-    let outputs = futures_util::future::join_all(runs).await;
-    let (codes, example_outputs): (Vec<String>, Vec<Vec<StepOutput>>) = {
-        let mut codes = Vec::with_capacity(s);
-        let mut ex = Vec::with_capacity(s);
-        let mut sessions = Vec::with_capacity(s);
-        for (c, e, session) in survivors {
-            codes.push(c);
-            ex.push(e);
-            sessions.push(session);
-        }
-        close_all(sessions).await;
-        (codes, ex)
-    };
-    let mut generated_outputs = Vec::with_capacity(s);
-    let mut error: Option<AiError> = None;
-    for r in outputs {
-        match r {
-            Ok(o) => generated_outputs.push(o),
+        } else {
+            inputs_answer
+        };
+        let generated = match inputs_answer {
+            Ok(answer) => {
+                clean_inputs(&answer.map(|a| a.inputs).unwrap_or_default(), &check_inputs)
+            }
             Err(e) => {
-                if error
-                    .as_ref()
-                    .is_none_or(|old| matches!(old, AiError::Cancelled))
-                {
-                    error = Some(e);
+                close_all(survivors.into_iter().map(|s| s.2)).await;
+                return Err(e);
+            }
+        };
+        run.shared().stats.inputs_generated = generated.len();
+
+        // 6. Majority vote: every surviving solution runs the new inputs in its
+        // container (compiled once; the example outputs are reused).
+        let phase = Instant::now();
+        let s = survivors.len();
+        run.step(Step::Majority);
+        run.progress(
+            Phase::Majority,
+            format!(
+                "Mehrheitsentscheid: {s} Lösungen laufen auf {} Eingaben …",
+                generated.len()
+            ),
+            Some((0, s)),
+        );
+        let majority_done = AtomicUsize::new(0);
+        let runs = survivors.iter().map(|(_, _, session)| {
+            let (run, generated, majority_done) = (&run, &generated, &majority_done);
+            async move {
+                let r = if generated.is_empty() {
+                    Ok(Vec::new())
+                } else {
+                    run.check()?;
+                    tokio::select! {
+                        biased;
+                        _ = run.cancel.cancelled() => Err(AiError::Cancelled),
+                        r = session.run(generated) => r,
+                    }
+                };
+                if r.is_err() {
+                    run.cancel.cancel();
                 }
-                generated_outputs.push(Vec::new());
+                let d = majority_done.fetch_add(1, AtomicOrdering::SeqCst) + 1;
+                run.progress(
+                    Phase::Majority,
+                    format!("Mehrheitsentscheid: Lösung {d} von {s} ausgeführt …"),
+                    Some((d, s)),
+                );
+                r
+            }
+        });
+        let outputs = futures_util::future::join_all(runs).await;
+        let (codes, example_outputs): (Vec<String>, Vec<Vec<StepOutput>>) = {
+            let mut codes = Vec::with_capacity(s);
+            let mut ex = Vec::with_capacity(s);
+            let mut sessions = Vec::with_capacity(s);
+            for (c, e, session) in survivors {
+                codes.push(c);
+                ex.push(e);
+                sessions.push(session);
+            }
+            close_all(sessions).await;
+            (codes, ex)
+        };
+        let mut generated_outputs = Vec::with_capacity(s);
+        let mut error: Option<AiError> = None;
+        for r in outputs {
+            match r {
+                Ok(o) => generated_outputs.push(o),
+                Err(e) => {
+                    if error
+                        .as_ref()
+                        .is_none_or(|old| matches!(old, AiError::Cancelled))
+                    {
+                        error = Some(e);
+                    }
+                    generated_outputs.push(Vec::new());
+                }
             }
         }
-    }
-    if let Some(e) = error {
-        return Err(e);
-    }
-
-    let all_inputs: Vec<String> = check_inputs
-        .iter()
-        .cloned()
-        .chain(generated.iter().cloned())
-        .collect();
-    let results: Vec<Option<Vec<StepOutput>>> = example_outputs
-        .into_iter()
-        .zip(generated_outputs)
-        .map(|(mut e, g)| {
-            e.extend(g);
-            (e.len() == all_inputs.len()).then_some(e)
-        })
-        .collect();
-
-    let voters = s + cancelled;
-    let (sheet, check) = (example_inputs.len(), check_inputs.len());
-    let mut v = vote(
-        &mode,
-        &templates,
-        &results,
-        &all_inputs,
-        sheet,
-        check,
-        voters,
-    );
-    // No output at all fitted the templates: the templates are probably
-    // wrong (not the solutions). Without them, the vote is repeated; it
-    // only counts if every surviving solution agrees on every input.
-    if !templates.is_empty() && v.tests.is_empty() && v.fitting == 0 && v.valid > 0 {
-        let free = vote(&mode, &[], &results, &all_inputs, sheet, check, voters);
-        let unanimous = free.dropped == 0
-            && !free.tests.is_empty()
-            && free
-                .tests
-                .iter()
-                .all(|t| t.agreement * voters as f64 >= s as f64 - 1e-9);
-        if unanimous {
-            v = free;
-            evidence.template_fallback = true;
-        } else {
-            evidence.template_mismatch = true;
+        if let Some(e) = error {
+            return Err(e);
         }
-    }
-    {
-        let mut st = run.shared();
-        st.stats.tests_dropped = v.dropped;
-        st.stats.inputs_invalid = v.invalid;
-        st.stats.tests_redundant = v.redundant;
-        st.stats.phase_ms.majority = ms(phase.elapsed());
-    }
-    let reference = v
-        .wins
-        .iter()
-        .enumerate()
-        .max_by(|a, b| a.1.cmp(b.1).then(b.0.cmp(&a.0)))
-        .map(|(i, _)| codes[i].clone());
 
-    // 7. Confidence.
-    evidence.tests = v.tests.len();
-    evidence.dropped = v.dropped;
-    evidence.min_agreement = v.min_agreement;
-    evidence.prompt_merged = v.prompt_merged;
-    evidence.invalid = v.invalid;
-    Ok(finish(run, v.tests, reference, evidence))
+        let all_inputs: Vec<String> = check_inputs
+            .iter()
+            .cloned()
+            .chain(generated.iter().cloned())
+            .collect();
+        let results: Vec<Option<Vec<StepOutput>>> = example_outputs
+            .into_iter()
+            .zip(generated_outputs)
+            .map(|(mut e, g)| {
+                e.extend(g);
+                (e.len() == all_inputs.len()).then_some(e)
+            })
+            .collect();
+
+        let voters = s + cancelled;
+        let (sheet, check) = (example_inputs.len(), check_inputs.len());
+        let mut v = vote(
+            &mode,
+            &templates,
+            &results,
+            &all_inputs,
+            sheet,
+            check,
+            voters,
+        );
+        // No output at all fitted the templates: the templates are probably
+        // wrong (not the solutions). Without them, the vote is repeated; it
+        // only counts if every surviving solution agrees on every input.
+        if !templates.is_empty() && v.tests.is_empty() && v.fitting == 0 && v.valid > 0 {
+            let free = vote(&mode, &[], &results, &all_inputs, sheet, check, voters);
+            let unanimous = free.dropped == 0
+                && !free.tests.is_empty()
+                && free
+                    .tests
+                    .iter()
+                    .all(|t| t.agreement * voters as f64 >= s as f64 - 1e-9);
+            if unanimous {
+                v = free;
+                evidence.template_fallback = true;
+            } else {
+                evidence.template_mismatch = true;
+            }
+        }
+        {
+            let mut st = run.shared();
+            st.stats.tests_dropped = v.dropped;
+            st.stats.inputs_invalid = v.invalid;
+            st.stats.tests_redundant = v.redundant;
+            st.stats.phase_ms.majority = ms(phase.elapsed());
+        }
+        let reference = v
+            .wins
+            .iter()
+            .enumerate()
+            .max_by(|a, b| a.1.cmp(b.1).then(b.0.cmp(&a.0)))
+            .map(|(i, _)| codes[i].clone());
+
+        // 7. Confidence.
+        evidence.tests = v.tests.len();
+        evidence.dropped = v.dropped;
+        evidence.min_agreement = v.min_agreement;
+        evidence.prompt_merged = v.prompt_merged;
+        evidence.invalid = v.invalid;
+        Ok(finish(&run, v.tests, reference, evidence))
+    };
+    tokio::select! {
+        biased;
+        r = body => r,
+        _ = ticker => unreachable!("the ticker never ends"),
+    }
 }
 
 /// The AI gate: test generation and the variation check use the model
@@ -2463,11 +2737,22 @@ pub async fn run(
     )
     .await?;
     let llm = super::llama::LlamaClient::new(endpoint, cancel.clone())?;
+    // Start value of the remaining time: the speeds of the last run of this
+    // model, else conservative defaults.
     let settings = Settings {
         solutions: model.solutions as usize,
         repair_rounds: 1,
+        speeds: Some(
+            super::models::load_speeds(&model.id).unwrap_or_else(|| eta::default_speeds(&model.id)),
+        ),
     };
-    generate(&llm, &exec, &req, settings, cancel, |p| on_progress(p)).await
+    let r = generate(&llm, &exec, &req, settings, cancel, |p| on_progress(p)).await;
+    if let Some(speeds) = r.as_ref().ok().and_then(|r| r.stats.measured_speeds) {
+        if let Err(e) = super::models::save_speeds(&model.id, speeds) {
+            eprintln!("{e}");
+        }
+    }
+    r
 }
 
 #[cfg(test)]
@@ -2736,6 +3021,7 @@ mod tests {
         Settings {
             solutions: n,
             repair_rounds: 1,
+            speeds: None,
         }
     }
 
@@ -3346,7 +3632,7 @@ mod tests {
             &token,
             |p| {
                 phases.push((p.phase, p.current, p.total));
-                etas.push((p.phase, p.eta_seconds, p.tokens_per_second));
+                etas.push((p.phase, p.eta_seconds, p.eta_low_seconds, p.eta_text));
             },
         ))
         .unwrap();
@@ -3359,9 +3645,17 @@ mod tests {
             phases.contains(&(Phase::Majority, Some(2), Some(2))),
             "{phases:?}"
         );
-        // After the structure step the speed (20 tokens/s) gives an estimate.
-        assert!(etas.contains(&(Phase::Solutions, Some(18), Some(20.0))));
-        assert!(etas.contains(&(Phase::Solutions, Some(0), Some(20.0))));
+        // Every step has a remaining time (from the conservative defaults:
+        // the mock answers too fast to measure), a range low ≤ high.
+        for (phase, eta, low, text) in &etas {
+            let (Some(high), Some(low), Some(text)) = (eta, low, text) else {
+                panic!("{phase:?} without estimate");
+            };
+            assert!(low <= high && *low >= 1, "{phase:?} {low} {high}");
+            assert!(text.starts_with("ca. "), "{text}");
+        }
+        // The estimate shrinks from the start to the majority vote.
+        assert!(etas[0].1 > etas.last().unwrap().1);
     }
 
     #[test]
@@ -3404,15 +3698,54 @@ mod tests {
         assert_eq!(alternatives(&mode, &refs, &[0]).len(), MAX_ALTERNATIVES);
     }
 
+    fn plan(step: Step) -> Plan {
+        Plan {
+            step,
+            step_started: Instant::now(),
+            chars_per_token: 3.0,
+            structure_chars: 2910.0,
+            solution_chars: 2910.0,
+            inputs_chars: 2910.0,
+            solutions: 3,
+            parallel_inputs: true,
+            solution_tokens: Vec::new(),
+            compiled: true,
+            prior: eta::default_speeds("qwen2.5-coder-7b"),
+        }
+    }
+
     #[test]
-    fn eta_from_tokens_per_second() {
-        assert_eq!(eta_seconds(Phase::Solutions, 0, 3, None), None);
-        assert_eq!(eta_seconds(Phase::Solutions, 0, 3, Some(0.0)), None);
-        // 350 expected tokens at 7 tokens/s; parallel solutions count once.
-        assert_eq!(eta_seconds(Phase::Solutions, 0, 3, Some(7.0)), Some(50));
-        assert_eq!(eta_seconds(Phase::Solutions, 3, 3, Some(7.0)), Some(0));
-        assert_eq!(eta_seconds(Phase::Structure, 0, 1, Some(10.0)), Some(55));
-        assert_eq!(eta_seconds(Phase::Majority, 0, 3, Some(7.0)), None);
+    fn remaining_work_per_step() {
+        // 2910 characters: 970 + 30 prompt tokens per request.
+        let p = plan(Step::Structure);
+        let w = p.work(Step::Structure);
+        assert_eq!((w.prompt_tokens, w.gen_tokens), (1000.0, 250.0));
+        // The round: three solutions and the inputs together, plus the
+        // sandbox check.
+        let r = p.work(Step::Round);
+        assert_eq!(r.prompt_tokens, 4000.0);
+        assert_eq!(r.gen_tokens, 3.0 * 350.0 + 250.0);
+        assert_eq!(r.sandbox_seconds, 10.0);
+        // Without inputs alongside, and with real answer lengths.
+        let mut p = plan(Step::Round);
+        p.parallel_inputs = false;
+        p.solution_tokens = vec![200.0, 400.0];
+        assert_eq!(p.work(Step::Round).gen_tokens, 900.0);
+        assert_eq!(p.later(Step::Round).sandbox_seconds, 10.0);
+        assert_eq!(p.later(Step::Majority), eta::Work::default());
+        // Structure: the round and the majority vote are still to come.
+        let p = plan(Step::Structure);
+        let later = p.later(Step::Structure);
+        assert_eq!(later.gen_tokens, 1300.0);
+        assert_eq!(later.sandbox_seconds, 20.0);
+        // 7B defaults (6 / 1.5 tokens/s): 1000/6 + 250/1.5 ≈ 333 s for the
+        // structure, then ≈ 1570 s.
+        let e = eta::eta_range(p.work(Step::Structure), 0.0, later, p.prior).unwrap();
+        assert!(e.low > 1800 && e.low < 2000, "{e:?}");
+        assert!(e.high as f64 >= e.low as f64 * 1.29);
+        // Repairs carry the longer conversation.
+        let p = plan(Step::Repairs(2));
+        assert!(p.work(Step::Repairs(2)).prompt_tokens > 2.0 * 1000.0);
     }
 
     #[test]
@@ -4157,6 +4490,7 @@ mod tests {
             Settings {
                 solutions: 3,
                 repair_rounds: 0,
+                speeds: None,
             },
             &CancellationToken::new(),
             |_| {},

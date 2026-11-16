@@ -381,8 +381,12 @@ export interface AiProgress {
   current: number | null;
   total: number | null;
   tokensPerSecond: number | null;
-  /** Rough remaining time of the model work in seconds (null: unknown). */
+  /** Remaining time in seconds, upper end of the range (null: unknown). */
   etaSeconds: number | null;
+  /** Lower end of the range. */
+  etaLowSeconds?: number | null;
+  /** The range as text, e.g. "ca. 4–6 Min." (refreshed every few seconds). */
+  etaText?: string | null;
 }
 
 export const aiStatus = () => invoke<AiStatus>("ai_status");
