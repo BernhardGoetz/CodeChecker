@@ -130,13 +130,12 @@ pub fn ctx_size(parallel: usize) -> u32 {
     (parallel.max(1) as u32 * CTX_PER_SLOT).max(CTX_SIZE)
 }
 
-/// Threads for prompt processing (batches): all logical cores; this part
-/// is compute-bound and profits from hyper-threads.
+/// Threads for prompt processing (batches): the physical cores, like
+/// [`thread_count`]. Measured with the pinned build on a CPU: hyper-threads
+/// brought nothing for the prompt either, and more threads than cores made
+/// it about 8 % slower.
 pub fn batch_thread_count() -> usize {
-    std::thread::available_parallelism()
-        .map(|n| n.get())
-        .unwrap_or_else(|_| thread_count())
-        .clamp(1, 64)
+    thread_count()
 }
 
 /// Threads for inference: the physical cores (hyper-threads do not help).
@@ -173,8 +172,10 @@ pub struct ServerConfig {
     pub threads_batch: usize,
     /// Parallel slots (solutions generated at the same time).
     pub parallel: usize,
-    /// KV cache as q8_0 (half the memory of f16). Needs a head size that is
-    /// a multiple of 32; otherwise the start is retried without.
+    /// KV cache as q8_0 (half the memory of f16, but about 20 % slower
+    /// prompt processing): only when memory is short ([`kv_quant_needed`]).
+    /// Needs a head size that is a multiple of 32; otherwise the start is
+    /// retried without.
     pub kv_quant: bool,
 }
 
@@ -225,12 +226,33 @@ pub fn server_args(c: &ServerConfig) -> Vec<String> {
         args.extend(["--n-gpu-layers".into(), "0".into()]);
     }
     if c.kv_quant {
-        // Half the memory of the f16 default: leaves more for Docker.
+        // Half the memory of the f16 default: only when memory is short.
         for flag in ["--cache-type-k", "--cache-type-v"] {
             args.extend([flag.into(), "q8_0".into()]);
         }
     }
     args
+}
+
+/// Free memory beyond the model file below which the KV cache is
+/// quantized: the f16 cache of all slots needs up to about 1 GB (7B model,
+/// 16k tokens), plus room for the containers of the check.
+pub const KV_QUANT_HEADROOM: u64 = 2 * 1024 * 1024 * 1024;
+
+/// Whether the KV cache is stored as q8_0: only if the available memory
+/// (0 = unknown → f16) is below the model size plus [`KV_QUANT_HEADROOM`].
+/// q8_0 costs about 20–24 % of the prompt throughput, f16 is the default.
+/// Pure.
+pub fn kv_quant_needed(available_bytes: u64, model_bytes: u64) -> bool {
+    available_bytes > 0 && available_bytes < model_bytes.saturating_add(KV_QUANT_HEADROOM)
+}
+
+/// Memory available now (0 if unknown).
+fn available_memory() -> u64 {
+    use sysinfo::{MemoryRefreshKind, RefreshKind, System};
+    System::new_with_specifics(RefreshKind::nothing().with_memory(MemoryRefreshKind::everything()))
+        .map(|sys| sys.available_memory())
+        .unwrap_or(0)
 }
 
 /// Environment changes for llama-server: the API key, and no inherited
@@ -465,7 +487,8 @@ pub async fn ensure_running(
 
     let binary = server_path()?;
     on_status("KI-Modell wird geladen …".into());
-    let mut kv_quant = true;
+    let model_bytes = std::fs::metadata(model).map(|m| m.len()).unwrap_or(0);
+    let mut kv_quant = kv_quant_needed(available_memory(), model_bytes);
     loop {
         let config = ServerConfig {
             model: model.to_path_buf(),
@@ -1032,9 +1055,9 @@ mod tests {
             alias: "code-pruefer-abc".into(),
             template,
             threads: 6,
-            threads_batch: 12,
+            threads_batch: 6,
             parallel: 4,
-            kv_quant: true,
+            kv_quant: false,
         }
     }
 
@@ -1056,19 +1079,43 @@ mod tests {
         assert!(!args.iter().any(|a| a == "--chat-template"));
         assert_eq!(pair("--ctx-size"), "16384");
         assert_eq!(pair("--threads"), "6");
-        assert_eq!(pair("--threads-batch"), "12");
+        assert_eq!(pair("--threads-batch"), "6");
         assert_eq!(pair("--parallel"), "4");
         assert_eq!(pair("--flash-attn"), "on");
-        assert_eq!(pair("--cache-type-k"), "q8_0");
-        assert_eq!(pair("--cache-type-v"), "q8_0");
         for flag in ["--no-webui", "--offline", "--jinja", "--kv-unified"] {
             assert!(args.iter().any(|a| a == flag), "{flag}");
         }
-        let plain = server_args(&ServerConfig {
-            kv_quant: false,
+        // Default: f16 KV cache (no flag); q8_0 only when memory is short.
+        assert!(!args.iter().any(|a| a.starts_with("--cache-type")));
+        let quant = server_args(&ServerConfig {
+            kv_quant: true,
             ..config(ChatTemplate::FromModel)
         });
-        assert!(!plain.iter().any(|a| a.starts_with("--cache-type")));
+        let pair = |flag: &str| {
+            let i = quant.iter().position(|a| a == flag).expect(flag);
+            quant[i + 1].clone()
+        };
+        assert_eq!(pair("--cache-type-k"), "q8_0");
+        assert_eq!(pair("--cache-type-v"), "q8_0");
+    }
+
+    #[test]
+    fn kv_cache_is_quantized_only_when_memory_is_short() {
+        const GB: u64 = 1024 * 1024 * 1024;
+        let model = 5 * GB;
+        assert!(!kv_quant_needed(16 * GB, model));
+        assert!(!kv_quant_needed(7 * GB, model), "exactly enough");
+        assert!(kv_quant_needed(7 * GB - 1, model));
+        assert!(kv_quant_needed(4 * GB, model));
+        // Unknown memory: the fast default.
+        assert!(!kv_quant_needed(0, model));
+        assert!(!kv_quant_needed(3 * GB, 0));
+        assert!(kv_quant_needed(GB, 0));
+    }
+
+    #[test]
+    fn batch_threads_are_the_physical_cores() {
+        assert_eq!(batch_thread_count(), thread_count());
     }
 
     #[test]
