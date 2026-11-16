@@ -7,13 +7,10 @@ Format nach [Keep a Changelog](https://keepachangelog.com/de/1.1.0/), Versionen 
 
 ## [Unveröffentlicht]
 
+## [1.1.0] - 2026-11-16
+
 ### Hinzugefügt
 
-- Alte Prüf-Umgebungen werden automatisch gelöscht, um Speicherplatz zu sparen: Nach dem
-  Bereitstellen der aktuellen Images (beim Start und nach „Images aktualisieren“) entfernt
-  der Code-Prüfer im Hintergrund in Docker und Podman die eigenen Runner-Images, die älter
-  als die aktuelle und die vorherige Version sind. Neuere Versionen, selbst gebaute
-  `:dev`-Images, fremde Images und von Containern benutzte Images bleiben unangetastet.
 - Java: Die Hauptklasse muss nicht mehr `Main` heißen. Gestartet wird die Klasse mit
   `public static void main(String[] args)` (auch `String... args`, `final`,
   Annotationen); die Datei heißt nach der `public`-Klasse (z. B. `Time.java`).
@@ -24,16 +21,6 @@ Format nach [Keep a Changelog](https://keepachangelog.com/de/1.1.0/), Versionen 
 - KI: Nennt das Aufgabenblatt eine Java-Klasse (z. B. „Öffnen Sie die bereitgestellte
   Java-Klasse `Time`“ oder „Time.java“), schreibt die KI ihre Lösungen mit diesem
   Klassennamen, sonst wie bisher mit `Main`.
-- Neue Einsteiger-Anleitung `docs/WARNUNG_BEIM_INSTALLIEREN.md`: warum Windows
-  (SmartScreen, Smart App Control) und macOS (Gatekeeper) beim Installieren warnen, wie
-  man die Warnung Schritt für Schritt übergeht und wie man die Echtheit der Datei mit
-  `SHA256SUMS.txt` prüft.
-- KI-Testfälle: Ausgabevorlagen mit ausdrücklich erklärtem Platzhalter („12345678 ist ein
-  Platzhalter“) oder eindeutigen Platzhaltern (`<n>`, `___`, `XX.XX`, `[Name]`) nach
-  „Ausgabe:“ werden jetzt auch ohne die KI erkannt und mit den Vorlagen der KI zusammengeführt.
-- KI-Testfälle: Unter „Zeit je Schritt“ zeigt die Statistik, wie lange Analyse, Lösungen,
-  Reparatur, Testeingaben und Mehrheitsentscheid gedauert haben (dazu die verarbeiteten
-  Prompt-Token), damit sich messen lässt, wo die Zeit bleibt.
 - KI-Testfälle tolerieren Eingabeaufforderungen: Schreibt ein Programm vor dem Einlesen
   einen Text wie „Zahl eingeben: “ (Python `input("…")`, Java `System.out.print("…")`),
   besteht es einen KI-Testfall trotzdem, wenn die Werte stimmen; das Ergebnis nennt die
@@ -42,24 +29,52 @@ Format nach [Keep a Changelog](https://keepachangelog.com/de/1.1.0/), Versionen 
   bearbeiteter KI-Testfall bleibt markiert (mit Hinweis bei geänderter Erwartung); per
   Häkchen „KI-Markierung entfernen“ wird er wie handgeschrieben streng geprüft. Der
   Variationstest wertet ebenso.
-- Testfälle mit KI: Geben einige der erzeugten Lösungen Eingabeaufforderungen aus, wird
-  die Ausgabe ohne sie als Erwartung genommen (Einstufung dann höchstens Gelb).
+- KI-Testfälle: Ausgabevorlagen mit ausdrücklich erklärtem Platzhalter („12345678 ist ein
+  Platzhalter“) oder eindeutigen Platzhaltern (`<n>`, `___`, `XX.XX`, `[Name]`) nach
+  „Ausgabe:“ werden jetzt auch ohne die KI erkannt und mit den Vorlagen der KI
+  zusammengeführt.
+- KI-Testfälle: Unter „Zeit je Schritt“ zeigt die Statistik, wie lange Analyse, Lösungen,
+  Reparatur, Testeingaben und Mehrheitsentscheid gedauert haben (dazu die verarbeiteten
+  Prompt-Token), damit sich messen lässt, wo die Zeit bleibt.
+- Alte Prüf-Umgebungen werden automatisch gelöscht, um Speicherplatz zu sparen: Nach dem
+  Bereitstellen der aktuellen Images (beim Start und nach „Images aktualisieren“) entfernt
+  der Code-Prüfer im Hintergrund in Docker und Podman die eigenen Runner-Images, die älter
+  als die aktuelle und die vorherige Version sind. Neuere Versionen, selbst gebaute
+  `:dev`-Images, fremde Images und von Containern benutzte Images bleiben unangetastet.
+- Neue Einsteiger-Anleitung `docs/WARNUNG_BEIM_INSTALLIEREN.md`: warum Windows
+  (SmartScreen, Smart App Control) und macOS (Gatekeeper) beim Installieren warnen, wie
+  man die Warnung Schritt für Schritt übergeht und wie man die Echtheit der Datei mit
+  `SHA256SUMS.txt` prüft.
 
 ### Geändert
 
+- KI-Testfälle schneller: Liest eine Aufgabe keine Eingabe, erzeugt die KI keine
+  Testeingaben mehr; es gibt einen Test mit leerer Eingabe. Ein Probelauf mit Eingabe prüft
+  diese Einschätzung; liest das Programm doch etwas, werden die Eingaben nachträglich
+  erzeugt.
+- KI-Testfälle schneller: Bei Aufgaben ohne Eingabe wird nicht auf die letzte Lösung
+  gewartet, wenn die Mehrheit schon feststeht und dadurch keine bessere Konfidenz verloren
+  geht. Nicht abgewartete Lösungen zählen als Gegenstimme; die Konfidenz nennt den
+  vorzeitigen Abschluss.
+- KI-Testfälle passen besser zur Aufgabe: Die KI bekommt für die Testeingaben das
+  Ausgabeformat, die Beispielpaare des Blatts und die Grenzen der Eingabe (neu erkannt,
+  z. B. „1 <= n <= 1000“); die Eingaben sollen die Grenzen einhalten und keine Fälle
+  enthalten, die das Programm laut Aufgabe nicht verarbeiten muss. Der Variationstest
+  nutzt die Grenzen ebenfalls.
+- KI-Testfälle: Brechen alle Lösungen bei einer KI-Eingabe ab oder überschreiten das
+  Zeitlimit, wird die Eingabe als „passt nicht zur Aufgabe“ weggelassen und nur als Hinweis
+  genannt (kein Grund mehr für Gelb). Von KI-Testfällen mit derselben erwarteten Ausgabe
+  werden höchstens drei übernommen.
+- KI-Testfälle: Geben einige der erzeugten Lösungen Eingabeaufforderungen aus, wird die
+  Ausgabe ohne sie als Erwartung genommen (Einstufung dann höchstens Gelb). Auch die
+  Java-Lösungen der KI sollen keine Eingabeaufforderungen mehr ausgeben (wie schon bei
+  Python).
+- Mehrere Ausgabevorlagen werden als Folge geprüft: Eine Ausgabe passt, wenn sie zu einer
+  Vorlage passt oder aus mehreren Vorlagen in der Reihenfolge des Blatts besteht.
 - „Testfälle mit KI“: Die Musterlösung ist standardmäßig verborgen und wird über die
   Schaltfläche „Musterlösung anzeigen“ / „Musterlösung ausblenden“ vollständig ein- bzw.
   ausgeblendet (barrierefrei mit `aria-expanded`). Nach jeder neuen KI-Erzeugung ist sie
   wieder verborgen.
-- KI-Testfälle schneller: Liest eine Aufgabe keine Eingabe, erzeugt die KI keine Testeingaben
-  mehr; es gibt einen Test mit leerer Eingabe. Ein Probelauf mit Eingabe prüft diese
-  Einschätzung; liest das Programm doch etwas, werden die Eingaben nachträglich erzeugt.
-- KI-Testfälle schneller: Bei Aufgaben ohne Eingabe wird nicht auf die letzte Lösung gewartet,
-  wenn die Mehrheit schon feststeht und dadurch keine bessere Konfidenz verloren geht. Nicht
-  abgewartete Lösungen zählen als Gegenstimme; die Konfidenz nennt den vorzeitigen Abschluss.
-- Mehrere Ausgabevorlagen werden als Folge geprüft: Eine Ausgabe passt, wenn sie zu einer
-  Vorlage passt oder aus mehreren Vorlagen in der Reihenfolge des Blatts besteht.
-
 - README: Der Weg zum ersten Start unter macOS folgt jetzt der Anleitung von Apple
   (Systemeinstellungen → „Datenschutz und Sicherheit“ → „Dennoch öffnen“); der
   Rechtsklick-Weg funktioniert seit macOS 15 nicht mehr.
@@ -84,6 +99,9 @@ Format nach [Keep a Changelog](https://keepachangelog.com/de/1.1.0/), Versionen 
 - KI-Testfälle: Passt keine einzige Ausgabe zur erkannten Vorlage, obwohl alle Lösungen
   einig sind, wird die Vorlage verworfen (höchstens „Gelb“, mit Hinweis); sind sie sich
   nicht einig, nennt „Rot“ jetzt die Vorlage als Grund statt „nicht mehrheitlich einig“.
+- KI-Testfälle: Ein Beispiel aus dem Blatt zählt nur noch, wenn seine Ausgabe nach der
+  Eingabe und nahe bei ihr steht. Bisher reichte es, dass Eingabe und Ausgabe irgendwo im
+  Text vorkamen (bei kurzen Eingaben wie „5“ fast immer).
 - Kompatibilität mit sysinfo 0.40 (Dependabot-Update): Der Code wurde an die neue API
   angepasst; ohne diese Anpassung ließ sich `main` nicht bauen.
 
@@ -188,7 +206,8 @@ Erste stabile Version.
   und Notarisierung sind noch nicht eingerichtet); SmartScreen und Gatekeeper warnen beim
   ersten Start.
 
-[Unveröffentlicht]: https://github.com/BernhardGoetz/CodeChecker/compare/v1.0.3...HEAD
+[Unveröffentlicht]: https://github.com/BernhardGoetz/CodeChecker/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/BernhardGoetz/CodeChecker/compare/v1.0.3...v1.1.0
 [1.0.3]: https://github.com/BernhardGoetz/CodeChecker/compare/v1.0.2...v1.0.3
 [1.0.2]: https://github.com/BernhardGoetz/CodeChecker/compare/v1.0.1...v1.0.2
 [1.0.1]: https://github.com/BernhardGoetz/CodeChecker/compare/v1.0.0...v1.0.1
