@@ -85,7 +85,9 @@ function report(req: RunRequest): RunReport {
     total: req.tests.length,
     tests: req.tests.map((t, i) => {
       const failed = i === 1;
-      const stdout = failed ? "Hallo, Anna! \nHallo,Ben!\n" : t.expected;
+      // AI tests: the first one shows the prompt tolerance.
+      const prompt = !failed && t.origin === "ai" && i === req.tests.findIndex((x) => x.origin === "ai");
+      const stdout = failed ? "Hallo, Anna! \nHallo,Ben!\n" : prompt ? `Name eingeben: ${t.expected}` : t.expected;
       return {
         index: i,
         name: t.name,
@@ -99,8 +101,9 @@ function report(req: RunRequest): RunReport {
               { kind: "actual", text: "Hallo,Ben!", finalNewline: true },
             ]
           : [],
-        message: null,
+        message: prompt ? "Eingabeaufforderungen wurden ignoriert (KI-Testfall): „Name eingeben:“." : null,
         onlyTrailingWhitespaceDiffers: false,
+        promptsIgnored: prompt ? ["Name eingeben:"] : [],
       };
     }),
   };

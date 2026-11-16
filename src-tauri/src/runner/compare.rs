@@ -160,33 +160,38 @@ impl CompareMode {
     pub fn matches(&self, expected: &str, actual: &str) -> bool {
         match *self {
             CompareMode::Lines { trim } => outputs_match(expected, actual, trim),
-            CompareMode::Tokens { case_sensitive } => {
+            CompareMode::Tokens { .. } | CompareMode::Float { .. } => {
                 let (mut e, mut a) = (tokens(expected), tokens(actual));
                 loop {
                     match (e.next(), a.next()) {
                         (None, None) => return true,
-                        (Some(x), Some(y))
-                            if x == y
-                                || (!case_sensitive && x.to_lowercase() == y.to_lowercase()) => {}
+                        (Some(x), Some(y)) if self.token_matches(x, y) => {}
                         _ => return false,
                     }
                 }
             }
+        }
+    }
+
+    /// Whether the single token `actual` is accepted for `expected`
+    /// (`Tokens`: optionally case-insensitive, `Float`: numbers within the
+    /// tolerance; `Lines`: exact).
+    pub fn token_matches(&self, expected: &str, actual: &str) -> bool {
+        if expected == actual {
+            return true;
+        }
+        match *self {
+            CompareMode::Lines { .. } => false,
+            CompareMode::Tokens { case_sensitive } => {
+                !case_sensitive && expected.to_lowercase() == actual.to_lowercase()
+            }
             CompareMode::Float { abs_tol, rel_tol } => {
-                let (mut e, mut a) = (tokens(expected), tokens(actual));
-                loop {
-                    match (e.next(), a.next()) {
-                        (None, None) => return true,
-                        (Some(x), Some(y)) if x == y => {}
-                        (Some(x), Some(y)) if is_number(x) && is_number(y) => {
-                            match (x.parse::<f64>(), y.parse::<f64>()) {
-                                (Ok(x), Ok(y)) if floats_match(x, y, abs_tol, rel_tol) => {}
-                                _ => return false,
-                            }
-                        }
-                        _ => return false,
-                    }
-                }
+                is_number(expected)
+                    && is_number(actual)
+                    && matches!(
+                        (expected.parse::<f64>(), actual.parse::<f64>()),
+                        (Ok(x), Ok(y)) if floats_match(x, y, abs_tol, rel_tol)
+                    )
             }
         }
     }

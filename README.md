@@ -294,6 +294,8 @@ So kann auch fremder oder fehlerhafter Code deinen Rechner nicht beschädigen.
 
 Zusätzlich gibt es die Option **„Zeilenumbruch am Ende verbieten“**: Dann gilt eine Ausgabe, die mit einem Zeilenumbruch endet (z. B. durch `println` oder `print()`), als nicht bestanden – egal, was erwartet wird.
 
+**Eingabeaufforderungen bei KI-Testfällen.** Viele Programme schreiben vor dem Einlesen eine Aufforderung wie „Zahl eingeben: “ (Python `input("Zahl eingeben: ")`, Java `System.out.print("Name: ")`). Bei **KI-Testfällen** (Markierung „KI“) zählt so ein Text nicht als Ausgabe: Passt die Ausgabe erst ohne ihn, gilt der Test als bestanden, und im Ergebnis steht „Eingabeaufforderungen wurden ignoriert (KI-Testfall)“ mit dem ignorierten Text. Ein falscher Wert besteht nie, Beschriftungen wie „Ergebnis:“ oder „Summe:“ gelten nie als Aufforderung, und ohne Eingabe wird nichts ignoriert. **Selbst geschriebene Testfälle werden immer streng geprüft.** Ein KI-Testfall bleibt auch nach dem Bearbeiten (auch der erwarteten Ausgabe) ein KI-Testfall; streng geprüft wird er erst, wenn du bei ihm das Häkchen „KI-Markierung entfernen“ setzt.
+
 **Ergebnisse.** Pro Testfall siehst du einen Status:
 
 | Status | Bedeutung |
