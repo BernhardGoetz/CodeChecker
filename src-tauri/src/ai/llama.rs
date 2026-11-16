@@ -811,6 +811,26 @@ pub struct ChatResponse {
 pub trait Llm {
     fn chat(&self, req: &ChatRequest)
         -> impl Future<Output = Result<ChatResponse, AiError>> + Send;
+
+    /// `n` answers to the same request. llama-server processes the prompt
+    /// once and copies it into `n` slots (`/completion` with `"n"`); each
+    /// answer has its own seed. All answers arrive together. The default
+    /// sends `n` separate requests at the same time (mocks).
+    fn chat_n(
+        &self,
+        req: &ChatRequest,
+        n: usize,
+    ) -> impl Future<Output = Result<Vec<ChatResponse>, AiError>> + Send
+    where
+        Self: Sync,
+    {
+        async move {
+            futures_util::future::join_all((0..n).map(|_| self.chat(req)))
+                .await
+                .into_iter()
+                .collect()
+        }
+    }
 }
 
 // The client uses llama-server's native endpoints: `/apply-template`
@@ -842,6 +862,16 @@ pub fn completion_body(prompt: &str, req: &ChatRequest) -> Value {
     }
     if !req.stop.is_empty() {
         body["stop"] = json!(req.stop);
+    }
+    body
+}
+
+/// Body for `/completion` with `n` answers (`n_cmpl`, alias `n`; at most
+/// the number of slots, `--parallel`).
+pub fn completion_body_n(prompt: &str, req: &ChatRequest, n: usize) -> Value {
+    let mut body = completion_body(prompt, req);
+    if n > 1 {
+        body["n"] = json!(n);
     }
     body
 }
@@ -917,6 +947,28 @@ pub fn parse_completion(raw: &str) -> Result<ChatResponse, AiError> {
     })
 }
 
+/// Parses a `/completion` answer with `n` results: an array (a single
+/// result is a plain object). Each child slot reports the parent's prompt
+/// timings (the prompt was processed once and copied).
+pub fn parse_completions(raw: &str, n: usize) -> Result<Vec<ChatResponse>, AiError> {
+    let v: Value = serde_json::from_str(raw)
+        .map_err(|e| AiError::Http(format!("Unerwartete Antwort ({e})")))?;
+    let items = match v {
+        Value::Array(items) => items,
+        other => vec![other],
+    };
+    if items.len() != n {
+        return Err(AiError::Http(format!(
+            "Unerwartete Antwort ({} statt {n} Ergebnisse)",
+            items.len()
+        )));
+    }
+    items
+        .iter()
+        .map(|item| parse_completion(&item.to_string()))
+        .collect()
+}
+
 /// HTTP client for the running llama-server.
 pub struct LlamaClient {
     http: reqwest::Client,
@@ -990,6 +1042,29 @@ impl Llm for LlamaClient {
                 .post("/completion", &completion_body(&prompt, req))
                 .await?;
             Ok(assemble_answer(req, parse_completion(&raw)?))
+        };
+        tokio::select! {
+            biased;
+            _ = self.cancel.cancelled() => Err(AiError::Cancelled),
+            r = send => r,
+        }
+    }
+
+    async fn chat_n(&self, req: &ChatRequest, n: usize) -> Result<Vec<ChatResponse>, AiError> {
+        if n <= 1 {
+            return Ok(vec![self.chat(req).await?]);
+        }
+        // Dropping the request on cancel closes the connection; the server
+        // then stops all child slots.
+        let send = async {
+            let prompt = full_prompt(&self.template(req).await?, req);
+            let raw = self
+                .post("/completion", &completion_body_n(&prompt, req, n))
+                .await?;
+            Ok(parse_completions(&raw, n)?
+                .into_iter()
+                .map(|r| assemble_answer(req, r))
+                .collect())
         };
         tokio::select! {
             biased;
@@ -1312,10 +1387,17 @@ mod tests {
                         }
                         let path = text.split_whitespace().nth(1).unwrap_or("").to_string();
                         *counts.lock().unwrap().entry(path.clone()).or_default() += 1;
+                        let request: Value = serde_json::from_slice(&buf[end + 4..end + 4 + len])
+                            .unwrap_or_default();
+                        let one = r#"{"content":"x","tokens_predicted":1,"stop_type":"eos","timings":{"prompt_n":40,"prompt_ms":400.0,"predicted_per_second":10.0}}"#;
                         let body = if path == "/apply-template" {
-                            r#"{"prompt":"<p>"}"#
+                            r#"{"prompt":"<p>"}"#.to_string()
+                        } else if let Some(n) = request["n"].as_u64() {
+                            // Like llama-server: an array, the prompt
+                            // timings copied into every child.
+                            format!("[{}]", vec![one; n as usize].join(","))
                         } else {
-                            r#"{"content":"x","tokens_predicted":1,"stop_type":"eos"}"#
+                            one.to_string()
                         };
                         let resp = format!(
                             "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
@@ -1360,6 +1442,54 @@ mod tests {
         assert_eq!(c.get("/apply-template"), Some(&2), "{c:?}");
         assert_eq!(c.get("/completion"), Some(&4), "{c:?}");
         assert_eq!(client.template_calls(), 2);
+        // n answers: one template call (cached), one completion request.
+        let rs = client.chat_n(&same, 3).await.unwrap();
+        assert_eq!(rs.len(), 3);
+        assert!(rs.iter().all(|r| r.content == "x"));
+        let c = counts.lock().unwrap().clone();
+        assert_eq!(c.get("/completion"), Some(&5), "{c:?}");
+        assert_eq!(client.template_calls(), 2);
+        assert_eq!(client.chat_n(&same, 1).await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn cancel_stops_a_request_with_n_answers() {
+        // A server that accepts but never answers.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let mut keep = Vec::new();
+            while let Ok((sock, _)) = listener.accept().await {
+                keep.push(sock);
+            }
+        });
+        let cancel = CancellationToken::new();
+        let client = LlamaClient::new(
+            Endpoint {
+                base_url: format!("http://{addr}"),
+                api_key: "k".into(),
+            },
+            cancel.clone(),
+        )
+        .unwrap();
+        let req = ChatRequest {
+            messages: vec![ChatMessage::user("u")],
+            temperature: 0.7,
+            max_tokens: 5,
+            json_schema: None,
+            seed: None,
+            prefill: None,
+            stop: Vec::new(),
+        };
+        let c = cancel.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            c.cancel();
+        });
+        let r = tokio::time::timeout(Duration::from_secs(5), client.chat_n(&req, 3))
+            .await
+            .expect("cancel ends the request");
+        assert!(matches!(r, Err(AiError::Cancelled)));
     }
 
     #[test]
@@ -1412,11 +1542,17 @@ mod tests {
             &ChatRequest {
                 json_schema: None,
                 seed: None,
-                ..req
+                ..req.clone()
             },
         );
         assert!(plain.get("json_schema").is_none());
         assert!(plain.get("seed").is_none());
+        // n answers in one request; prefill, stop and schema stay the same.
+        let many = completion_body_n("<p>", &req, 3);
+        assert_eq!(many["n"], 3);
+        assert_eq!(many["json_schema"]["type"], "object");
+        assert_eq!(many["n_predict"], 100);
+        assert!(completion_body_n("<p>", &req, 1).get("n").is_none());
     }
 
     #[test]
@@ -1440,5 +1576,14 @@ mod tests {
         assert_eq!(r.tokens_per_second, None);
         assert_eq!((r.prompt_tokens, r.prompt_ms), (None, None));
         assert!(parse_completion("kaputt").is_err());
+        // n results: an array; a single result is an object.
+        let arr = format!("[{raw},{raw},{raw}]");
+        let rs = parse_completions(&arr, 3).unwrap();
+        assert_eq!(rs.len(), 3);
+        assert!(rs.iter().all(|r| r.content == "hallo"));
+        assert_eq!(parse_completions(raw, 1).unwrap()[0].content, "hallo");
+        assert!(parse_completions(&arr, 2).is_err(), "count must match");
+        assert!(parse_completions(raw, 3).is_err());
+        assert!(parse_completions("kaputt", 3).is_err());
     }
 }

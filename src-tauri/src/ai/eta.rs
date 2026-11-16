@@ -157,6 +157,56 @@ pub struct Sample {
     pub gen_tps: Option<f64>,
 }
 
+impl Sample {
+    /// One request with `n` answers (llama-server `"n"`): the prompt was
+    /// processed once (every child slot reports the same prompt timings,
+    /// counted once here), the answers were generated at the same time
+    /// (output tokens and slot speeds add up). `None` for no answers. Pure.
+    pub fn combine(samples: &[Sample]) -> Option<Sample> {
+        let max_u = |f: fn(&Sample) -> Option<u64>| samples.iter().filter_map(f).max();
+        let sum_u = |f: fn(&Sample) -> Option<u64>| {
+            let v: Vec<u64> = samples.iter().filter_map(f).collect();
+            (!v.is_empty()).then(|| v.iter().sum())
+        };
+        let prompt_ms = samples
+            .iter()
+            .filter_map(|s| s.prompt_ms)
+            .fold(None, |m: Option<f64>, x| Some(m.map_or(x, |m| m.max(x))));
+        let tps: Vec<f64> = samples.iter().filter_map(|s| s.gen_tps).collect();
+        (!samples.is_empty()).then(|| Sample {
+            prompt_tokens: max_u(|s| s.prompt_tokens),
+            prompt_ms,
+            gen_tokens: sum_u(|s| s.gen_tokens),
+            gen_tps: (!tps.is_empty()).then(|| tps.iter().sum()),
+        })
+    }
+}
+
+/// Wall time covered by the intervals `(start, end)` (overlaps counted
+/// once): requests running at the same time process their prompts in the
+/// same batches, so their prompt times must not be added up. Pure.
+pub fn covered_seconds(spans: &[(f64, f64)]) -> f64 {
+    let mut v: Vec<(f64, f64)> = spans
+        .iter()
+        .copied()
+        .filter(|(a, b)| a.is_finite() && b.is_finite() && b > a)
+        .collect();
+    v.sort_by(|x, y| x.0.total_cmp(&y.0));
+    let mut total = 0.0;
+    let mut current: Option<(f64, f64)> = None;
+    for (a, b) in v {
+        match current {
+            Some((ca, cb)) if a <= cb => current = Some((ca, cb.max(b))),
+            Some((ca, cb)) => {
+                total += cb - ca;
+                current = Some((a, b));
+            }
+            None => current = Some((a, b)),
+        }
+    }
+    total + current.map_or(0.0, |(a, b)| b - a)
+}
+
 impl Meter {
     fn advance(&mut self, now: f64) {
         let dt = (now - self.last_s).max(0.0);
@@ -264,6 +314,54 @@ mod tests {
         prompt_tps: 6.0,
         gen_tps: 1.5,
     };
+
+    #[test]
+    fn answers_of_one_request_are_combined() {
+        // Three answers of one request: prompt once, outputs added up.
+        let one = |gen: u64| Sample {
+            prompt_tokens: Some(600),
+            prompt_ms: Some(30_000.0),
+            gen_tokens: Some(gen),
+            gen_tps: Some(4.0),
+        };
+        let c = Sample::combine(&[one(300), one(250), one(350)]).unwrap();
+        assert_eq!(c.prompt_tokens, Some(600));
+        assert_eq!(c.prompt_ms, Some(30_000.0));
+        assert_eq!(c.gen_tokens, Some(900));
+        assert_eq!(c.gen_tps, Some(12.0));
+        assert!(Sample::combine(&[]).is_none());
+        let empty = Sample::combine(&[Sample::default()]).unwrap();
+        assert_eq!(
+            (
+                empty.prompt_tokens,
+                empty.prompt_ms,
+                empty.gen_tokens,
+                empty.gen_tps
+            ),
+            (None, None, None, None)
+        );
+        // The meter then measures the server throughput: 600 prompt
+        // tokens and 900 output tokens in 105 s of wall time.
+        let mut m = Meter::default();
+        let s = m.start(0.0);
+        m.finish(105.0, s, Some(c));
+        let v = m.measured(SLOW).unwrap();
+        let wall = 600.0 / v.prompt_tps + 900.0 / v.gen_tps;
+        assert!((wall - 105.0).abs() < 1e-6, "{wall}");
+    }
+
+    #[test]
+    fn overlapping_prompt_times_count_once() {
+        // Three requests processing their prompts in the same batches.
+        assert_eq!(
+            covered_seconds(&[(0.0, 30.0), (0.0, 30.0), (1.0, 31.0)]),
+            31.0
+        );
+        assert_eq!(covered_seconds(&[(10.0, 20.0), (0.0, 5.0)]), 15.0);
+        assert_eq!(covered_seconds(&[(0.0, 10.0), (2.0, 4.0)]), 10.0);
+        assert_eq!(covered_seconds(&[]), 0.0);
+        assert_eq!(covered_seconds(&[(5.0, 5.0), (3.0, 1.0)]), 0.0);
+    }
 
     #[test]
     fn defaults_by_model_size() {

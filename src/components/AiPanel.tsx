@@ -249,8 +249,6 @@ export function AiPanel({
             {result.stats.fixedValues && " (feste Werte laut Aufgabentext)"}
             {(result.stats.solutionsReadInput ?? 0) > 0 &&
               ` · ${result.stats.solutionsReadInput} Lösung(en) lasen trotzdem eine Eingabe (verworfen)`}
-            {(result.stats.solutionsCancelled ?? 0) > 0 &&
-              ` · ${result.stats.solutionsCancelled} Lösung(en) nicht abgewartet`}
             {(result.stats.inputsInvalid ?? 0) > 0 &&
               ` · ${result.stats.inputsInvalid} ungültige KI-Eingabe(n) nicht übernommen`}
             {(result.stats.testsRedundant ?? 0) > 0 &&

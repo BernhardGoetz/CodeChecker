@@ -329,8 +329,6 @@ export interface GenerateStats {
   testsRedundant?: number;
   /** The task reads no input (confirmed): no inputs were requested from the model. */
   noInput?: boolean;
-  /** Solutions not waited for because the majority was already certain. */
-  solutionsCancelled?: number;
   /** The task text gives fixed values and asks for no input (recognised without the model). */
   fixedValues?: boolean;
   /** Solutions that read input although the task reads none (after the repair round). */
