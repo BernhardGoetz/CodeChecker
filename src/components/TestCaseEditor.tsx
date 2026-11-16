@@ -1,5 +1,5 @@
 import { useState } from "react";
-import type { CompareMode, TestCase } from "../api";
+import type { AlternativeOutput, CompareMode, TestCase } from "../api";
 import { CompareModeSelect } from "./CompareModeSelect";
 import { endingStatus, endsWithNewline } from "./VisibleWhitespace";
 
@@ -26,6 +26,44 @@ export const newTestCase = (n: number): TestCase => ({
   input: "",
   expected: "",
 });
+
+/** "67 %" */
+const percent = (x: number) => `${Math.round(x * 100)} %`;
+
+/**
+ * The AI solutions disagreed on this input: the expected output is the
+ * majority's, the other outputs are shown so that it can be checked by hand.
+ */
+function Disagreement({
+  agreement,
+  alternatives,
+}: {
+  agreement: number | undefined;
+  alternatives: AlternativeOutput[];
+}) {
+  const others = alternatives.reduce((n, a) => n + a.count, 0);
+  return (
+    <div className="note warn ai-disagreement">
+      <p>
+        Die KI-Lösungen waren sich nicht einig
+        {agreement !== undefined && ` (Übereinstimmung ${percent(agreement)})`}. Die erwartete Ausgabe
+        stammt von der Mehrheit – bitte anhand der Aufgabe prüfen. Andere Lösungen ({others}) gaben aus:
+      </p>
+      {alternatives.map((a, i) => (
+        <div key={i}>
+          <span className="muted">
+            {a.count} {a.count === 1 ? "Lösung" : "Lösungen"}
+            {a.truncated && " (gekürzt)"}:
+          </span>
+          <pre className="output">
+            {a.output}
+            {a.truncated && "…"}
+          </pre>
+        </div>
+      ))}
+    </div>
+  );
+}
 
 export function TestCaseEditor({
   tests,
@@ -134,6 +172,9 @@ export function TestCaseEditor({
           </div>
           {t.origin === "ai" && (
             <div className="testcase-origin small">
+              {t.aiAlternatives && t.aiAlternatives.length > 0 && (
+                <Disagreement agreement={t.aiAgreement} alternatives={t.aiAlternatives} />
+              )}
               {t.aiExpected !== undefined && t.expected !== t.aiExpected && (
                 <p className="muted">
                   Erwartung geändert – der Testfall ist weiterhin als KI-Testfall markiert und wird
@@ -146,7 +187,13 @@ export function TestCaseEditor({
                   type="checkbox"
                   checked={false}
                   onChange={(e) => {
-                    if (e.target.checked) update(t.id, { origin: undefined, aiExpected: undefined });
+                    if (e.target.checked)
+                      update(t.id, {
+                        origin: undefined,
+                        aiExpected: undefined,
+                        aiAgreement: undefined,
+                        aiAlternatives: undefined,
+                      });
                   }}
                 />{" "}
                 KI-Markierung entfernen (Testfall wie handgeschrieben streng prüfen)

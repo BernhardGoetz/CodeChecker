@@ -80,6 +80,11 @@ function phaseTimes(stats: GenerateResult["stats"]): string | null {
   return text ? text + prompt : null;
 }
 
+/** Number of tests on which the solutions disagreed (with outputs to show). */
+function disagreeing(r: GenerateResult): number {
+  return r.tests.filter((t) => (t.alternatives ?? []).length > 0).length;
+}
+
 export function modeName(m: CompareMode): string {
   if (m.kind === "lines") return "Zeilen (exakt)";
   if (m.kind === "tokens") return "Wörter (Leerraum egal)";
@@ -250,6 +255,36 @@ export function AiPanel({
             {result.stats.tokensPerSecond !== null &&
               ` · ${result.stats.tokensPerSecond.toFixed(1).replace(".", ",")} Token/s`}
           </p>
+          {disagreeing(result) > 0 && (
+            <div className="note warn small">
+              Bei {disagreeing(result)} {disagreeing(result) === 1 ? "Testfall" : "Testfällen"} waren sich die
+              Lösungen nicht einig. Die abweichenden Ausgaben stehen beim jeweiligen Testfall (Reiter
+              „Testfälle“) – bitte die erwartete Ausgabe dort prüfen.
+              <details>
+                <summary>Abweichende Ausgaben anzeigen</summary>
+                {result.tests
+                  .filter((t) => (t.alternatives ?? []).length > 0)
+                  .map((t) => (
+                    <div key={t.name}>
+                      <strong>{t.name}</strong>: übernommen (Mehrheit, {Math.round(t.agreement * 100)} %)
+                      <pre className="output">{t.expected}</pre>
+                      Andere Lösungen gaben aus:
+                      {(t.alternatives ?? []).map((a, i) => (
+                        <div key={i}>
+                          <span className="muted">
+                            {a.count}× {a.truncated && "(gekürzt)"}
+                          </span>
+                          <pre className="output">
+                            {a.output}
+                            {a.truncated && "…"}
+                          </pre>
+                        </div>
+                      ))}
+                    </div>
+                  ))}
+              </details>
+            </div>
+          )}
           {phaseTimes(result.stats) && (
             <details className="small muted">
               <summary>Zeit je Schritt</summary>

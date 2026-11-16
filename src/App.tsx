@@ -394,6 +394,8 @@ export default function App() {
         expected: t.expected,
         origin: "ai" as const,
         aiExpected: t.expected,
+        aiAgreement: t.agreement,
+        aiAlternatives: t.alternatives ?? [],
       })),
     ]);
   };

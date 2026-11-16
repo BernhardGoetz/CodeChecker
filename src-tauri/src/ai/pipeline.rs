@@ -104,6 +104,60 @@ pub struct GeneratedTest {
     pub source: TestSource,
     /// Share of surviving solutions that produced this output.
     pub agreement: f64,
+    /// Outputs of the solutions outside the majority (agreement below
+    /// 100 %): shown so that the expectation can be checked by hand.
+    pub alternatives: Vec<Alternative>,
+}
+
+/// A differing output of the minority (see [`alternatives`]).
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Alternative {
+    /// The output, cut to [`MAX_ALTERNATIVE_CHARS`].
+    pub output: String,
+    pub truncated: bool,
+    /// Number of solutions that printed it.
+    pub count: usize,
+}
+
+/// Longest alternative output shown.
+pub const MAX_ALTERNATIVE_CHARS: usize = 400;
+/// At most this many different alternative outputs per test.
+pub const MAX_ALTERNATIVES: usize = 3;
+
+/// The valid outputs of the solutions outside `members` (the majority
+/// including outputs merged for input prompts), grouped per comparison
+/// mode, largest group first, cut to [`MAX_ALTERNATIVES`] and
+/// [`MAX_ALTERNATIVE_CHARS`]. Crashes and timeouts are not shown (they
+/// have no output to compare). Pure.
+pub fn alternatives(
+    mode: &CompareMode,
+    outputs: &[Option<&StepOutput>],
+    members: &[usize],
+) -> Vec<Alternative> {
+    let others: Vec<&str> = outputs
+        .iter()
+        .enumerate()
+        .filter(|(i, o)| !members.contains(i) && o.is_some_and(valid))
+        .map(|(_, o)| o.map_or("", |o| o.stdout.as_str()))
+        .collect();
+    group_outputs(mode, &others)
+        .into_iter()
+        .take(MAX_ALTERNATIVES)
+        .map(|g| {
+            let text = others[g[0]];
+            let truncated = text.chars().count() > MAX_ALTERNATIVE_CHARS;
+            Alternative {
+                output: if truncated {
+                    text.chars().take(MAX_ALTERNATIVE_CHARS).collect()
+                } else {
+                    text.to_string()
+                },
+                truncated,
+                count: g.len(),
+            }
+        })
+        .collect()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -1661,6 +1715,9 @@ pub fn vote(
                 TestSource::Generated
             },
             agreement,
+            // From all valid outputs, also those that missed the templates
+            // (e.g. „441.0“ for an integer placeholder).
+            alternatives: alternatives(mode, &raw, &maj.members),
         });
     }
     v
@@ -3205,6 +3262,46 @@ mod tests {
     }
 
     #[test]
+    fn alternatives_list_the_minority_outputs() {
+        let mode = CompareMode::default();
+        let (a, b, c, crash) = (step("1\n", 0), step("2\n", 0), step("3\n", 0), step("", 1));
+        let long = step(&"x".repeat(MAX_ALTERNATIVE_CHARS + 5), 0);
+        let outs = [
+            Some(&a),
+            Some(&a),
+            Some(&b),
+            Some(&c),
+            Some(&b),
+            Some(&crash),
+            None,
+        ];
+        let alt = alternatives(&mode, &outs, &[0, 1]);
+        assert_eq!(
+            alt,
+            vec![
+                Alternative {
+                    output: "2\n".into(),
+                    truncated: false,
+                    count: 2
+                },
+                Alternative {
+                    output: "3\n".into(),
+                    truncated: false,
+                    count: 1
+                },
+            ]
+        );
+        // Unanimous: nothing to show.
+        assert!(alternatives(&mode, &[Some(&a), Some(&a)], &[0, 1]).is_empty());
+        let alt = alternatives(&mode, &[Some(&a), Some(&long)], &[0]);
+        assert!(alt[0].truncated);
+        assert_eq!(alt[0].output.chars().count(), MAX_ALTERNATIVE_CHARS);
+        let many: Vec<StepOutput> = (0..6).map(|i| step(&format!("{i}\n"), 0)).collect();
+        let refs: Vec<Option<&StepOutput>> = many.iter().map(Some).collect();
+        assert_eq!(alternatives(&mode, &refs, &[0]).len(), MAX_ALTERNATIVES);
+    }
+
+    #[test]
     fn eta_from_tokens_per_second() {
         assert_eq!(eta_seconds(Phase::Solutions, 0, 3, None), None);
         assert_eq!(eta_seconds(Phase::Solutions, 0, 3, Some(0.0)), None);
@@ -3380,6 +3477,9 @@ mod tests {
         assert_eq!(r.tests[0].expected, QAS_OUTPUT);
         assert!((r.tests[0].agreement - 2.0 / 3.0).abs() < 1e-9);
         assert!(!r.reference_solution.unwrap().contains("qasfloat"));
+        // The output missing the template is still shown as an alternative.
+        assert_eq!(r.tests[0].alternatives.len(), 1);
+        assert_eq!(r.tests[0].alternatives[0].output, QAS_FLOAT_OUTPUT);
         let msg = template::check_output(&r.output_templates, QAS_FLOAT_OUTPUT).unwrap();
         assert!(msg.contains("Ganzzahl ohne Nachkommastellen"), "{msg}");
     }
@@ -3861,6 +3961,16 @@ mod tests {
                 .any(|x| x.contains("knapp einig")),
             "{:?}",
             r.confidence.reasons
+        );
+        // The right answer of the minority is shown with the test.
+        assert_eq!(r.tests[0].expected, QAS_WRONG_OUTPUT);
+        assert_eq!(
+            r.tests[0].alternatives,
+            vec![Alternative {
+                output: QAS_OUTPUT.into(),
+                truncated: false,
+                count: 1
+            }]
         );
     }
 

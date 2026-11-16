@@ -221,7 +221,18 @@ export function installMock(): void {
         case "generate_tests":
           await sleep(1500);
           return {
-            tests: [{ name: "KI: drei Namen", input: "3\nA\nB\nC\n", expected: "Hallo, A!\nHallo, B!\nHallo, C!\n", source: "generated", agreement: 1 }],
+            tests: [
+              { name: "KI: drei Namen", input: "3\nA\nB\nC\n", expected: "Hallo, A!\nHallo, B!\nHallo, C!\n", source: "generated", agreement: 1, alternatives: [] },
+              // Disagreement: the minority's output is shown with the test.
+              {
+                name: "KI: ein Name",
+                input: "1\nZoe\n",
+                expected: "Hallo, Zoe!\n",
+                source: "generated",
+                agreement: 2 / 3,
+                alternatives: [{ output: "Hallo Zoe!\n", truncated: false, count: 1 }],
+              },
+            ],
             referenceSolution: PY,
             confidence: { level: "green", reasons: ["Beide Beispiele des Blatts bestanden.", "3 von 3 Lösungen liefern dieselben Ausgaben."] },
             suggestedCompareMode: null,
