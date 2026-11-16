@@ -80,6 +80,8 @@ Lizenz: MIT (siehe [`LICENSE`](LICENSE)).
 - `models.rs` + `catalog.json`: gepinnter Modellkatalog, Hardware-Erkennung, Download, Import.
 - `pipeline.rs`: Testfälle erzeugen (Struktur → Lösungen → Kompilieren → Beispiele → Testeingaben → Mehrheitsentscheid → Konfidenz). **Kernregel:** Die KI schreibt nie erwartete Ausgaben; diese entstehen durch Ausführen der Lösungen in der Sandbox.
 - `prompts.rs`: Prompts, JSON-Schemas, Code aus Antworten extrahieren.
+- `no_input.rs`: Prüfung ohne KI, ob eine Aufgabe feste Werte vorgibt und keine Eingabe liest (dann keine KI-Eingaben; einlesende Lösungen zählen als fehlgeschlagen).
+- `eta.rs`: Restdauer (Token-Arbeit je Schritt, gemessener Server-Durchsatz, Spanne); Messwerte je Modell in `ai-speed.json` im Konfigurationsordner.
 - `ocr_fix.rs`: KI-Korrektur von OCR-Text (Plausibilitätsfilter lässt nur kleine, örtliche Änderungen durch).
 - `variation.rs`: Variationstest (Eingaben/Szenarien, Literalersetzung in einfachen Zuweisungen, Vergleich mit der Musterlösung).
 - `gguf.rs`: Plausibilitätsprüfung importierter `.gguf`-Dateien.
@@ -109,6 +111,8 @@ src-tauri/src/
   ai/gguf.rs             Prüfung importierter GGUF-Dateien
   ai/pipeline.rs         Testfälle erzeugen: Lösungen, Beispiele, Mehrheit, Konfidenz
   ai/prompts.rs          Prompts, JSON-Schemas, Code aus Antworten extrahieren
+  ai/no_input.rs         Aufgabe ohne Eingabe (feste Werte) am Text erkennen
+  ai/eta.rs              Restdauer: Arbeit je Schritt, Durchsatzmessung, Spanne
   ai/ocr_fix.rs          KI-Korrektur von OCR-Text: Prompt, Plausibilitätsfilter
   ai/variation.rs        Variationstest: Eingaben/Szenarien, Literalersetzung, Erklärung
   docs/mod.rs            Import von Aufgabenblättern (Bild, PDF, DOCX), Limits
