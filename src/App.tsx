@@ -391,6 +391,7 @@ export default function App() {
         input: t.input,
         expected: t.expected,
         origin: "ai" as const,
+        aiExpected: t.expected,
       })),
     ]);
   };

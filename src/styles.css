@@ -310,6 +310,8 @@ main {
 .testcase { display: flex; flex-direction: column; gap: var(--space-2); padding: var(--space-4) 0; border-top: 1px solid var(--color-border-muted); }
 .testcase:first-of-type { border-top: none; }
 .testcase-head { display: flex; align-items: center; gap: var(--space-2); }
+.testcase-origin { display: flex; flex-direction: column; gap: var(--space-1); }
+.testcase-origin p { margin: 0; }
 .test-name { flex: 1; min-width: 0; font-weight: var(--weight-medium); }
 .io { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-4); }
 @media (max-width: 799px) { .io { grid-template-columns: minmax(0, 1fr); } }

@@ -17,8 +17,9 @@ Format nach [Keep a Changelog](https://keepachangelog.com/de/1.1.0/), Versionen 
   einen Text wie „Zahl eingeben: “ (Python `input("…")`, Java `System.out.print("…")`),
   besteht es einen KI-Testfall trotzdem, wenn die Werte stimmen; das Ergebnis nennt die
   ignorierten Texte. Beschriftungen wie „Ergebnis:“ oder „Summe:“ werden nie ignoriert,
-  ohne Eingabe gibt es keine Toleranz. Handgeschriebene Testfälle bleiben streng; ein
-  KI-Testfall, dessen erwartete Ausgabe geändert wird, gilt als handgeschrieben. Der
+  ohne Eingabe gibt es keine Toleranz. Handgeschriebene Testfälle bleiben streng. Ein
+  bearbeiteter KI-Testfall bleibt markiert (mit Hinweis bei geänderter Erwartung); per
+  Häkchen „KI-Markierung entfernen“ wird er wie handgeschrieben streng geprüft. Der
   Variationstest wertet ebenso.
 - Testfälle mit KI: Geben einige der erzeugten Lösungen Eingabeaufforderungen aus, wird
   die Ausgabe ohne sie als Erwartung genommen (Einstufung dann höchstens Gelb).

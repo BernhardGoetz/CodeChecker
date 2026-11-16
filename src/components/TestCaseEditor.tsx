@@ -119,9 +119,7 @@ export function TestCaseEditor({
                 rows={4}
                 value={t.expected}
                 spellCheck={false}
-                // A changed expectation is the user's own: the test becomes
-                // handwritten (strict, no prompt tolerance, no KI badge).
-                onChange={(e) => update(t.id, { expected: e.target.value, origin: undefined })}
+                onChange={(e) => update(t.id, { expected: e.target.value })}
               />
               <span
                 className={
@@ -134,6 +132,27 @@ export function TestCaseEditor({
               </span>
             </label>
           </div>
+          {t.origin === "ai" && (
+            <div className="testcase-origin small">
+              {t.aiExpected !== undefined && t.expected !== t.aiExpected && (
+                <p className="muted">
+                  Erwartung geändert – der Testfall ist weiterhin als KI-Testfall markiert und wird
+                  tolerant geprüft (Eingabeaufforderungen zählen nicht als Ausgabe).
+                </p>
+              )}
+              <label className="inline" htmlFor={`strict-${t.id}`}>
+                <input
+                  id={`strict-${t.id}`}
+                  type="checkbox"
+                  checked={false}
+                  onChange={(e) => {
+                    if (e.target.checked) update(t.id, { origin: undefined, aiExpected: undefined });
+                  }}
+                />{" "}
+                KI-Markierung entfernen (Testfall wie handgeschrieben streng prüfen)
+              </label>
+            </div>
+          )}
         </div>
       ))}
       <button
