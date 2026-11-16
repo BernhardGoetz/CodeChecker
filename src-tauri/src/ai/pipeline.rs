@@ -876,12 +876,29 @@ pub fn input_need(s: &Structure, examples: &[Example]) -> InputNeed {
 }
 
 /// Whether the unfinished solutions can be cancelled without changing the
-/// tests and without overstating the confidence: `g` solutions agree on
-/// every check input, `rest` others passed or are not finished yet. The
-/// majority is certain (`g > rest`), and green – if possible at all – is
-/// not lost when the rest counts as disagreeing. Pure.
-pub fn can_stop(g: usize, rest: usize, green_possible: bool) -> bool {
-    g >= 2 && g > rest && (!green_possible || g as f64 / (g + rest) as f64 >= GREEN_AGREEMENT)
+/// tests and without overstating the confidence. `g` solutions agree on
+/// every check input, `finished` of the `n` solutions are done (passed or
+/// failed; the others are still being written). Pure.
+///
+/// Rule (regression „Aufgabe 2.2 Time“: two of three wrong solutions agreed
+/// early, the slow third one had the right result and was never waited
+/// for):
+/// - at least two agree, and only a minority is still missing
+///   (`2 · missing < n`);
+/// - the agreement already reaches [`GREEN_AGREEMENT`] when every missing
+///   or disagreeing solution counts against it (`g / n ≥ 0.8`). A bare
+///   majority such as 2 of 3 is never enough: the missing solution could
+///   be the only correct one, and cutting it off hides the disagreement;
+/// - without examples from the sheet nothing has checked the solutions,
+///   so additionally every finished solution must be in the group and at
+///   least `ceil(0.8 · n)` must be finished. For n = 3 this means all three,
+///   i.e. effectively no early end.
+pub fn can_stop(g: usize, finished: usize, n: usize, has_examples: bool) -> bool {
+    let missing = n.saturating_sub(finished);
+    let agreement = g as f64 / n.max(1) as f64;
+    let base = g >= 2 && g <= finished && missing * 2 < n && agreement >= GREEN_AGREEMENT;
+    let min_finished = (GREEN_AGREEMENT * n as f64 - 1e-9).ceil() as usize;
+    base && (has_examples || (g == finished && finished >= min_finished))
 }
 
 /// Size of the largest group of solutions whose outputs on the inputs
@@ -1179,12 +1196,14 @@ pub fn decide_confidence(e: &Evidence) -> Confidence {
             "Nur eine Lösung hat die Prüfung bestanden – kein Mehrheitsvergleich möglich.".into(),
         );
     }
-    if let Some(a) = e.min_agreement.filter(|a| *a < GREEN_AGREEMENT) {
+    let close = e.min_agreement.filter(|a| *a < GREEN_AGREEMENT);
+    if let Some(a) = close {
         yellow.push(if e.cancelled > 0 {
             early_stop_reason(e)
         } else {
             format!(
-                "Bei mindestens einem Testfall waren sich die Lösungen nur knapp einig ({}).",
+                "Bei mindestens einem Testfall waren sich die Lösungen nur knapp einig ({}); \
+                 die abweichenden Ausgaben stehen beim Testfall.",
                 pct(a)
             )
         });
@@ -1219,6 +1238,9 @@ pub fn decide_confidence(e: &Evidence) -> Confidence {
             reasons,
         }
     } else {
+        if e.cancelled > 0 && close.is_none() {
+            yellow.push(early_stop_reason(e));
+        }
         if e.invalid > 0 {
             yellow.push(invalid_note(e.invalid));
         }
@@ -1789,7 +1811,7 @@ pub async fn generate<L: Llm + Sync, E: Executor>(
         token: CancellationToken::new(),
         finished: Mutex::new(Vec::new()),
     };
-    let green_possible = !examples.is_empty();
+    let has_examples = !examples.is_empty();
     let first_round = (0..n).map(|_| {
         let run = &run;
         let messages = base_messages.clone();
@@ -1853,8 +1875,7 @@ pub async fn generate<L: Llm + Sync, E: Executor>(
                     empty_index,
                     probe_index,
                 );
-                let rest = outs.len() - g + (n - f.len());
-                if can_stop(g, rest, green_possible) {
+                if can_stop(g, f.len(), n, has_examples) {
                     early.token.cancel();
                 }
             }
@@ -2423,6 +2444,8 @@ mod tests {
             } else {
                 step(&format!("Zahl eingeben: {}\n", n * 2), 0)
             }
+        } else if code.contains("wrongdiff") {
+            step(QAS_WRONG_OUTPUT, 0)
         } else if code.contains("qasfloat") {
             step(QAS_FLOAT_OUTPUT, 0)
         } else if code.contains("qas") {
@@ -3258,6 +3281,10 @@ mod tests {
         until midnight.\nSince I started with the task 441 seconds have passed.\n";
     const QAS_FLOAT_OUTPUT: &str = "54630.0 seconds have passed since midnight.\n31770.0 seconds \
         are left until midnight.\nSince I started with the task 441.0 seconds have passed.\n";
+    /// Wrong third line of regression case A (7B model): 15:10:30 minus
+    /// 12:30:00 instead of 15:17:51 minus 15:10:30.
+    const QAS_WRONG_OUTPUT: &str = "54630 seconds have passed since midnight.\n31770 seconds \
+        are left until midnight.\nSince I started with the task 9630 seconds have passed.\n";
     const QAS_LINES: [&str; 3] = [
         "12345678 seconds have passed since midnight.",
         "12345678 seconds are left until midnight.",
@@ -3496,13 +3523,29 @@ mod tests {
         );
         assert_eq!(input_need(&st("eine Zahl", None), &[]), InputNeed::Reads);
         assert_eq!(input_need(&st("", Some(false)), &[]), InputNeed::NoInput);
-        assert!(can_stop(2, 1, false));
-        assert!(!can_stop(2, 1, true));
-        assert!(can_stop(3, 2, false));
-        assert!(!can_stop(3, 2, true));
-        assert!(can_stop(4, 1, true));
-        assert!(!can_stop(1, 0, false));
-        assert!(!can_stop(2, 2, false));
+        // can_stop(agreeing, finished, n, has_examples)
+        // Three solutions: a bare 2-of-3 majority never ends early.
+        assert!(!can_stop(2, 2, 3, false));
+        assert!(!can_stop(2, 2, 3, true));
+        assert!(can_stop(3, 3, 3, false), "nothing left to cancel");
+        // Five solutions: four agreeing, one missing → 80 % even if it
+        // disagrees.
+        assert!(can_stop(4, 4, 5, true));
+        assert!(can_stop(4, 4, 5, false));
+        // Three of five are not enough (60 %), with or without examples.
+        assert!(!can_stop(3, 3, 5, true));
+        assert!(!can_stop(3, 3, 5, false));
+        // Without examples every finished solution must agree.
+        assert!(!can_stop(4, 5, 5, false));
+        // Ten solutions: 8 agree, 2 missing.
+        assert!(can_stop(8, 8, 10, false));
+        assert!(
+            !can_stop(8, 9, 10, false),
+            "a finished dissenter without examples"
+        );
+        assert!(can_stop(8, 9, 10, true));
+        assert!(!can_stop(7, 7, 10, true));
+        assert!(!can_stop(1, 1, 1, false));
     }
 
     /// Sheet of the regression case "Aufgabe 2.2 Time": c), d), e) each with
@@ -3735,7 +3778,7 @@ mod tests {
                     Ok(program("secs"))
                 }
             },
-            vec![1, 1, 2000],
+            vec![1, 1, 1, 1, 2000],
         );
         let exec = MockExec::new();
         let started = std::time::Instant::now();
@@ -3743,17 +3786,17 @@ mod tests {
             &llm,
             &exec,
             &template_req(),
-            settings(3),
+            settings(5),
             &CancellationToken::new(),
             |_| {},
         ))
         .unwrap();
         assert!(started.elapsed() < std::time::Duration::from_millis(1000));
         assert_eq!(r.stats.solutions_cancelled, 1);
-        assert_eq!(r.stats.solutions_passed, 2);
+        assert_eq!(r.stats.solutions_passed, 4);
         assert!(!llm.inner.calls().iter().any(is_inputs));
         assert_eq!(r.tests.len(), 1);
-        assert!((r.tests[0].agreement - 2.0 / 3.0).abs() < 1e-9);
+        assert!((r.tests[0].agreement - 0.8).abs() < 1e-9);
         assert_eq!(r.confidence.level, ConfidenceLevel::Yellow);
         assert!(r
             .confidence
@@ -3762,6 +3805,81 @@ mod tests {
             .any(|x| x.contains("vorzeitig beendet")));
         let c = exec.get();
         assert_eq!(c.opened, c.closed, "every container is removed");
+    }
+
+    /// Regression case A (release 1.1.0, 7B model, three solutions): two
+    /// fast solutions agree on a wrong third line, the slow third one is
+    /// right. Every solution is waited for now; the majority stays a hint
+    /// (yellow) and the disagreement is reported.
+    #[test]
+    fn time_task_two_of_three_wrong_is_no_early_end() {
+        let structure = qas_structure();
+        let llm = slow(
+            move |r: &ChatRequest, _| {
+                if is_structure(r) {
+                    Ok(structure.clone())
+                } else if is_inputs(r) {
+                    Ok(r#"{"inputs": []}"#.into())
+                } else {
+                    Ok(String::new())
+                }
+            },
+            vec![1, 1, 150],
+        );
+        // The answers by request index: 0 and 1 wrong, 2 right.
+        let llm = Indexed {
+            inner: llm,
+            programs: ["wrongdiff", "wrongdiff", "qas"],
+        };
+        let exec = MockExec::new();
+        let r = block_on(generate(
+            &llm,
+            &exec,
+            &time_req(),
+            settings(3),
+            &CancellationToken::new(),
+            |_| {},
+        ))
+        .unwrap();
+        assert_eq!(
+            r.stats.solutions_cancelled, 0,
+            "the slow solution is waited for"
+        );
+        assert_eq!(r.stats.solutions_passed, 3);
+        assert_eq!(r.tests.len(), 1);
+        assert!((r.tests[0].agreement - 2.0 / 3.0).abs() < 1e-9);
+        assert_eq!(r.confidence.level, ConfidenceLevel::Yellow);
+        assert!(!r
+            .confidence
+            .reasons
+            .iter()
+            .any(|x| x.contains("vorzeitig beendet")));
+        assert!(
+            r.confidence
+                .reasons
+                .iter()
+                .any(|x| x.contains("knapp einig")),
+            "{:?}",
+            r.confidence.reasons
+        );
+    }
+
+    /// Wraps a [`SlowLlm`]: the i-th solution request gets `programs[i]`.
+    struct Indexed {
+        inner: SlowLlm,
+        programs: [&'static str; 3],
+    }
+
+    impl Llm for Indexed {
+        async fn chat(&self, req: &ChatRequest) -> Result<ChatResponse, AiError> {
+            let solution = !is_structure(req) && !is_inputs(req);
+            let i = *self.inner.solution_calls.lock().unwrap();
+            let mut r = self.inner.chat(req).await?;
+            if solution && !is_repair(req) {
+                r.content = java_program(self.programs[i % self.programs.len()]);
+            }
+            Ok(r)
+        }
     }
 
     #[test]
