@@ -331,6 +331,10 @@ export interface GenerateStats {
   noInput?: boolean;
   /** Solutions not waited for because the majority was already certain. */
   solutionsCancelled?: number;
+  /** The task text gives fixed values and asks for no input (recognised without the model). */
+  fixedValues?: boolean;
+  /** Solutions that read input although the task reads none (after the repair round). */
+  solutionsReadInput?: number;
   llmCalls: number;
   completionTokens: number;
   /** Prompt tokens processed (without the prompt cache) and the time for that. */

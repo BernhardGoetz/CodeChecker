@@ -8,6 +8,7 @@
 pub mod gguf;
 pub mod llama;
 pub mod models;
+pub mod no_input;
 pub mod ocr_fix;
 pub mod pipeline;
 pub mod prompts;

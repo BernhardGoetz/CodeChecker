@@ -28,6 +28,7 @@ use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
 
 use super::llama::{ChatRequest, ChatResponse, Llm};
+use super::no_input;
 use super::prompts::{self, SolutionContext, MAX_EXAMPLES, MAX_INPUTS};
 use super::AiError;
 use crate::engine;
@@ -204,6 +205,12 @@ pub struct Stats {
     pub no_input: bool,
     /// Solutions not waited for: the majority was already certain.
     pub solutions_cancelled: usize,
+    /// The task text gives fixed values and asks for no input (see
+    /// [`no_input::task_without_input`]): no inputs, reading counts as failure.
+    pub fixed_values: bool,
+    /// Solutions that read input although the task reads none (after the
+    /// repair round).
+    pub solutions_read_input: usize,
     pub llm_calls: usize,
     pub completion_tokens: u64,
     /// Prompt tokens processed (without the prompt cache) and the time.
@@ -1376,6 +1383,10 @@ struct Attempt<S> {
     fatal: Option<AiError>,
     /// Not waited for: the majority was already certain (see [`can_stop`]).
     cancelled_early: bool,
+    /// The task reads no input, but the program read some (crashed, timed
+    /// out or printed something else on the probe): reason for a repair
+    /// round with [`prompts::NO_INPUT_REPAIR`].
+    reads_input: bool,
 }
 
 impl<S> Attempt<S> {
@@ -1392,6 +1403,7 @@ impl<S> Attempt<S> {
             llm_error: None,
             fatal: None,
             cancelled_early: false,
+            reads_input: false,
         }
     }
 }
@@ -1504,10 +1516,12 @@ where
         example_mode: &CompareMode,
         example_inputs: &[String],
         templates: &[OutputTemplate],
+        no_input: Option<NoInputCheck>,
     ) -> Result<(), AiError> {
         let answer = a.answer.clone().unwrap_or_default();
         a.failure = None;
         a.passes = false;
+        a.reads_input = false;
         let code = match prompts::extract_code(&answer, self.lang.id) {
             None => {
                 a.failure = Some("No code block found in the answer.".into());
@@ -1551,6 +1565,25 @@ where
                     && fits_templates(templates, o)
                     && example_mode.matches(&ex.output, &o.stdout)
             });
+        // A task without input (recognised from the text): reading input
+        // disqualifies the solution, the empty input and the probe must give
+        // the same valid output.
+        if let Some(c) = no_input.filter(|_| a.passes) {
+            let ok = match (
+                a.example_outputs.get(c.empty),
+                a.example_outputs.get(c.probe),
+            ) {
+                (Some(e), Some(p)) => {
+                    valid(e) && valid(p) && example_mode.matches(&e.stdout, &p.stdout)
+                }
+                _ => false,
+            };
+            if !ok {
+                a.passes = false;
+                a.reads_input = true;
+                a.failure = Some(prompts::NO_INPUT_REPAIR.into());
+            }
+        }
         Ok(())
     }
 
@@ -1568,6 +1601,19 @@ where
         }
     }
 }
+
+/// Indices of the empty input and the probe in the check inputs, for a
+/// task recognised as reading no input (see [`no_input::task_without_input`]).
+#[derive(Debug, Clone, Copy)]
+struct NoInputCheck {
+    empty: usize,
+    probe: usize,
+}
+
+/// German note when the text gave fixed values and no input.
+pub const FIXED_VALUES_REASON: &str = "Laut Aufgabentext gibt es feste Werte und keine Eingabe: \
+Es wurden keine Testeingaben erzeugt, und Lösungen, die trotzdem etwas einlesen, zählen als \
+fehlgeschlagen.";
 
 /// Compile output as text for the repair prompt.
 fn compiler_text(c: Option<&StepOutput>) -> String {
@@ -1803,7 +1849,15 @@ pub async fn generate<L: Llm + Sync, E: Executor>(
     let example_inputs: Vec<String> = examples.iter().map(|e| as_stdin(&e.input)).collect();
     // Without input the model writes no inputs; this is confirmed by
     // running the solutions on a probe input (see below).
-    let no_input = input_need(&structure, &examples) == InputNeed::NoInput;
+    // Fixed values and no input hint in the text: this wins over the
+    // model's `readsInput` (regression „Aufgabe 2.2 Time“, 1.5B model: the
+    // solutions read the given time from stdin and the probe run only
+    // confirmed that). A verified example with an input still means input.
+    let fixed_values = examples
+        .iter()
+        .all(|e| normalize_for_match(&e.input).is_empty())
+        && no_input::task_without_input(&req.task_text);
+    let no_input = fixed_values || input_need(&structure, &examples) == InputNeed::NoInput;
     let empty_example = example_inputs
         .iter()
         .position(|i| normalize_for_match(i).is_empty());
@@ -1819,6 +1873,10 @@ pub async fn generate<L: Llm + Sync, E: Executor>(
         .collect();
     let empty_index = empty_example.unwrap_or(example_inputs.len());
     let probe_index = check_inputs.len();
+    let strict = fixed_values.then_some(NoInputCheck {
+        empty: empty_index,
+        probe: probe_index,
+    });
     // The probe runs with the check inputs, but is never a test.
     let run_inputs: Vec<String> = check_inputs
         .iter()
@@ -1852,6 +1910,7 @@ pub async fn generate<L: Llm + Sync, E: Executor>(
         examples: &example_pairs,
         output_templates: &templates,
         class_name: class_name.as_deref(),
+        no_input,
     };
     let base_messages = prompts::solution_messages(&req.task_text, lang.id, &ctx);
     let n = settings.solutions;
@@ -1914,7 +1973,14 @@ pub async fn generate<L: Llm + Sync, E: Executor>(
             }
             if a.fatal.is_none() && a.llm_error.is_none() && !a.cancelled_early {
                 if let Err(e) = run
-                    .check_answer(&mut a, examples, example_mode, run_inputs, templates)
+                    .check_answer(
+                        &mut a,
+                        examples,
+                        example_mode,
+                        run_inputs,
+                        templates,
+                        strict,
+                    )
                     .await
                 {
                     run.record_error(&mut a, e, false);
@@ -1994,18 +2060,33 @@ pub async fn generate<L: Llm + Sync, E: Executor>(
                         );
                         let failure = a.failure.clone().unwrap_or_default();
                         let answer = a.answer.clone().unwrap_or_default();
-                        a.messages = prompts::repair_messages(
-                            std::mem::take(&mut a.messages),
-                            &answer,
-                            &failure,
-                            lang.id,
-                        );
+                        a.messages = if a.reads_input {
+                            prompts::no_input_repair_messages(
+                                std::mem::take(&mut a.messages),
+                                &answer,
+                                lang.id,
+                            )
+                        } else {
+                            prompts::repair_messages(
+                                std::mem::take(&mut a.messages),
+                                &answer,
+                                &failure,
+                                lang.id,
+                            )
+                        };
                         match run.chat(run.solution_request(a.messages.clone())).await {
                             Ok(r) => {
                                 a.answer = Some(r.content);
                                 run.shared().stats.solutions_repaired += 1;
                                 if let Err(e) = run
-                                    .check_answer(a, examples, example_mode, run_inputs, templates)
+                                    .check_answer(
+                                        a,
+                                        examples,
+                                        example_mode,
+                                        run_inputs,
+                                        templates,
+                                        strict,
+                                    )
                                     .await
                                 {
                                     run.record_error(a, e, false);
@@ -2047,24 +2128,27 @@ pub async fn generate<L: Llm + Sync, E: Executor>(
         }
     }
     let compiled = attempts.iter().filter(|a| a.compiled).count();
+    let reading = attempts.iter().filter(|a| a.reads_input).count();
     let cancelled = attempts.iter().filter(|a| a.cancelled_early).count();
     // "No input" is confirmed if a strict majority of the compiled
     // solutions prints the same on the empty input and on the probe.
-    let no_input_confirmed = no_input && {
-        let ran: Vec<&[StepOutput]> = attempts
-            .iter()
-            .filter(|a| a.compiled && a.example_outputs.len() == run_inputs.len())
-            .map(|a| a.example_outputs.as_slice())
-            .collect();
-        let independent = ran
-            .iter()
-            .filter(|o| {
-                let (e, p) = (&o[empty_index], &o[probe_index]);
-                valid(e) && valid(p) && mode.matches(&e.stdout, &p.stdout)
-            })
-            .count();
-        independent * 2 > ran.len()
-    };
+    // With fixed values every surviving solution ignored its input already.
+    let no_input_confirmed = no_input
+        && (fixed_values || {
+            let ran: Vec<&[StepOutput]> = attempts
+                .iter()
+                .filter(|a| a.compiled && a.example_outputs.len() == run_inputs.len())
+                .map(|a| a.example_outputs.as_slice())
+                .collect();
+            let independent = ran
+                .iter()
+                .filter(|o| {
+                    let (e, p) = (&o[empty_index], &o[probe_index]);
+                    valid(e) && valid(p) && mode.matches(&e.stdout, &p.stdout)
+                })
+                .count();
+            independent * 2 > ran.len()
+        });
     if no_input {
         // The probe is no test.
         for a in &mut attempts {
@@ -2084,6 +2168,8 @@ pub async fn generate<L: Llm + Sync, E: Executor>(
         s.stats.solutions_passed = survivors.len();
         s.stats.solutions_cancelled = cancelled;
         s.stats.no_input = no_input_confirmed;
+        s.stats.fixed_values = fixed_values;
+        s.stats.solutions_read_input = reading;
     }
 
     let finish = |run: Run<'_, L, E, _>,
@@ -2097,6 +2183,9 @@ pub async fn generate<L: Llm + Sync, E: Executor>(
         let mut confidence = decide_confidence(&ev);
         if !templates.is_empty() && !ev.template_fallback {
             confidence.reasons.push(TEMPLATE_REASON.into());
+        }
+        if fixed_values {
+            confidence.reasons.push(FIXED_VALUES_REASON.into());
         }
         // Red: no tests, no reference solution – only the honest message.
         let red = confidence.level == ConfidenceLevel::Red;
@@ -2500,6 +2589,20 @@ mod tests {
                 step("Zahl eingeben: ", 1)
             } else {
                 step(&format!("Zahl eingeben: {}\n", n * 2), 0)
+            }
+        } else if code.contains("readstime") {
+            // Reads „hour minute second“ (Scanner): crashes without input.
+            if input.trim().is_empty() {
+                step("", 1)
+            } else {
+                step(QAS_WRONG_OUTPUT, 0)
+            }
+        } else if code.contains("readsdefault") {
+            // Reads input if there is some, else uses the given values.
+            if input.trim().is_empty() {
+                step(QAS_OUTPUT, 0)
+            } else {
+                step(QAS_WRONG_OUTPUT, 0)
             }
         } else if code.contains("wrongdiff") {
             step(QAS_WRONG_OUTPUT, 0)
@@ -3972,6 +4075,98 @@ mod tests {
                 count: 1
             }]
         );
+    }
+
+    /// Regression case B (release 1.1.0, 1.5B model, five solutions): the
+    /// model says the task reads „hour minute second“, the solutions read
+    /// them from stdin. The text gives fixed values and asks for no input:
+    /// no inputs are generated, reading solutions fail and are repaired
+    /// with the no-input hint.
+    #[test]
+    fn time_task_with_fixed_values_reads_no_input() {
+        let structure = serde_json::json!({
+            "inputFormat": "hour minute second",
+            "readsInput": true,
+            "outputFormat": "three lines",
+            "examples": [],
+            "outputTemplates": QAS_LINES
+                .iter()
+                .map(|l| serde_json::json!({"text": l, "placeholders": ["12345678"]}))
+                .collect::<Vec<_>>(),
+            "compareMode": "lines"
+        })
+        .to_string();
+        let first = ["readstime", "readsdefault", "qas", "readstime", "qas"];
+        let counter = Mutex::new(0usize);
+        let llm = MockLlm::new(move |r: &ChatRequest, _| {
+            if is_structure(r) {
+                Ok(structure.clone())
+            } else if is_inputs(r) {
+                Ok(r#"{"inputs": ["15 10 30", "12 0 0"]}"#.into())
+            } else if is_repair(r) {
+                Ok(java_program("qas"))
+            } else {
+                let mut c = counter.lock().unwrap();
+                *c += 1;
+                Ok(java_program(first[(*c - 1) % first.len()]))
+            }
+        });
+        let r = generate_with(&llm, time_req(), 5).unwrap();
+        let calls = llm.calls();
+        assert!(!calls.iter().any(is_inputs), "no inputs for fixed values");
+        assert!(r.stats.fixed_values);
+        assert!(r.stats.no_input);
+        assert_eq!(r.stats.inputs_generated, 0);
+        // The three reading solutions were repaired with the no-input hint.
+        let repairs: Vec<&ChatRequest> = calls.iter().filter(|c| is_repair(c)).collect();
+        assert_eq!(repairs.len(), 3);
+        assert!(repairs
+            .iter()
+            .all(|c| c.messages[3].content.contains(prompts::NO_INPUT_REPAIR)
+                && !c.messages[3].content.contains("does not compile")));
+        assert_eq!(r.stats.solutions_passed, 5);
+        assert_eq!(r.stats.solutions_read_input, 0);
+        assert_eq!(r.tests.len(), 1, "{:?}", r.tests);
+        assert_eq!(r.tests[0].input, "");
+        assert_eq!(r.tests[0].expected, QAS_OUTPUT);
+        assert!(r.tests[0].alternatives.is_empty());
+        assert!(r
+            .confidence
+            .reasons
+            .iter()
+            .any(|x| x == FIXED_VALUES_REASON));
+        // The solution prompt forbids reading input.
+        let sol = calls
+            .iter()
+            .find(|c| !is_structure(c) && !is_inputs(c))
+            .unwrap();
+        assert!(sol.messages[1].content.contains(prompts::NO_INPUT_NOTE));
+        assert!(!sol.messages[1].content.contains("hour minute second"));
+    }
+
+    #[test]
+    fn reading_solutions_fail_without_repair_round() {
+        // Without a repair round a reading solution stays failed: red, no
+        // test from stdin-reading programs.
+        let llm = time_llm(qas_structure(), "readstime");
+        let exec = MockExec::new();
+        let r = block_on(generate(
+            &llm,
+            &exec,
+            &time_req(),
+            Settings {
+                solutions: 3,
+                repair_rounds: 0,
+            },
+            &CancellationToken::new(),
+            |_| {},
+        ))
+        .unwrap();
+        assert_eq!(r.stats.solutions_passed, 0);
+        assert_eq!(r.stats.solutions_read_input, 3);
+        assert_eq!(r.confidence.level, ConfidenceLevel::Red);
+        assert!(r.tests.is_empty());
+        assert!(!llm.calls().iter().any(is_inputs));
     }
 
     /// Wraps a [`SlowLlm`]: the i-th solution request gets `programs[i]`.
