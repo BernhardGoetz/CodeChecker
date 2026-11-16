@@ -308,6 +308,36 @@ async fn java_wrong_class_name_gives_hint() {
 
 #[tokio::test]
 #[ignore = "benötigt Docker und die Runner-Images"]
+async fn java_any_class_name_and_package() {
+    // Class named after the task sheet: stored as Time.java, run as Time.
+    let code = "import java.util.Scanner;\n// class Fake { }\npublic class Time {\n    \
+                public static void main(String... args) {\n        \
+                System.out.println(new Scanner(System.in).nextInt() * 2);\n    }\n}\n";
+    let r = run("java", code, vec![tc("21\n", "42\n")]).await;
+    assert!(r.compile_ok, "{:?}", r.compile);
+    assert_eq!(statuses(&r), vec![TestStatus::Passed], "{:?}", r.tests[0]);
+    // Public data class plus a separate main class.
+    let code = "public class Time { int h = 7; }\nclass Start {\n    \
+                public static void main(String[] a) { System.out.println(new Time().h); }\n}\n";
+    let r = run("java", code, vec![tc("", "7\n")]).await;
+    assert!(r.compile_ok, "{:?}", r.compile);
+    assert_eq!(statuses(&r), vec![TestStatus::Passed], "{:?}", r.tests[0]);
+    // Package declaration: compiled with -d, started qualified.
+    let code = "package de.uni.blatt3;\npublic class Time {\n    \
+                public static void main(String[] a) { System.out.println(\"ok\"); }\n}\n";
+    let r = run("java", code, vec![tc("", "ok\n")]).await;
+    assert!(r.compile_ok, "{:?}", r.compile);
+    assert_eq!(statuses(&r), vec![TestStatus::Passed], "{:?}", r.tests[0]);
+    // Two classes with main: not started, German hint.
+    let code = "class A { public static void main(String[] a) {} }\n\
+                class B { public static void main(String[] a) {} }\n";
+    let r = run("java", code, vec![tc("", "")]).await;
+    assert!(!r.compile_ok);
+    assert!(r.hint.unwrap().contains("Mehrere Klassen"));
+}
+
+#[tokio::test]
+#[ignore = "benötigt Docker und die Runner-Images"]
 async fn containers_are_removed() {
     let _ = run("python", "print(1)\n", vec![tc("", "1")]).await;
     assert!(

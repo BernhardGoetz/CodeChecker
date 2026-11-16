@@ -14,12 +14,27 @@ Format nach [Keep a Changelog](https://keepachangelog.com/de/1.1.0/), Versionen 
   der Code-Prüfer im Hintergrund in Docker und Podman die eigenen Runner-Images, die älter
   als die aktuelle und die vorherige Version sind. Neuere Versionen, selbst gebaute
   `:dev`-Images, fremde Images und von Containern benutzte Images bleiben unangetastet.
+- Java: Die Hauptklasse muss nicht mehr `Main` heißen. Gestartet wird die Klasse mit
+  `public static void main(String[] args)` (auch `String... args`, `final`,
+  Annotationen); die Datei heißt nach der `public`-Klasse (z. B. `Time.java`).
+  Kommentare und Zeichenketten werden dabei ignoriert. Eine `package`-Zeile ist erlaubt
+  (übersetzt mit `javac -d .`, gestartet mit dem vollständigen Namen). Fehlt `main` oder
+  haben mehrere Klassen eine `main`-Methode, gibt es einen deutschen Hinweis und das
+  Ergebnis „Nicht startbar“.
+- KI: Nennt das Aufgabenblatt eine Java-Klasse (z. B. „Öffnen Sie die bereitgestellte
+  Java-Klasse `Time`“ oder „Time.java“), schreibt die KI ihre Lösungen mit diesem
+  Klassennamen, sonst wie bisher mit `Main`.
 - Neue Einsteiger-Anleitung `docs/WARNUNG_BEIM_INSTALLIEREN.md`: warum Windows
   (SmartScreen, Smart App Control) und macOS (Gatekeeper) beim Installieren warnen, wie
   man die Warnung Schritt für Schritt übergeht und wie man die Echtheit der Datei mit
   `SHA256SUMS.txt` prüft.
 
 ### Geändert
+
+- „Testfälle mit KI“: Die Musterlösung ist standardmäßig verborgen und wird über die
+  Schaltfläche „Musterlösung anzeigen“ / „Musterlösung ausblenden“ vollständig ein- bzw.
+  ausgeblendet (barrierefrei mit `aria-expanded`). Nach jeder neuen KI-Erzeugung ist sie
+  wieder verborgen.
 
 - README: Der Weg zum ersten Start unter macOS folgt jetzt der Anleitung von Apple
   (Systemeinstellungen → „Datenschutz und Sicherheit“ → „Dennoch öffnen“); der

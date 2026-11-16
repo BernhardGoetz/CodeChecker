@@ -1322,6 +1322,20 @@ mod tests {
     }
 
     #[test]
+    fn java_class_name_survives_substitution() {
+        // Any class name (here from the task sheet): the variant keeps it, so
+        // it is stored and started under the same name.
+        let code = "public class Time {\n    public static void main(String... args) {\n        \
+                    int hour = 15;\n        System.out.println(hour);\n    }\n}\n";
+        let s = substitute(code, "java", &[ch("15", "3")]);
+        assert!(s.code.contains("int hour = 3;"));
+        let java = languages::get("java").unwrap();
+        let (entry, hint) = java.entry(&s.code);
+        assert_eq!(hint, None);
+        assert_eq!(java.source_file_for(&entry), "Time.java");
+    }
+
+    #[test]
     fn fields_negative_literals_and_for_heads() {
         let java = "class Main {\n    int hour;\n    void set() {\n        this.hour = 15;\n        \
                     other.hour = 15;\n        int t = -15;\n        int u = 3 -15;\n        \

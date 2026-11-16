@@ -127,7 +127,8 @@ export function CodeEditor({ language, code, onChange, theme, toolbarStart, tool
         <div className="code-notes small">
           {language?.id === "java" && (
             <span className="muted">
-              Hinweis: Die Klasse mit der <code>main</code>-Methode muss <code>Main</code> heißen.
+              Hinweis: Der Klassenname ist frei wählbar (z. B. wie in der Aufgabe verlangt); gestartet wird die
+              Klasse mit <code>public static void main(String[] args)</code>.
             </span>
           )}
           {error && <span className="note error">{error}</span>}

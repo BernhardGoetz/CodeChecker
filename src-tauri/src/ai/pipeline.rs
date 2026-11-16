@@ -948,7 +948,7 @@ struct Attempt<S> {
     messages: Vec<super::llama::ChatMessage>,
     answer: Option<String>,
     session: Option<S>,
-    /// Why the program did not compile (missing code block, `class Main`,
+    /// Why the program did not compile (missing code block, no class with `main`,
     /// compiler message): reason for a repair round.
     failure: Option<String>,
     code: Option<String>,
@@ -1094,7 +1094,11 @@ where
                 return Ok(());
             }
             Some(c) if languages::precheck(self.lang, &c).is_some() => {
-                a.failure = Some("The program must contain `public class Main`.".into());
+                a.failure = Some(
+                    "The program needs exactly one top-level class with \
+                     `public static void main(String[] args)`."
+                        .into(),
+                );
                 return Ok(());
             }
             Some(c) => c,
@@ -1252,11 +1256,16 @@ pub async fn generate<L: Llm + Sync, E: Executor>(
     // solution): generate while the containers start, check each one as
     // soon as it is written. The test inputs (5.) only need the task, so
     // they are generated alongside.
+    // Java: the class named by the task sheet (e.g. „Klasse Time“), else Main.
+    let class_name = (lang.id == "java")
+        .then(|| prompts::class_name_from_task(&req.task_text))
+        .flatten();
     let ctx = SolutionContext {
         input_format: &structure.input_format,
         output_format: &structure.output_format,
         examples: &example_pairs,
         output_templates: &templates,
+        class_name: class_name.as_deref(),
     };
     let base_messages = prompts::solution_messages(&req.task_text, lang.id, &ctx);
     let n = settings.solutions;
@@ -2381,8 +2390,13 @@ mod tests {
                 } else if is_inputs(r) {
                     Ok(r#"{"inputs": []}"#.into())
                 } else if is_repair(r) {
-                    assert!(r.messages[3].content.contains("public class Main"));
-                    Ok("```java\npublic class Main { /* double */ }\n```".into())
+                    assert!(r.messages[3]
+                        .content
+                        .contains("public static void main(String[] args)"));
+                    // Any class name is fine once it has a main method.
+                    Ok("```java\npublic class Solution { /* double */ \
+                        public static void main(String[] a) {} }\n```"
+                        .into())
                 } else {
                     Ok("```java\npublic class Solution { /* double */ }\n```".into())
                 }
@@ -2585,7 +2599,10 @@ mod tests {
     }
 
     fn java_program(word: &str) -> String {
-        format!("```java\npublic class Main {{ /* {word} */ }}\n```")
+        format!(
+            "```java\npublic class Main {{ /* {word} */ \
+             public static void main(String[] a) {{}} }}\n```"
+        )
     }
 
     #[test]
