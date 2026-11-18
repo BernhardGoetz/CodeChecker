@@ -254,7 +254,11 @@ export function AiPanel({
             {(result.stats.inputsInvalid ?? 0) > 0 &&
               ` · ${result.stats.inputsInvalid} ungültige KI-Eingabe(n) nicht übernommen`}
             {(result.stats.testsRedundant ?? 0) > 0 &&
-              ` · ${result.stats.testsRedundant} gleichartige Testfälle weggelassen`} ·{" "}
+              ` · ${result.stats.testsRedundant} gleichartige Testfälle weggelassen`}
+            {(result.stats.inputsOutOfRange ?? 0) > 0 &&
+              ` · ${result.stats.inputsOutOfRange} KI-Eingabe(n) außerhalb der Grenzen der Aufgabe verworfen`}
+            {(result.stats.testsOverflow ?? 0) > 0 &&
+              ` · ${result.stats.testsOverflow} Testfall/-fälle mit vermutetem Überlauf verworfen`} ·{" "}
             {Math.round(result.stats.durationMs / 1000)} s
             {result.stats.tokensPerSecond !== null &&
               ` · ${result.stats.tokensPerSecond.toFixed(1).replace(".", ",")} Token/s`}

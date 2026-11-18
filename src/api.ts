@@ -342,6 +342,10 @@ export interface GenerateStats {
   inputsInvalid?: number;
   /** Model tests left out because too many had the same expected output. */
   testsRedundant?: number;
+  /** Model inputs outside the limits the task states (dropped). */
+  inputsOutOfRange?: number;
+  /** Java tests dropped as a suspected int overflow. */
+  testsOverflow?: number;
   /** The task reads no input (confirmed): no inputs were requested from the model. */
   noInput?: boolean;
   /** The task text gives fixed values and asks for no input (recognised without the model). */

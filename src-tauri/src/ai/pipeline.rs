@@ -42,8 +42,14 @@ use crate::runner::{self, languages, StepOutput};
 pub const MAX_TASK_CHARS: usize = 12_000;
 /// Longest generated test input.
 pub const MAX_GENERATED_INPUT_BYTES: usize = 16 * 1024;
-/// Share of solutions that must agree for "green".
-pub const GREEN_AGREEMENT: f64 = 0.8;
+/// Share of solutions that must agree for "green": all of them. A test on
+/// which the solutions disagree is at most yellow, also with a clear
+/// majority.
+pub const GREEN_AGREEMENT: f64 = 1.0;
+/// Java tests whose expected output has a negative number at least this
+/// large although input and sheet outputs have none look like an `int`
+/// overflow (see [`overflow_suspect`]).
+pub const OVERFLOW_MAGNITUDE: f64 = 1_000_000.0;
 pub const SOLUTION_TEMPERATURE: f32 = 0.7;
 const STRUCTURE_TEMPERATURE: f32 = 0.0;
 const INPUTS_TEMPERATURE: f32 = 0.4;
@@ -201,6 +207,12 @@ pub struct Stats {
     /// Model tests left out because more than [`MAX_TESTS_PER_OUTPUT`]
     /// had the same expected output.
     pub tests_redundant: usize,
+    /// Model inputs outside the limits the task states (dropped before
+    /// running, see [`super::limits`]).
+    pub inputs_out_of_range: usize,
+    /// Model tests dropped as a suspected integer overflow
+    /// ([`overflow_suspect`]).
+    pub tests_overflow: usize,
     /// The task reads no input (confirmed by running): no inputs were
     /// requested from the model.
     pub no_input: bool,
@@ -1120,6 +1132,42 @@ pub struct Evidence {
     pub prompt_merged: usize,
     /// Model inputs on which every solution crashed (only a note).
     pub invalid: usize,
+    /// Tests dropped as a suspected integer overflow: yellow.
+    pub overflow: usize,
+}
+
+/// German confidence reason for tests dropped as suspected overflow.
+pub fn overflow_reason(n: usize) -> String {
+    format!(
+        "{n} KI-Testfall/-fälle verworfen: Die Lösungen gaben bei großen Eingaben große negative \
+         Zahlen aus – vermutlich ein Ganzzahl-Überlauf (int). Ob die Aufgabe so große Eingaben \
+         verlangt, bitte selbst prüfen."
+    )
+}
+
+/// Integer tokens of a text („-1270505460“, also „Summe: -5.“).
+fn integers(text: &str) -> impl Iterator<Item = f64> + '_ {
+    text.split(|c: char| c.is_whitespace() || ",;:=()[]{}".contains(c))
+        .filter_map(|w| {
+            let w = w.trim_end_matches('.');
+            let digits = w.strip_prefix('-').unwrap_or(w);
+            (!digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit()))
+                .then(|| w.parse::<f64>().ok())
+                .flatten()
+        })
+}
+
+/// A generated Java test that looks like an `int` overflow: its expected
+/// output has a negative number of at least [`OVERFLOW_MAGNITUDE`], while
+/// neither its input nor any sheet output has a negative number. All
+/// solutions overflow alike (regression „summe_java“, KI-Benchmark 1.1.1:
+/// inputs 5000 and 65535, sum of squares negative, 100 % agreement). An
+/// overflow that wraps to a positive number is not found this way. Pure.
+pub fn overflow_suspect(input: &str, expected: &str, sheet_outputs: &[String]) -> bool {
+    let negative = |t: &str| integers(t).any(|x| x < 0.0);
+    !negative(input)
+        && !sheet_outputs.iter().any(|o| negative(o))
+        && integers(expected).any(|x| x <= -OVERFLOW_MAGNITUDE)
 }
 
 /// Note (no reason for yellow) when model inputs were invalid for the task.
@@ -1135,7 +1183,7 @@ fn pct(x: f64) -> String {
 }
 
 /// Green: the sheet's examples were passed, at least two solutions survived
-/// and every test has at least 80 % agreement. Red: no solution survived or
+/// and they all agree on every test (no suspected overflow). Red: no solution survived or
 /// no test is left. Yellow otherwise (a hint, not a reliable expectation).
 pub fn decide_confidence(e: &Evidence) -> Confidence {
     if e.survivors == 0 {
@@ -1193,10 +1241,13 @@ pub fn decide_confidence(e: &Evidence) -> Confidence {
     let close = e.min_agreement.filter(|a| *a < GREEN_AGREEMENT);
     if let Some(a) = close {
         yellow.push(format!(
-            "Bei mindestens einem Testfall waren sich die Lösungen nur knapp einig ({}); \
-             die abweichenden Ausgaben stehen beim Testfall.",
+            "Bei mindestens einem Testfall waren sich die Lösungen nicht einig (gleiche Ausgabe \
+             bei {}); die abweichenden Ausgaben stehen beim Testfall.",
             pct(a)
         ));
+    }
+    if e.overflow > 0 {
+        yellow.push(overflow_reason(e.overflow));
     }
     if e.template_fallback {
         yellow.push(TEMPLATE_FALLBACK_REASON.into());
@@ -2432,7 +2483,23 @@ pub async fn generate<L: Llm + Sync, E: Executor>(
                 return Err(e);
             }
         };
-        run.shared().stats.inputs_generated = generated.len();
+        // Inputs outside the limits the task states are dropped. Limits
+        // the sheet's own examples break were misread: not used.
+        let limits = super::limits::parse(&structure.input_constraints, &req.task_text)
+            .filter(|l| example_inputs.iter().all(|e| super::limits::fits(e, l)));
+        let before = generated.len();
+        let generated: Vec<String> = match &limits {
+            Some(l) => generated
+                .into_iter()
+                .filter(|i| super::limits::fits(i, l))
+                .collect(),
+            None => generated,
+        };
+        {
+            let mut st = run.shared();
+            st.stats.inputs_generated = generated.len();
+            st.stats.inputs_out_of_range = before - generated.len();
+        }
 
         // 6. Majority vote: every surviving solution runs the new inputs in its
         // container (compiled once; the example outputs are reused).
@@ -2549,8 +2616,22 @@ pub async fn generate<L: Llm + Sync, E: Executor>(
                 evidence.template_mismatch = true;
             }
         }
+        // Java: tests that look like an int overflow are dropped (the
+        // solutions agree on the wrong number).
+        let overflow = if lang.id == "java" {
+            let sheet_outputs: Vec<String> = examples.iter().map(|e| e.output.clone()).collect();
+            let before = v.tests.len();
+            v.tests.retain(|t| {
+                t.source != TestSource::Generated
+                    || !overflow_suspect(&t.input, &t.expected, &sheet_outputs)
+            });
+            before - v.tests.len()
+        } else {
+            0
+        };
         {
             let mut st = run.shared();
+            st.stats.tests_overflow = overflow;
             st.stats.tests_dropped = v.dropped;
             st.stats.inputs_invalid = v.invalid;
             st.stats.tests_redundant = v.redundant;
@@ -2569,6 +2650,7 @@ pub async fn generate<L: Llm + Sync, E: Executor>(
         evidence.min_agreement = v.min_agreement;
         evidence.prompt_merged = v.prompt_merged;
         evidence.invalid = v.invalid;
+        evidence.overflow = overflow;
         Ok(finish(&run, v.tests, reference, evidence))
     };
     tokio::select! {
@@ -2837,6 +2919,15 @@ mod tests {
             step(SECS_OUTPUT, 0)
         } else if code.contains("badfmt") {
             step("54630\n31770\n", 0)
+        } else if code.contains("summe") {
+            // Java int arithmetic: overflows like the regression case.
+            let mut sum: i32 = 0;
+            let mut squares: i32 = 0;
+            for i in 1..=(n as i32) {
+                sum = sum.wrapping_add(i);
+                squares = squares.wrapping_add(i.wrapping_mul(i));
+            }
+            step(&format!("Summe: {sum}\nQuadratsumme: {squares}\n"), 0)
         } else if code.contains("float4") {
             step(&format!("{:.4}\n", n as f64 / 3.0), 0)
         } else if code.contains("float6") {
@@ -3163,15 +3254,26 @@ mod tests {
         assert_eq!(c.level, ConfidenceLevel::Yellow);
         assert!(c.reasons.iter().any(|r| r.contains("keine Beispiele")));
         assert!(
-            c.reasons.iter().any(|r| r.contains("knapp einig (67 %)")),
+            c.reasons
+                .iter()
+                .any(|r| r.contains("nicht einig (gleiche Ausgabe bei 67 %)")),
             "{c:?}"
         );
-        // 4 of 5 agree with examples: green.
+        // 4 of 5 agree with examples: a clear majority, but not all agree:
+        // yellow (green needs every solution on every test).
         let c = decide_confidence(&Evidence {
             min_agreement: Some(0.8),
             ..base.clone()
         });
-        assert_eq!(c.level, ConfidenceLevel::Green);
+        assert_eq!(c.level, ConfidenceLevel::Yellow);
+        assert!(c.reasons[0].contains("80 %"), "{:?}", c.reasons);
+        // Tests dropped as overflow: yellow with the reason.
+        let c = decide_confidence(&Evidence {
+            overflow: 2,
+            ..base.clone()
+        });
+        assert_eq!(c.level, ConfidenceLevel::Yellow);
+        assert_eq!(c.reasons[0], overflow_reason(2));
         // Template fallback: yellow; template mismatch without tests: red.
         let c = decide_confidence(&Evidence {
             template_fallback: true,
@@ -4433,7 +4535,7 @@ mod tests {
             r.confidence
                 .reasons
                 .iter()
-                .any(|x| x.contains("knapp einig")),
+                .any(|x| x.contains("nicht einig")),
             "{:?}",
             r.confidence.reasons
         );
@@ -5290,5 +5392,104 @@ mod tests {
         assert!(u.contains("Output format: 2n"), "{u}");
         assert!(u.contains("Input limits (every input must respect them): 1 <= n <= 100"));
         assert!(u.contains("Example 1\nInput:\n```\n21\n```\nExpected output:\n```\n42\n```"));
+    }
+
+    #[test]
+    fn inputs_outside_the_stated_limits_are_dropped() {
+        let task = "Lies eine ganze Zahl n (1 <= n <= 100) und gib 2·n aus.\n\nBeispiel:\nEingabe:\n  21\nAusgabe:\n  42\n";
+        let structure = serde_json::json!({
+            "inputFormat": "eine Zahl n",
+            "inputConstraints": "1 <= n <= 100",
+            "outputFormat": "2n",
+            "examples": [{"input": "21", "output": "42"}],
+            "compareMode": "lines"
+        })
+        .to_string();
+        let inputs = r#"{"inputs": ["3", "100", "101", "5000", "0", "-7"]}"#;
+        let llm = MockLlm::new(scripted(structure.clone(), vec!["double"], inputs));
+        let r = generate_with(&llm, req_with_text(task), 3).unwrap();
+        let got: Vec<&str> = r.tests.iter().map(|t| t.input.as_str()).collect();
+        assert_eq!(got, vec!["21\n", "3\n", "100\n"]);
+        assert_eq!(r.stats.inputs_out_of_range, 4);
+        assert_eq!(r.stats.inputs_generated, 2);
+        assert_eq!(r.confidence.level, ConfidenceLevel::Green);
+        // A limit the task text does not state (invented): nothing dropped.
+        let llm = MockLlm::new(scripted(structure, vec!["double"], inputs));
+        let r = generate_with(&llm, req(None), 3).unwrap();
+        assert_eq!(r.stats.inputs_out_of_range, 0);
+        assert!(r.tests.iter().any(|t| t.input == "5000\n"));
+        assert!(r.tests.iter().any(|t| t.input == "101\n"));
+    }
+
+    /// Regression „summe_java“ (KI-Benchmark 1.1.1, seed 3): the model
+    /// wrote the inputs 5000 and 65535, every solution summed the squares
+    /// in an `int` and overflowed alike (100 % agreement), and the result
+    /// was green with wrong expectations.
+    #[test]
+    fn suspected_int_overflow_is_dropped_and_yellow() {
+        let task = "Aufgabe 3.2 - Summen\nLesen Sie eine positive ganze Zahl n ein. Berechnen Sie \
+                    mit einer Schleife die Summe 1 + 2 + ... + n und die Summe der Quadrate \
+                    1*1 + 2*2 + ... + n*n.\nBeispiel\nEingabe:\n4\nAusgabe:\nSumme: 10\nQuadratsumme: 30";
+        let structure = serde_json::json!({
+            "inputFormat": "one line with a positive whole number",
+            "readsInput": true,
+            "inputConstraints": "positive whole number",
+            "outputFormat": "two lines",
+            "examples": [{"input": "4", "output": "Summe: 10\nQuadratsumme: 30"}],
+            "outputTemplates": [],
+            "compareMode": "tokens"
+        })
+        .to_string();
+        let llm = MockLlm::new(move |r: &ChatRequest, _| {
+            if is_structure(r) {
+                Ok(structure.clone())
+            } else if is_inputs(r) {
+                Ok(r#"{"inputs": ["0", "1", "100", "1000", "5000", "65535"]}"#.into())
+            } else {
+                Ok(java_program("summe"))
+            }
+        });
+        let req = GenerateRequest {
+            task_text: task.into(),
+            language: "java".into(),
+            compare_mode: None,
+        };
+        let r = generate_with(&llm, req, 3).unwrap();
+        let got: Vec<&str> = r.tests.iter().map(|t| t.input.as_str()).collect();
+        // 0 is not positive (limit), 5000 and 65535 overflow.
+        assert_eq!(got, vec!["4\n", "1\n", "100\n", "1000\n"]);
+        assert_eq!(
+            r.tests[3].expected,
+            "Summe: 500500\nQuadratsumme: 333833500\n"
+        );
+        assert_eq!(r.stats.inputs_out_of_range, 1);
+        assert_eq!(r.stats.tests_overflow, 2);
+        assert_eq!(r.confidence.level, ConfidenceLevel::Yellow);
+        assert!(r.confidence.reasons.contains(&overflow_reason(2)));
+    }
+
+    #[test]
+    fn overflow_suspects() {
+        let sheet = ["Summe: 10\nQuadratsumme: 30\n".to_string()];
+        assert!(overflow_suspect(
+            "5000\n",
+            "Summe: 12502500\nQuadratsumme: -1270505460\n",
+            &sheet
+        ));
+        assert!(!overflow_suspect(
+            "1000\n",
+            "Summe: 500500\nQuadratsumme: 333833500\n",
+            &sheet
+        ));
+        // Small negative results are normal (e.g. a difference).
+        assert!(!overflow_suspect("3 5\n", "Differenz: -2\n", &sheet));
+        // Negative inputs or negative sheet outputs: negative is expected.
+        assert!(!overflow_suspect("-5000\n", "-1270505460\n", &sheet));
+        assert!(!overflow_suspect(
+            "7\n",
+            "-1270505460\n",
+            &["Ergebnis: -3000000".to_string()]
+        ));
+        assert!(overflow_suspect("", "Ergebnis: -2147483648.\n", &[]));
     }
 }

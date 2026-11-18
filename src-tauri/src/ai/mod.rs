@@ -7,6 +7,7 @@
 
 pub mod eta;
 pub mod gguf;
+pub mod limits;
 pub mod llama;
 pub mod models;
 pub mod no_input;
