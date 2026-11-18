@@ -7,6 +7,16 @@ Format nach [Keep a Changelog](https://keepachangelog.com/de/1.1.0/), Versionen 
 
 ## [Unveröffentlicht]
 
+### Hinzugefügt
+
+- Website für den Code-Prüfer (GitHub Pages, https://bernhardgoetz.github.io/CodeChecker/):
+  Startseite mit Download-Knöpfen für Windows und macOS, „So funktioniert es“,
+  Screenshots, Voraussetzungen, Datenschutz in Kürze und häufigen Fragen, dazu die
+  Anleitung und die übrigen Dokumente als Unterseiten, eine englische Kurzseite und
+  „Kontakt & Impressum“. Die Seiten entstehen aus den vorhandenen Markdown-Dateien
+  (`npm run build:site`) und laden keine externen Ressourcen. Die App selbst ist
+  unverändert.
+
 ## [1.1.1] - 2026-11-16
 
 ### Entfernt

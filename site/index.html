@@ -1,0 +1,236 @@
+<!-- page: {"title": "Code-Prüfer – Programmieraufgaben lokal und sicher prüfen", "description": "Kostenloses Open-Source-Programm für Schüler, Studierende und Lehrkräfte: prüft Python- und Java-Programme mit Testfällen, komplett auf dem eigenen Computer.", "nav": "start", "fullTitle": true} -->
+<section class="hero" aria-labelledby="hero-title">
+  <div class="container hero-grid">
+    <div>
+      <h1 id="hero-title">Programmieraufgaben automatisch prüfen – direkt auf deinem Computer</h1>
+      <p class="lead">
+        Der Code-Prüfer testet dein Programm in <strong>Python</strong> oder <strong>Java</strong> mit Testfällen
+        und zeigt dir, ob es richtig arbeitet. Gemacht für Schülerinnen und Schüler, Studierende und Lehrkräfte.
+      </p>
+      <ul class="facts" aria-label="Das Wichtigste in Kürze">
+        <li>kostenlos</li>
+        <li>Open Source</li>
+        <li>alles lokal</li>
+      </ul>
+      <div class="actions">
+        <a class="button primary" href="#download">Herunterladen</a>
+        <a class="button" href="{{root}}doku/anleitung/">Anleitung lesen</a>
+      </div>
+    </div>
+    <figure class="shot">
+      <picture>
+        <source media="(prefers-color-scheme: dark)" srcset="{{root}}img/ergebnis-dunkel.webp">
+        <img src="{{root}}img/ergebnis-hell.webp" width="1280" height="800" alt="Das Programmfenster des Code-Prüfers: oben ein Python-Programm im Editor, darunter das Ergebnis „2 von 3 Tests bestanden“ mit einem Vergleich von erwarteter und tatsächlicher Ausgabe.">
+      </picture>
+    </figure>
+  </div>
+</section>
+
+<section class="section" id="download" aria-labelledby="download-title">
+  <div class="container">
+    <h2 id="download-title">Herunterladen</h2>
+    <p class="section-intro">
+      Aktuelle Version: <strong>{{version}}</strong>. Jede Datei ist rund 200&nbsp;MB groß, weil die Prüf-Umgebungen
+      für Python und Java schon enthalten sind.
+    </p>
+    <div class="downloads">
+      <a class="download" data-download="windows" href="{{dl.windows}}">
+        <span class="download-suggested">passt zu deinem Computer</span>
+        <span class="download-os">Windows</span>
+        <span class="download-detail">Windows 10 oder 11, 64 Bit</span>
+        <span class="download-file">{{file.windows}}</span>
+      </a>
+      <a class="download" data-download="mac-arm" href="{{dl.macArm}}">
+        <span class="download-suggested">passt zu deinem Computer</span>
+        <span class="download-os">macOS Apple Silicon</span>
+        <span class="download-detail">Macs mit Apple-Chip (M-Serie)</span>
+        <span class="download-file">{{file.macArm}}</span>
+      </a>
+      <a class="download" data-download="mac-intel" href="{{dl.macIntel}}">
+        <span class="download-suggested">passt zu deinem Computer</span>
+        <span class="download-os">macOS Intel</span>
+        <span class="download-detail">Macs mit Intel-Prozessor</span>
+        <span class="download-file">{{file.macIntel}}</span>
+      </a>
+    </div>
+    <p>
+      Alle Dateien und die Neuerungen dieser Version stehen auf der
+      <a href="{{release}}">Release-Seite von Version {{version}}</a>
+      (ältere Versionen: <a href="{{releases}}">alle Releases</a>).
+    </p>
+    <div class="note">
+      <div>
+        <p>
+          <strong>Echtheit prüfen:</strong> Zu jedem Release gibt es die Datei
+          <a href="{{dl.sums}}"><code>SHA256SUMS.txt</code></a> mit den Prüfsummen („Fingerabdrücken“) aller Dateien.
+          Wie du sie vergleichst, steht in der Anleitung
+          <a href="{{root}}doku/warnung-beim-installieren/#5-echtheit-prüfen">„Echtheit prüfen“</a>.
+        </p>
+      </div>
+    </div>
+    <div class="note warn" id="warnung">
+      <div>
+        <p>
+          <strong>Warnung beim Installieren:</strong> Der Installer ist zurzeit nicht digital signiert. Deshalb warnt
+          Windows („Der Computer wurde durch Windows geschützt“) und macOS blockiert den ersten Start. Die Datei ist
+          dadurch nicht gefährlich, Windows bzw. macOS kennt sie nur noch nicht.
+        </p>
+        <ul>
+          <li><strong>Windows:</strong> auf „Weitere Informationen“ und dann auf „Trotzdem ausführen“ klicken.</li>
+          <li><strong>macOS:</strong> Meldung schließen, dann <em>Systemeinstellungen → Datenschutz und Sicherheit</em> → „Dennoch öffnen“.</li>
+        </ul>
+        <p>
+          Mach das nur mit einer Datei, die du selbst von der offiziellen Release-Seite geladen hast.
+          Schritt für Schritt erklärt: <a href="{{root}}doku/warnung-beim-installieren/">Warum warnt Windows bzw. macOS?</a>
+        </p>
+      </div>
+    </div>
+    <p class="section-intro">
+      Für Linux gibt es keinen fertigen Installer. Hinweise zum Selbstbauen stehen in der Anleitung
+      <a href="{{root}}doku/mitmachen/">Mitmachen</a>.
+    </p>
+  </div>
+</section>
+
+<section class="section" id="so-gehts" aria-labelledby="steps-title">
+  <div class="container">
+    <h2 id="steps-title">So funktioniert es</h2>
+    <p class="section-intro">In drei Schritten von deinem Code zum Ergebnis.</p>
+    <ol class="steps">
+      <li>
+        <h3>Code eingeben</h3>
+        <p>Schreib dein Programm in Python oder Java in den Editor oder lade eine Datei hoch. Auf Wunsch fügst du die Aufgabenstellung dazu, auch als Foto, PDF oder Word-Datei.</p>
+      </li>
+      <li>
+        <h3>Testfälle anlegen</h3>
+        <p>Ein Testfall sagt: „Das tippt jemand ein“ und „das soll das Programm antworten“. Du legst Testfälle selbst an oder lässt dir von der KI welche vorschlagen.</p>
+      </li>
+      <li>
+        <h3>Prüfen</h3>
+        <p>Ein Klick auf „Prüfen“ startet dein Programm in einem abgeschotteten Bereich ohne Internet. Du siehst für jeden Testfall: bestanden oder nicht, und bei Fehlern genau, was anders war.</p>
+      </li>
+    </ol>
+  </div>
+</section>
+
+<section class="section" id="screenshots" aria-labelledby="shots-title">
+  <div class="container">
+    <h2 id="shots-title">So sieht es aus</h2>
+    <div class="gallery">
+      <figure class="shot">
+        <picture>
+          <source media="(prefers-color-scheme: dark)" srcset="{{root}}img/aufgabe-dunkel.webp">
+          <img src="{{root}}img/aufgabe-hell.webp" width="1280" height="800" loading="lazy" alt="Reiter „Aufgabe“: links der erkannte Text eines hochgeladenen Aufgabenblatts, rechts eine Vorschau des Blatts, darunter das Häkchen „Text geprüft und korrigiert“.">
+        </picture>
+        <figcaption>Aufgabe: Das Aufgabenblatt wird auf deinem Computer gelesen. Du prüfst den erkannten Text und hakst ihn ab.</figcaption>
+      </figure>
+      <figure class="shot">
+        <picture>
+          <source media="(prefers-color-scheme: dark)" srcset="{{root}}img/testfaelle-dunkel.webp">
+          <img src="{{root}}img/testfaelle-hell.webp" width="1280" height="800" loading="lazy" alt="Reiter „Testfälle“: links die Liste der Testfälle mit Eingabe und erwarteter Ausgabe, rechts der Bereich „Testfälle mit KI“ mit der Bewertung „Konfidenz: Grün“.">
+        </picture>
+        <figcaption>Testfälle: Links deine Testfälle, rechts die Vorschläge der KI mit einer Einschätzung, wie verlässlich sie sind.</figcaption>
+      </figure>
+      <figure class="shot">
+        <picture>
+          <source media="(prefers-color-scheme: dark)" srcset="{{root}}img/ergebnis-dunkel.webp">
+          <img src="{{root}}img/ergebnis-hell.webp" width="1280" height="800" loading="lazy" alt="Reiter „Ergebnis“: „2 von 3 Tests bestanden“, ein bestandener Test und ein Test mit „Falsche Ausgabe“, bei dem erwartete und tatsächliche Zeilen farbig gegenübergestellt sind.">
+        </picture>
+        <figcaption>Ergebnis: Bei einer falschen Ausgabe siehst du Zeile für Zeile, was erwartet war und was dein Programm ausgegeben hat, auch unsichtbare Leerzeichen.</figcaption>
+      </figure>
+    </div>
+  </div>
+</section>
+
+<section class="section" id="voraussetzungen" aria-labelledby="req-title">
+  <div class="container">
+    <h2 id="req-title">Was du brauchst</h2>
+    <div class="columns">
+      <div>
+        <h3>Zum Prüfen</h3>
+        <ul class="checklist">
+          <li>Ein aktuelles <strong>Windows 10 oder 11</strong> (64 Bit) oder ein aktuelles <strong>macOS</strong> (Apple Silicon oder Intel).</li>
+          <li><strong>Docker Desktop</strong> (empfohlen) oder <strong>Podman</strong>. Das Programm startet dein Programm darin, abgeschottet vom restlichen Computer. Unter Windows kann der Installer es auf Wunsch gleich mitinstallieren.</li>
+          <li>Mindestens <strong>8&nbsp;GB Arbeitsspeicher</strong> und etwa <strong>10&nbsp;GB</strong> freier Speicherplatz.</li>
+          <li>Internet nur zum Installieren, für Updates und für das KI-Modell. Zum Prüfen brauchst du kein Internet.</li>
+        </ul>
+      </div>
+      <div>
+        <h3>Für die KI (freiwillig)</h3>
+        <ul class="checklist">
+          <li>Die KI schlägt Testfälle vor und hilft bei schlecht lesbaren, eingescannten Aufgabenblättern.</li>
+          <li>Sie nutzt das Modell <strong>Qwen2.5-Coder 7B</strong> und braucht dafür <strong>mindestens 12&nbsp;GB Arbeitsspeicher</strong>. Das Modell (ca. 4,4&nbsp;GB) lädt die App einmalig herunter.</li>
+          <li>Die KI läuft ebenfalls nur auf deinem Computer. Ohne sie funktioniert das Prüfen genauso.</li>
+          <li>Ob dein Code richtig ist, entscheidet immer das tatsächliche Ausführen, nie die KI.</li>
+        </ul>
+      </div>
+    </div>
+    <p>Alle Einzelheiten stehen in der Anleitung unter <a href="{{root}}doku/anleitung/#2-was-du-brauchst-systemvoraussetzungen">Systemvoraussetzungen</a>.</p>
+  </div>
+</section>
+
+<section class="section" id="datenschutz" aria-labelledby="privacy-title">
+  <div class="container">
+    <h2 id="privacy-title">Datenschutz in Kürze</h2>
+    <ul class="checklist prose">
+      <li>Dein Code, deine Aufgaben und Testfälle <strong>verlassen deinen Computer nie</strong>.</li>
+      <li>Es gibt <strong>keine Benutzerkonten, keine Nutzungsstatistik und keine Absturzberichte</strong>.</li>
+      <li>Ins Internet geht das Programm nur für den Download des KI-Modells, die Suche nach Updates (abschaltbar), das Nachladen der Prüf-Umgebungen, falls nötig, und auf Wunsch für die Installation von Docker Desktop bzw. Podman.</li>
+      <li>Docker Desktop und Podman sind Programme anderer Hersteller und richten sich nach ihren eigenen Einstellungen.</li>
+    </ul>
+    <p>Die verbindliche Fassung (englisch): <a href="{{root}}doku/datenschutz/">Privacy policy</a>.</p>
+  </div>
+</section>
+
+<section class="section faq" id="faq" aria-labelledby="faq-title">
+  <div class="container">
+    <h2 id="faq-title">Häufige Fragen</h2>
+    <details>
+      <summary>Kostet der Code-Prüfer etwas?</summary>
+      <div><p>Nein. Das Programm ist kostenlos und Open Source unter der MIT-Lizenz. Du darfst es frei nutzen, verändern und weitergeben.</p></div>
+    </details>
+    <details>
+      <summary>Wird mein Code ins Internet geschickt?</summary>
+      <div><p>Nein. Alles läuft auf deinem Computer, auch die KI. Es gibt keinen Server, an den dein Code geht.</p></div>
+    </details>
+    <details>
+      <summary>Welche Programmiersprachen gehen?</summary>
+      <div><p>Python und Java. Dein Programm liest Eingaben von der Tastatur (z.&nbsp;B. mit <code>input()</code>) und gibt sein Ergebnis aus (z.&nbsp;B. mit <code>print()</code>). Genau das prüft der Code-Prüfer.</p></div>
+    </details>
+    <details>
+      <summary>Warum brauche ich Docker oder Podman?</summary>
+      <div><p>Dein Programm läuft in einem sogenannten Container, einer Art „Mini-Computer im Computer“. Darin hat es kein Internet und kann nichts auf deinem Rechner verändern. Docker Desktop und Podman sind die Programme, die solche Container starten.</p></div>
+    </details>
+    <details>
+      <summary>Warum warnt Windows beim Installieren?</summary>
+      <div><p>Der Installer ist noch nicht digital signiert. Windows kennt die Datei deshalb noch nicht und zeigt eine Warnung. Mit „Weitere Informationen“ → „Trotzdem ausführen“ geht es weiter. Mehr dazu: <a href="{{root}}doku/warnung-beim-installieren/">Warum warnt Windows bzw. macOS?</a></p></div>
+    </details>
+    <details>
+      <summary>Brauche ich die KI?</summary>
+      <div><p>Nein. Die KI ist freiwillig und braucht mindestens 12&nbsp;GB Arbeitsspeicher. Testfälle kannst du immer auch selbst anlegen.</p></div>
+    </details>
+    <details>
+      <summary>Wird mein Code gespeichert?</summary>
+      <div><p>Nein. Code, Aufgabe und Testfälle sind weg, wenn du das Programm schließt. Kopiere deinen Code vorher in eine eigene Datei, wenn du ihn behalten willst.</p></div>
+    </details>
+    <details>
+      <summary>Geht das auf einem Schulrechner?</summary>
+      <div><p>Für die Installation von Docker Desktop oder Podman braucht man oft Administratorrechte. Auf Schulrechnern hat die nicht jede und jeder. Frag dann bitte deine IT-Betreuung.</p></div>
+    </details>
+    <details>
+      <summary>Es klappt etwas nicht. Wo finde ich Hilfe?</summary>
+      <div><p>Viele Lösungen stehen in der Anleitung unter <a href="{{root}}doku/anleitung/#7-häufige-probleme-und-lösungen">Häufige Probleme und Lösungen</a>. Fehler und Wünsche kannst du als <a href="{{repo}}/issues">Issue auf GitHub</a> melden.</p></div>
+    </details>
+  </div>
+</section>
+
+<section class="section" id="doku" aria-labelledby="docs-title">
+  <div class="container">
+    <h2 id="docs-title">Dokumentation</h2>
+    <p class="section-intro">Die ausführliche Anleitung erklärt Installation, ersten Start, Bedienung und Lösungen für häufige Probleme.</p>
+    <div class="actions">
+      <a class="button primary" href="{{root}}doku/anleitung/">Zur Anleitung</a>
+      <a class="button" href="{{root}}doku/">Alle Dokumente</a>
+    </div>
+  </div>
+</section>
