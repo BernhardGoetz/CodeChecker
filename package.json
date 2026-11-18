@@ -11,6 +11,7 @@
     "preview": "vite preview",
     "build:site": "node scripts/build-site.mjs",
     "check:site": "node scripts/check-site-links.mjs",
+    "test:site": "node --test scripts/build-site.test.mjs",
     "tauri": "tauri"
   },
   "dependencies": {

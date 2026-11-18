@@ -210,8 +210,50 @@ function flowchartToList(src) {
 /** Repository-Pfad -> Doku-Unterseite (falls veröffentlicht). */
 const DOC_BY_SRC = new Map(DOCS.map((d) => [d.src, d]));
 
+// Erlaubte Link-Ziele im Markdown: https:, http:, mailto:, relative Pfade und
+// #-Anker. Alles andere (javascript:, data:, vbscript:, file: ...) bricht den
+// Build ab, damit aus einem Dokument im Repository kein Skript-Link wird.
+const ALLOWED_SCHEMES = new Set(["https", "http", "mailto"]);
+
+/** Kurzer, lesbarer Ausschnitt für Fehlermeldungen. */
+const excerpt = (s) => JSON.stringify(String(s).length > 80 ? `${String(s).slice(0, 80)}…` : String(s));
+
+/**
+ * Prüft ein Link-Ziel aus dem Markdown und gibt es bereinigt zurück.
+ * Browser entfernen führende Leer- und Steuerzeichen sowie Tab und
+ * Zeilenumbruch mitten in der URL; "\x01JaVaScRiPt:" wäre also ein
+ * Skript-Link. Deshalb wird erst so normalisiert wie im Browser und dann das
+ * Schema (ohne Rücksicht auf Groß-/Kleinschreibung) geprüft.
+ */
+export function checkHref(href, where) {
+  const raw = String(href ?? "");
+  const url = raw.replace(/^[\u0000-\u0020]+|[\u0000-\u0020]+$/g, "").replace(/[\t\n\r]/g, "");
+  const fail = (why) => {
+    throw new Error(`Unsicherer Link in ${where}: ${why}: ${excerpt(raw)}`);
+  };
+  if (/[\u0000-\u001f\u007f]/.test(url)) fail("Steuerzeichen im Link");
+  if (url === "" || url.startsWith("#")) return url;
+  // Zeichenreferenzen wie "&#106;" oder "&colon;" vor dem Pfad würde der
+  // Browser auflösen; sie könnten ein Schema verstecken.
+  // Bis zum ersten "/" oder "?" gelesen, weil "#" zu "&#106;" gehören kann.
+  const head = url.split(/[/?]/, 1)[0];
+  if (/&(#|[a-z])/i.test(head)) fail("Zeichenreferenz im Schema-Teil");
+  if (/^[/\\]{2}/.test(url)) fail("protokollrelative Links sind nicht erlaubt");
+  if (url.startsWith("\\")) fail("Backslash am Anfang");
+  const scheme = url.match(/^([a-z][a-z0-9+.-]*):/i);
+  if (scheme) {
+    if (!ALLOWED_SCHEMES.has(scheme[1].toLowerCase())) fail(`Schema "${scheme[1]}:" ist nicht erlaubt`);
+  } else if (url.split(/[/?#]/, 1)[0].includes(":")) {
+    // z. B. "1x:..." oder "-x:...": kein gültiges Schema, aber auch kein
+    // eindeutiger relativer Pfad.
+    fail("unklares Schema");
+  }
+  return url;
+}
+
 function rewriteHref(href, doc) {
-  if (!href || href.startsWith("#") || /^[a-z][a-z0-9+.-]*:/i.test(href) || href.startsWith("//")) return href;
+  href = checkHref(href, doc.src);
+  if (!href || href.startsWith("#") || /^[a-z][a-z0-9+.-]*:/i.test(href)) return href;
   const hashAt = href.indexOf("#");
   const rawPath = hashAt >= 0 ? href.slice(0, hashAt) : href;
   const hash = hashAt >= 0 ? href.slice(hashAt) : "";
@@ -226,8 +268,34 @@ function rewriteHref(href, doc) {
   return `${REPO}/${kind}/main/${encoded}${hash}`;
 }
 
-function renderMarkdown(source, doc) {
-  const md = source.replace(/^<!--[\s\S]*?-->\n?/gm, "");
+// Rohes HTML im Markdown (Block und Inline, außerhalb von Code) ist nicht
+// erlaubt: Die Doku-Seiten sollen nur das enthalten, was Markdown ausdrücken
+// kann, und ein eingeschmuggeltes <script> oder <img onerror> darf nicht auf
+// der Website landen. HTML-Kommentare (z. B. Hinweise an Bearbeiter) werden
+// still entfernt. Eine Whitelist harmloser Tags gibt es bewusst nicht, weil
+// die Quellen heute keine brauchen; wer z. B. <Version> schreiben will, nimmt
+// einen Code-Span (`<Version>`).
+const stripComments = (s) => s.replace(/<!--[\s\S]*?-->/g, "");
+
+function checkTokens(tokens, marked, doc) {
+  marked.walkTokens(tokens, (t) => {
+    if (t.type === "html") {
+      if (stripComments(t.raw).trim() !== "") {
+        throw new Error(
+          `Rohes HTML im Markdown ist nicht erlaubt (${doc.src}, ${t.block ? "Block" : "Inline"}): ${excerpt(t.raw.trim())}`,
+        );
+      }
+    } else if (t.type === "link") {
+      t.href = rewriteHref(t.href, doc);
+    } else if (t.type === "image") {
+      checkHref(t.href, doc.src);
+      throw new Error(`Bilder im Markdown werden nicht unterstützt (${doc.src}): ${excerpt(t.raw)}`);
+    }
+  });
+}
+
+export function renderMarkdown(source, doc) {
+  const md = source;
   const marked = new Marked({ gfm: true });
   const base = new Renderer();
   const tableLabel = doc.lang === "en" ? "Table" : "Tabelle";
@@ -245,6 +313,12 @@ function renderMarkdown(source, doc) {
         }
         return `<pre tabindex="0"><code>${escapeHtml(token.text)}</code></pre>\n`;
       },
+      html(token) {
+        // checkTokens hat alles außer Kommentaren schon abgelehnt; escapen
+        // bleibt als zweite Sicherung.
+        const rest = stripComments(token.text);
+        return rest.trim() ? escapeHtml(rest) : "";
+      },
       table(token) {
         return `<div class="table-wrap" tabindex="0" role="region" aria-label="${tableLabel} ${++tables}">\n${base.table.call(this, token)}</div>\n`;
       },
@@ -252,6 +326,7 @@ function renderMarkdown(source, doc) {
   });
 
   let tokens = marked.lexer(md);
+  checkTokens(tokens, marked, doc);
 
   // Handgeschriebene Inhaltsverzeichnisse ("## Inhalt") entfallen; die Seite
   // bekommt ein erzeugtes Inhaltsverzeichnis.
@@ -283,11 +358,6 @@ function renderMarkdown(source, doc) {
     if (h.depth === 2) toc.push({ id: h.id, text: plain });
   }
   const title = headings.find((h) => h.depth === 1);
-
-  marked.walkTokens(tokens, (t) => {
-    if (t.type === "link") t.href = rewriteHref(t.href, doc);
-    if (t.type === "image") throw new Error(`Bilder im Markdown werden nicht unterstützt (${doc.src})`);
-  });
 
   const html = marked.parser(tokens);
   return {
