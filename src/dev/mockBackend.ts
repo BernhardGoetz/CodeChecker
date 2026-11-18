@@ -46,11 +46,11 @@ const LANGUAGES: LanguageInfo[] = [
 ];
 
 const AI: AiStatus = {
-  hardware: { totalRamBytes: 16e9, physicalCores: 8, appleSilicon: false, avx2: true, suggestedModel: "qwen-7b", warnings: [] },
+  hardware: { totalRamBytes: 16e9, physicalCores: 8, appleSilicon: false, avx2: true, aiAvailable: true, suggestedModel: "qwen-7b", warnings: [] },
   models: [
-    { id: "qwen-1.5b", name: "Qwen2.5-Coder 1.5B", sizeBytes: 1.1e9, license: "Apache-2.0", known: true, pinned: true, installed: false, verified: false, repo: null, quant: "Q4_K_M", importedParts: 0, missingParts: [], partialBytes: 0, suggested: false, selected: false },
     { id: "qwen-7b", name: "Qwen2.5-Coder 7B", sizeBytes: 4.7e9, license: "Apache-2.0", known: true, pinned: true, installed: true, verified: true, repo: null, quant: "Q4_K_M", importedParts: 0, missingParts: [], partialBytes: 0, suggested: true, selected: true },
   ],
+  retired: [],
   selected: "qwen-7b",
   modelReady: true,
   runtimeAvailable: true,
@@ -221,7 +221,18 @@ export function installMock(): void {
         case "generate_tests":
           await sleep(1500);
           return {
-            tests: [{ name: "KI: drei Namen", input: "3\nA\nB\nC\n", expected: "Hallo, A!\nHallo, B!\nHallo, C!\n", source: "generated", agreement: 1 }],
+            tests: [
+              { name: "KI: drei Namen", input: "3\nA\nB\nC\n", expected: "Hallo, A!\nHallo, B!\nHallo, C!\n", source: "generated", agreement: 1, alternatives: [] },
+              // Disagreement: the minority's output is shown with the test.
+              {
+                name: "KI: ein Name",
+                input: "1\nZoe\n",
+                expected: "Hallo, Zoe!\n",
+                source: "generated",
+                agreement: 2 / 3,
+                alternatives: [{ output: "Hallo Zoe!\n", truncated: false, count: 1 }],
+              },
+            ],
             referenceSolution: PY,
             confidence: { level: "green", reasons: ["Beide Beispiele des Blatts bestanden.", "3 von 3 Lösungen liefern dieselben Ausgaben."] },
             suggestedCompareMode: null,
@@ -229,7 +240,7 @@ export function installMock(): void {
             outputTemplates: [{ text: "Hallo, <Name>!", placeholders: ["<Name>"] }],
             inputFormat: "Eine Zahl n, danach n Namen (je eine Zeile).",
             inputConstraints: "0 <= n <= 20",
-            stats: { solutionsRequested: 3, solutionsCompiled: 3, solutionsRepaired: 0, solutionsPassed: 3, examplesFound: 1, examplesDiscarded: 0, templatesFound: 1, templatesDiscarded: 0, templatesMerged: 2, inputsGenerated: 4, testsDropped: 0, inputsInvalid: 1, testsRedundant: 0, noInput: false, solutionsCancelled: 0, llmCalls: 4, completionTokens: 900, promptTokens: 2400, promptMs: 31000, tokensPerSecond: 14.2, durationMs: 72000, phaseMs: { structure: 24000, solutions: 41000, repairs: 0, inputs: 38000, majority: 6000 } },
+            stats: { solutionsRequested: 3, solutionsCompiled: 3, solutionsRepaired: 0, solutionsPassed: 3, examplesFound: 1, examplesDiscarded: 0, templatesFound: 1, templatesDiscarded: 0, templatesMerged: 2, inputsGenerated: 4, testsDropped: 0, inputsInvalid: 1, testsRedundant: 0, noInput: false, fixedValues: false, solutionsReadInput: 0, llmCalls: 4, completionTokens: 900, promptTokens: 2400, promptMs: 31000, tokensPerSecond: 14.2, durationMs: 72000, phaseMs: { structure: 24000, solutions: 41000, repairs: 0, inputs: 38000, majority: 6000 } },
           };
         case "check_variations": {
           await sleep(900);

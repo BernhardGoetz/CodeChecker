@@ -7,6 +7,84 @@ Format nach [Keep a Changelog](https://keepachangelog.com/de/1.1.0/), Versionen 
 
 ## [Unveröffentlicht]
 
+## [1.1.1] - 2026-11-16
+
+### Entfernt
+
+- KI: Das kleine Modell Qwen2.5-Coder 1.5B wird nicht mehr angeboten. Es lieferte bei
+  Aufgaben ohne Eingabe in einem Vergleich mit 12 Läufen nur 2 richtige Ergebnisse. Die KI
+  verwendet nur noch das 7B-Modell. Wer das 1.5B schon heruntergeladen hat, sieht unter
+  „KI-Modell“ den Hinweis, dass es nicht mehr unterstützt wird, und kann es dort löschen,
+  um Speicherplatz freizugeben. War es ausgewählt, übernimmt das 7B-Modell, wenn es
+  eingerichtet ist; sonst ist kein Modell ausgewählt. Eine Auswahl oder ein Import der
+  1.5B-Datei wird abgelehnt.
+- KI: Rechner mit weniger als 12 GB Arbeitsspeicher bekamen bisher das 1.5B-Modell
+  empfohlen. Jetzt zeigt die App dort ehrlich an, dass die KI-Funktion auf diesem Rechner
+  nicht verfügbar ist. Code prüfen und eigene Testfälle funktionieren weiterhin.
+
+### Behoben
+
+- KI: Bei Aufgaben ohne Eingabe lasen alle Lösungen eine Zeitangabe gleich falsch
+  („15 Uhr, 17 Minuten und 51 Sekunden“ als 17:51:00, Blatt „Aufgabe 2.2 Time“,
+  7B-Modell); ein Mehrheitsentscheid kann das nicht korrigieren. Die App liest jetzt
+  Angaben aus Zahl und Einheit (Uhr, Stunden, Minuten, Sekunden, km, Euro, % …) ohne KI
+  aus dem Aufgabentext und gibt sie den Lösungen als feste Werte vor; Format- und
+  Beispielzeilen zählen nicht dazu. Außerdem schreibt jede Lösung je Ausgabezeile einen
+  Kommentar mit den verwendeten Werten. Im Vergleich stimmte das Blatt „Time“ damit in 3
+  von 3 Läufen (vorher 0 von 3). Aufgaben mit Eingabe sind davon nicht betroffen. Die
+  Lösungen werden dadurch länger; die Restdauer rechnet damit.
+- KI: Eingaben der KI, die außerhalb der Grenzen der Aufgabe liegen (z. B. „1 <= n <= 100“,
+  „von 1 bis 1440“, „positive Zahl“), werden verworfen. Eine Grenze zählt nur, wenn sie im
+  Aufgabentext steht.
+- KI: Testfälle mit einem Ganzzahl-Überlauf konnten grün sein. Beispiel: Für die Summe der
+  Quadrate bis 5000 gaben alle Java-Lösungen mit `int` dieselbe negative Zahl aus. Solche
+  Java-Testfälle (große negative Zahl, obwohl Eingabe und Beispiele keine negativen Zahlen
+  haben) werden jetzt verworfen, und das Ergebnis ist höchstens gelb, mit Begründung. Ein
+  Überlauf, der eine positive Zahl ergibt, wird so nicht erkannt.
+- KI: Grün gibt es nur noch, wenn alle Lösungen bei jedem Testfall dieselbe Ausgabe haben.
+  Bisher genügten 4 von 5.
+
+- KI: Die Testfall-Erzeugung konnte vorzeitig enden, sobald eine bloße Mehrheit (z. B. 2 von
+  3 Lösungen) übereinstimmte, auch wenn diese falsch war und die nicht abgewartete Lösung
+  richtig gewesen wäre (Blatt „Aufgabe 2.2 Time“, 7B-Modell: „9630“ statt „441“ Sekunden).
+  Die Lösungen werden jetzt in einem Durchgang gemeinsam geschrieben und kommen zusammen
+  an; es wird also immer jede Lösung abgewartet und mitgezählt. Das vorzeitige Ende und die
+  Angabe „Lösung(en) nicht abgewartet“ entfallen.
+- KI: Aufgaben mit festen Werten und ohne Eingabe (z. B. „Die aktuelle Uhrzeit ist
+  15:17:51 … Speichern Sie Stunde, Minute und Sekunde in Variablen“) wurden als
+  „liest Eingabe“ behandelt; die Lösungen lasen die Werte von der Standardeingabe und die
+  KI erzeugte passende Eingaben (1.5B-Modell). Die Lösungen sollen solche Werte jetzt als
+  Konstanten verwenden. Zusätzlich erkennt eine Prüfung ohne KI solche Aufgaben am Text
+  (keine Eingabe-Hinweise wie „einlesen“, „Eingabe“, „Scanner“, „stdin“, aber feste Werte
+  für Variablen); dann gibt es keine KI-Eingaben, und Lösungen, die ohne Eingabe abstürzen,
+  auf Eingabe warten oder mit Eingabe etwas anderes ausgeben, zählen als fehlgeschlagen
+  und werden mit einem entsprechenden Hinweis repariert.
+- KI: Die Prompt-Statistik im KI-Panel („Prompt: … Token in … s“) war bei gleichzeitig
+  laufenden Anfragen um ein Vielfaches zu hoch, weil die Zeiten paralleler Anfragen addiert
+  wurden. Sie zeigt jetzt die tatsächlich vergangene Zeit; ein gemeinsamer Prompt mehrerer
+  Lösungen zählt einmal.
+
+### Geändert
+
+- KI: Testfälle werden schneller erzeugt. Alle Lösungen der ersten Runde gehen als eine
+  Anfrage an die KI-Laufzeit, die den (langen) Prompt nur noch einmal statt einmal je
+  Lösung verarbeitet. Der KV-Cache bleibt in voller Genauigkeit (f16), weil die
+  Komprimierung (q8_0) die Prompt-Verarbeitung um etwa 20 % bremste; komprimiert wird nur
+  noch, wenn der freie Arbeitsspeicher knapp ist (weniger als Modellgröße + 2 GB). Die
+  Prompt-Verarbeitung nutzt so viele Threads wie physische Kerne. Gemessen mit dem
+  1.5B-Modell auf 4 Kernen: Lösungsphase etwa 144 s → 84 s. Reparaturen und die
+  Testeingaben bleiben einzelne Anfragen.
+- KI: Die Restdauer ist adaptiv und eher vorsichtig (vorher zu optimistisch). Sie wird als
+  Spanne angezeigt („noch ca. 4–6 Min.“) und alle 5 Sekunden aktualisiert. Sie rechnet
+  mit den verbleibenden Prompt- und Ausgabe-Token, der gemessenen Geschwindigkeit des
+  ganzen KI-Servers (alle parallelen Lösungen zusammen) und den Sandbox-Zeiten, mit
+  Sicherheitsaufschlag. Startwert sind die Messwerte des letzten Laufs je Modell
+  (`ai-speed.json` im Konfigurationsordner), beim ersten Lauf vorsichtige Annahmen.
+- KI: Sind sich die Lösungen bei einem Testfall uneinig, zeigt der Testfall (und das
+  KI-Panel) die abweichenden Ausgaben der anderen Lösungen mit Anzahl an, damit die
+  übernommene Mehrheitsausgabe geprüft werden kann. Während die Lösungen geschrieben
+  werden, zählt die Anzeige sie erst beim Prüfen hoch (sie kommen zusammen an).
+
 ## [1.1.0] - 2026-11-16
 
 ### Hinzugefügt
@@ -206,7 +284,8 @@ Erste stabile Version.
   und Notarisierung sind noch nicht eingerichtet); SmartScreen und Gatekeeper warnen beim
   ersten Start.
 
-[Unveröffentlicht]: https://github.com/BernhardGoetz/CodeChecker/compare/v1.1.0...HEAD
+[Unveröffentlicht]: https://github.com/BernhardGoetz/CodeChecker/compare/v1.1.1...HEAD
+[1.1.1]: https://github.com/BernhardGoetz/CodeChecker/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/BernhardGoetz/CodeChecker/compare/v1.0.3...v1.1.0
 [1.0.3]: https://github.com/BernhardGoetz/CodeChecker/compare/v1.0.2...v1.0.3
 [1.0.2]: https://github.com/BernhardGoetz/CodeChecker/compare/v1.0.1...v1.0.2

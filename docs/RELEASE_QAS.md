@@ -217,6 +217,16 @@ Einzeldatei, und `--verify` vergleicht auf diese reduziert. **Nach dem Merge des
 einmal `pin-models.yml` ausführen**, damit `catalog.json` bereinigt wird (der PR
 entfernt die Teile beim 7B-Modell, Revision und Einzeldatei bleiben gleich).
 
+**Version 1.1.1 (1.5B-Modell entfernt):** Die App bietet nur noch die Modelle aus
+`SUPPORTED_MODELS` an (`src-tauri/src/ai/models.rs`, dieselbe Liste in
+`scripts/pin-models.sh`). `catalog.json` wird nicht von Hand geändert. Solange sie den
+1.5B-Eintrag noch enthält, ignoriert die App ihn, aber `pin-models.sh --check` bricht im
+Release (Job `version`, auch QAS) ab, damit die Release-Notizen kein entferntes Modell
+auflisten. Deshalb **vor dem QAS-/Release-Lauf** `pin-models.yml` auf dem Branch mit
+dieser Änderung starten (die Logik zum Entfernen steckt im Skript dieses Branches), den
+Pin-PR prüfen und mergen. Der PR entfernt den 1.5B-Eintrag; das 7B bleibt bei derselben
+Revision, solange Hugging Face keine neuere meldet.
+
 ## Integrität der Artefakte zwischen den Jobs
 
 Jeder Schritt eines späteren Jobs desselben Laufs könnte Artefakte ersetzen

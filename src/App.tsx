@@ -346,6 +346,8 @@ export default function App() {
     if (starting !== null) return "Docker oder Podman wird gerade gestartet …";
     if (imagesBusy !== null) return "Die Runner-Images werden noch vorbereitet …";
     if (ai === null) return "KI-Status wird geladen …";
+    if (!ai.hardware.aiAvailable)
+      return "Die KI-Funktion ist auf diesem Rechner nicht verfügbar (zu wenig Arbeitsspeicher). Code prüfen geht weiterhin ohne KI.";
     if (!ai.runtimeAvailable) return ai.runtimeError ?? "KI-Laufzeit nicht gefunden.";
     if (!ai.modelReady) return "Zuerst ein KI-Modell einrichten („KI-Modell einrichten …“).";
     if (running) return "Bitte warten, bis die Prüfung fertig ist.";
@@ -357,7 +359,7 @@ export default function App() {
 
   // Warm-up: once the task text is confirmed and a model is ready, load the
   // model in the background (cancellable with "Abbrechen", no error popups).
-  const aiReady = ai !== null && ai.modelReady && ai.runtimeAvailable;
+  const aiReady = ai !== null && ai.hardware.aiAvailable && ai.modelReady && ai.runtimeAvailable;
   useEffect(() => {
     if (!taskConfirmed || !aiReady) return;
     warmUpAi().catch(() => undefined);
@@ -394,6 +396,8 @@ export default function App() {
         expected: t.expected,
         origin: "ai" as const,
         aiExpected: t.expected,
+        aiAgreement: t.agreement,
+        aiAlternatives: t.alternatives ?? [],
       })),
     ]);
   };

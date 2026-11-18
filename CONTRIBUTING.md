@@ -80,6 +80,8 @@ Lizenz: MIT (siehe [`LICENSE`](LICENSE)).
 - `models.rs` + `catalog.json`: gepinnter Modellkatalog, Hardware-Erkennung, Download, Import.
 - `pipeline.rs`: Testfälle erzeugen (Struktur → Lösungen → Kompilieren → Beispiele → Testeingaben → Mehrheitsentscheid → Konfidenz). **Kernregel:** Die KI schreibt nie erwartete Ausgaben; diese entstehen durch Ausführen der Lösungen in der Sandbox.
 - `prompts.rs`: Prompts, JSON-Schemas, Code aus Antworten extrahieren.
+- `no_input.rs`: Prüfung ohne KI, ob eine Aufgabe feste Werte vorgibt und keine Eingabe liest (dann keine KI-Eingaben; einlesende Lösungen zählen als fehlgeschlagen).
+- `eta.rs`: Restdauer (Token-Arbeit je Schritt, gemessener Server-Durchsatz, Spanne); Messwerte je Modell in `ai-speed.json` im Konfigurationsordner.
 - `ocr_fix.rs`: KI-Korrektur von OCR-Text (Plausibilitätsfilter lässt nur kleine, örtliche Änderungen durch).
 - `variation.rs`: Variationstest (Eingaben/Szenarien, Literalersetzung in einfachen Zuweisungen, Vergleich mit der Musterlösung).
 - `gguf.rs`: Plausibilitätsprüfung importierter `.gguf`-Dateien.
@@ -109,6 +111,8 @@ src-tauri/src/
   ai/gguf.rs             Prüfung importierter GGUF-Dateien
   ai/pipeline.rs         Testfälle erzeugen: Lösungen, Beispiele, Mehrheit, Konfidenz
   ai/prompts.rs          Prompts, JSON-Schemas, Code aus Antworten extrahieren
+  ai/no_input.rs         Aufgabe ohne Eingabe (feste Werte) am Text erkennen
+  ai/eta.rs              Restdauer: Arbeit je Schritt, Durchsatzmessung, Spanne
   ai/ocr_fix.rs          KI-Korrektur von OCR-Text: Prompt, Plausibilitätsfilter
   ai/variation.rs        Variationstest: Eingaben/Szenarien, Literalersetzung, Erklärung
   docs/mod.rs            Import von Aufgabenblättern (Bild, PDF, DOCX), Limits
@@ -258,7 +262,7 @@ CODE_PRUEFER_LLAMA_SERVER=/tmp/llama/llama-server npm run tauri dev
 
 Plattformen des Skripts: `win-x64`, `macos-arm64`, `macos-x64`, `linux-x64`. Die llama.cpp-Version (`LLAMA_CPP_VERSION` in `src-tauri/src/ai/llama.rs`) und die Prüfsummen im Skript müssen zusammenpassen (Unit-Test).
 
-Integrationstests mit echtem llama-server und beliebigem GGUF (ideal: Qwen2.5-Coder-1.5B):
+Integrationstests mit echtem llama-server und beliebigem GGUF (ideal: Qwen2.5-Coder-7B, das Modell der App):
 
 ```sh
 cd src-tauri && CODE_PRUEFER_LLAMA_SERVER=/tmp/llama/llama-server \
@@ -408,12 +412,14 @@ Die Sprachtabelle ist datengetrieben (`src-tauri/src/runner/languages.rs`). Sie 
 Modelle stehen in `src-tauri/src/ai/catalog.json`; der Katalog wird per `include_str!` in die App eingebaut.
 
 1. **Eintrag in `catalog.json`** ergänzen mit den Feldern `id`, `name`, `repo` (Hugging-Face-Repository mit GGUF-Dateien), `quant` (z. B. `q4_k_m`; der Importdialog erwartet eine Datei mit `*<quant>*.gguf`), `license`, `solutions` (Anzahl der Kandidaten-Lösungen pro Aufgabe) sowie `revision` und `files` (Name, Größe, SHA-256).
-2. **Pinnen:** `revision`, `files[].size` und `files[].sha256` **nicht von Hand** eintragen, sondern den Workflow `pin-models.yml` starten (er nutzt `scripts/pin-models.sh`) und den entstehenden PR auf huggingface.co prüfen und mergen (siehe Abschnitt 10). Je Modell wird genau eine Variante eingetragen: die einzelne `.gguf`-Datei, wenn es sie gibt, sonst alle Teile der aufgeteilten Datei (`…-00001-of-0000N.gguf`); llama.cpp lädt über den ersten Teil. Ältere Pins mit beiden Varianten bereinigt ein erneuter Lauf von `pin-models.yml` (siehe `docs/RELEASE_QAS.md`).
-3. **Lizenz prüfen:** Nur Modelle mit Lizenz, die die Nutzung erlaubt (die bisherigen: Apache-2.0). Qwen2.5-Coder-3B fehlt absichtlich, weil seine Lizenz (Qwen Research License) keine kommerzielle Nutzung erlaubt.
-4. **Hardware-Empfehlung:** Die Auswahl „empfohlen“ ist in `ai/models.rs` fest verdrahtet: `SMALL_MODEL` (`qwen2.5-coder-1.5b`) unter `SMALL_MODEL_RAM_BYTES` (12 GiB RAM), sonst `LARGE_MODEL` (`qwen2.5-coder-7b`). Ein neues Modell wird also in der Liste angezeigt, aber nur dann empfohlen, wenn diese Konstanten angepasst werden. Warnungen zu wenig RAM (unter 6 GiB) und fehlendem AVX2 stehen in `hardware_warnings`.
-5. **Chat-Vorlage:** Modelle ohne geprüfte Prüfsumme laufen mit der eingebauten ChatML-Vorlage statt der Vorlage aus der Datei. Ein neues Modell mit anderem Prompt-Format braucht daher ggf. Anpassungen in `ai/llama.rs`/`ai/prompts.rs`. Gepinnte Katalogmodelle mit geprüfter SHA-256 nutzen die Jinja-Vorlage aus der GGUF-Datei (`ChatTemplate::FromModel`, Auswahl in `ai/models.rs`, `chat_template()`), alle anderen die eingebaute ChatML-Vorlage (`--chat-template chatml`); ob andere Modellfamilien als Qwen damit funktionieren, ist ungeprüft.
-6. **Tests:** Die Unit-Tests in `ai/models.rs` referenzieren `SMALL_MODEL`/`LARGE_MODEL`; `ai_integration` kann mit `CODE_PRUEFER_TEST_MODEL` gegen ein beliebiges GGUF laufen.
-7. **Dokumentation:** Die Tabelle „Welches KI-Modell passt zu meinem Rechner?“ in der `README.md` anpassen.
+2. **Freischalten:** Die App bietet nur Einträge aus `SUPPORTED_MODELS` (`ai/models.rs`) an; dieselbe Liste steht in `scripts/pin-models.sh` (ein Unit-Test vergleicht beide). Andere Einträge in `catalog.json` ignoriert die App, und `pin-models.sh --check` (Release) bricht dann ab.
+3. **Pinnen:** `revision`, `files[].size` und `files[].sha256` **nicht von Hand** eintragen, sondern den Workflow `pin-models.yml` starten (er nutzt `scripts/pin-models.sh`) und den entstehenden PR auf huggingface.co prüfen und mergen (siehe Abschnitt 10). Je Modell wird genau eine Variante eingetragen: die einzelne `.gguf`-Datei, wenn es sie gibt, sonst alle Teile der aufgeteilten Datei (`…-00001-of-0000N.gguf`); llama.cpp lädt über den ersten Teil. Ältere Pins mit beiden Varianten bereinigt ein erneuter Lauf von `pin-models.yml` (siehe `docs/RELEASE_QAS.md`).
+4. **Lizenz prüfen:** Nur Modelle mit Lizenz, die die Nutzung erlaubt (die bisherigen: Apache-2.0). Qwen2.5-Coder-3B fehlt absichtlich, weil seine Lizenz (Qwen Research License) keine kommerzielle Nutzung erlaubt.
+5. **Hardware:** Empfohlen wird `LARGE_MODEL` (`qwen2.5-coder-7b`), sofern der Arbeitsspeicher mindestens `MIN_AI_RAM_BYTES` (11 GiB, also Rechner ab „12 GB“) beträgt. Darunter ist die KI nicht verfügbar (`ai_available`): Download, Import und Auswahl werden abgelehnt, die App zeigt die Meldung aus `ram_too_small`. Warnungen (zu wenig RAM, fehlendes AVX2) stehen in `hardware_warnings`.
+6. **Entfernte Modelle:** Ein Modell, das nicht mehr angeboten wird, kommt nach `RETIRED_MODELS` (`ai/models.rs`, mit Dateinamen und SHA-256). Wer es heruntergeladen hat, sieht einen Hinweis mit „Löschen“; eine Auswahl fällt auf das 7B-Modell (falls vorhanden) oder auf „kein Modell“ zurück, ein Import der Datei wird abgelehnt. Seit 1.1.1 betrifft das Qwen2.5-Coder 1.5B.
+7. **Chat-Vorlage:** Modelle ohne geprüfte Prüfsumme laufen mit der eingebauten ChatML-Vorlage statt der Vorlage aus der Datei. Ein neues Modell mit anderem Prompt-Format braucht daher ggf. Anpassungen in `ai/llama.rs`/`ai/prompts.rs`. Gepinnte Katalogmodelle mit geprüfter SHA-256 nutzen die Jinja-Vorlage aus der GGUF-Datei (`ChatTemplate::FromModel`, Auswahl in `ai/models.rs`, `chat_template()`), alle anderen die eingebaute ChatML-Vorlage (`--chat-template chatml`); ob andere Modellfamilien als Qwen damit funktionieren, ist ungeprüft.
+8. **Tests:** Die Unit-Tests in `ai/models.rs` referenzieren `LARGE_MODEL`, `SUPPORTED_MODELS` und `RETIRED_MODELS`; `ai_integration` kann mit `CODE_PRUEFER_TEST_MODEL` gegen ein beliebiges GGUF laufen.
+9. **Dokumentation:** Die Tabelle „Welches KI-Modell braucht die App?“ in der `README.md` anpassen.
 
 Bevor ein Katalogeintrag gepinnt ist, kann man Dateien weiterhin über „Datei importieren …“ einlesen: Ist die SHA-256 unbekannt, wird die Datei erst nach ausdrücklicher Bestätigung übernommen und als „nicht geprüft“ bzw. „unbekanntes Modell“ markiert (Ablage unter `models/unverified/<id>/`). Modelle liegen im App-Datenordner (`models/`), die Auswahl in `ai.json` im Konfigurationsordner.
 

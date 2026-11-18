@@ -17,26 +17,45 @@ pub const MAX_INPUTS: usize = 10;
 pub const MAX_FORMAT_CHARS: usize = 300;
 
 /// `class_name`: Java class named by the task ([`class_name_from_task`]),
-/// else `Main`.
-fn language_rules(language: &str, class_name: Option<&str>) -> String {
-    match language {
+/// else `Main`. `no_input`: the task reads no input (fixed values).
+fn language_rules(language: &str, class_name: Option<&str>, no_input: bool) -> String {
+    let base = match language {
         "java" => {
             let class = class_name.unwrap_or(crate::runner::java::DEFAULT_CLASS);
+            let input = if no_input {
+                "The program reads no input: never use `java.util.Scanner`, \
+                 `java.io.BufferedReader` or System.in."
+            } else {
+                "Read the input with `java.util.Scanner` or `java.io.BufferedReader` from \
+                 System.in. Never print a prompt before reading input (no \
+                 `System.out.print(\"Zahl eingeben: \")`) – prompts would end up in the output."
+            };
             format!(
                 "Write Java 21. Put everything into `public class {class}` with \
                  `public static void main(String[] args)` (the file is {class}.java), no \
                  package declaration, no other class with a main method, only the standard \
-                 library. Read the input with `java.util.Scanner` or `java.io.BufferedReader` \
-                 from System.in. Never print a prompt before reading input (no \
-                 `System.out.print(\"Zahl eingeben: \")`) – prompts would end up in the output."
+                 library. {input}"
             )
         }
-        _ => "Write Python 3.12 using only the standard library. Read the input from \
-              standard input (`input()` or `sys.stdin`). Never pass a prompt string to \
-              `input()` – prompts would end up in the output."
-            .to_string(),
-    }
+        _ => if no_input {
+            "Write Python 3.12 using only the standard library. The program reads no input: \
+             never call `input()` and never read `sys.stdin`."
+        } else {
+            "Write Python 3.12 using only the standard library. Read the input from \
+             standard input (`input()` or `sys.stdin`). Never pass a prompt string to \
+             `input()` – prompts would end up in the output."
+        }
+        .to_string(),
+    };
+    format!("{base} {FIXED_VALUES_RULE}")
 }
+
+/// Rule for tasks with fixed values (regression „Aufgabe 2.2 Time“: the
+/// solutions read the given time from standard input).
+pub const FIXED_VALUES_RULE: &str = "If the task gives fixed values (e.g. \"the time is \
+15:17:51\", \"assign the values … to the variables …\") and does not ask for input, write \
+these values as constants or variable assignments in the code and read nothing from \
+standard input.";
 
 /// Well-known JDK classes that task sheets mention ("Verwenden Sie die
 /// Klasse Scanner") – never the class to write.
@@ -268,6 +287,8 @@ pub struct SolutionContext<'a> {
     pub output_templates: &'a [OutputTemplate],
     /// Java: class named by the task ([`class_name_from_task`]), else `Main`.
     pub class_name: Option<&'a str>,
+    /// The task reads no input: the solutions must use the given values.
+    pub no_input: bool,
 }
 
 pub fn solution_messages(
@@ -279,12 +300,21 @@ pub fn solution_messages(
         "You are an expert programmer. Solve the programming exercise with a complete, \
          correct program. {} Print exactly the required output and nothing else (no \
          prompts, no explanations, no extra spaces). Answer with exactly one ```{} code \
-         block containing the whole program.",
-        language_rules(language, ctx.class_name),
-        fence(language)
+         block containing the whole program.{}",
+        language_rules(language, ctx.class_name, ctx.no_input),
+        fence(language),
+        // Only without input: with input it made the solutions worse
+        // (KI-Benchmark 1.1.1, „parken“).
+        if ctx.no_input { STEPS_RULE } else { "" }
     );
     let mut user = task_block(task_text);
-    if !ctx.input_format.trim().is_empty() {
+    if ctx.no_input {
+        user.push_str(&format!("\n\n{NO_INPUT_NOTE}"));
+        let fixed = fixed_values_block(task_text);
+        if !fixed.is_empty() {
+            user.push_str(&format!("\n\n{fixed}"));
+        }
+    } else if !ctx.input_format.trim().is_empty() {
         user.push_str(&format!("\n\nInput format: {}", ctx.input_format.trim()));
     }
     if !ctx.output_format.trim().is_empty() {
@@ -335,6 +365,160 @@ pub fn solution_messages(
     vec![ChatMessage::system(system), ChatMessage::user(user)]
 }
 
+/// Part of the solution system prompt for a task without input: one
+/// comment per output line with the values used, every printed value in its
+/// own variable. Against solutions that print a variable of another subtask
+/// (e.g. the duration instead of the end time).
+pub const STEPS_RULE: &str = " Before printing, write one short comment per required output \
+line naming the subtask it answers and the values from the task it uses, copied exactly as \
+written in the task. Compute every printed value in its own named variable from named input \
+variables; do not reuse a variable of another subtask unless the task says so.";
+
+/// Heading of [`fixed_values_block`].
+pub const FIXED_VALUES_HEADING: &str = "Fixed values stated in the task text (extracted \
+automatically, in order of appearance; use exactly these numbers):";
+
+/// Punctuation trimmed from the end of a word.
+const TRAILING: &str = ",.;:!?)";
+
+fn trim_trailing(w: &str) -> &str {
+    w.trim_end_matches(|c: char| TRAILING.contains(c))
+}
+
+/// Time unit of a German word: Uhr, Stunde(n), Minute(n), Sekunde(n).
+fn time_unit(w: &str) -> Option<&'static str> {
+    match trim_trailing(w).to_lowercase().as_str() {
+        "uhr" => Some("o'clock"),
+        "stunde" | "stunden" | "std" => Some("hours"),
+        "minute" | "minuten" | "min" => Some("minutes"),
+        "sekunde" | "sekunden" | "sek" => Some("seconds"),
+        _ => None,
+    }
+}
+
+/// Other units a stated value may carry (lower case).
+const OTHER_UNITS: &[&str] = &[
+    "km", "m", "cm", "kg", "g", "liter", "euro", "€", "%", "prozent", "grad", "km/h",
+];
+
+/// A plain number („15“, „10,5“, „(3“): decimal comma becomes a point.
+fn plain_number(w: &str) -> Option<String> {
+    let w = trim_trailing(w.trim_start_matches('('));
+    let ok = w.chars().next().is_some_and(|c| c.is_ascii_digit())
+        && w.chars()
+            .all(|c| c.is_ascii_digit() || c == ',' || c == '.')
+        && w.chars().filter(|c| *c == ',' || *c == '.').count() <= 1
+        && !w.ends_with([',', '.']);
+    ok.then(|| w.replace(',', "."))
+}
+
+/// Lines of the task without the blocks that follow a line ending with
+/// „:“ (output formats, examples, templates: their numbers are placeholders
+/// or example values, not given values). Such a block ends at an empty
+/// line, an enumerated line („c)“, „2.“) or a line longer than 80 characters
+/// (running text).
+fn lines_outside_format_blocks(text: &str) -> Vec<&str> {
+    let mut kept = Vec::new();
+    let mut in_block = false;
+    for line in text.lines() {
+        let t = line.trim();
+        if t.is_empty() {
+            in_block = false;
+            continue;
+        }
+        // „c) …“, „2. …“: up to two letters or digits, „)“ or „.“, a space.
+        let head: Vec<char> = t.chars().take(4).collect();
+        let enumerated = (1..=2).any(|k| {
+            head.len() > k + 1
+                && head[..k].iter().all(|c| c.is_ascii_alphanumeric())
+                && matches!(head[k], ')' | '.')
+                && head[k + 1].is_whitespace()
+        });
+        if in_block && (t.chars().count() > 80 || enumerated) {
+            in_block = false;
+        }
+        if !in_block {
+            kept.push(t);
+        }
+        if t.ends_with(':') {
+            in_block = true;
+        }
+    }
+    kept
+}
+
+/// Values the task text states, found by rules (no model): runs of number
+/// plus time unit („15 Uhr, 17 Minuten und 51 Sekunden“, also a single
+/// „437 Minuten“), joined by commas or „und“, and other numbers with a unit
+/// (km, kg, Euro, %, …). Format and example blocks are skipped (see
+/// [`lines_outside_format_blocks`]). Empty if nothing was found.
+///
+/// The 7B model read „15 Uhr, 17 Minuten und 51 Sekunden“ as 17:51:00 in
+/// every solution alike, which no majority vote can correct (KI-Benchmark
+/// 1.1.1); given as numbers, the values are copied correctly.
+pub fn fixed_values_block(text: &str) -> String {
+    let kept = lines_outside_format_blocks(text).join("\n");
+    let words: Vec<&str> = kept.split_whitespace().collect();
+    let mut lines: Vec<String> = Vec::new();
+    let mut i = 0;
+    while i < words.len() {
+        // A run of number + time unit, each unit at most once.
+        let mut j = i;
+        let mut parts: Vec<(String, &str)> = Vec::new();
+        while let (Some(n), Some(u)) = (
+            words.get(j).and_then(|w| plain_number(w)),
+            words.get(j + 1).and_then(|w| time_unit(w)),
+        ) {
+            if parts.iter().any(|p| p.1 == u) {
+                break;
+            }
+            parts.push((n, u));
+            j += 2;
+            if words.get(j) == Some(&"und") {
+                j += 1;
+            }
+        }
+        if !parts.is_empty() {
+            let quote = trim_trailing(&words[i..j].join(" ")).to_string();
+            let quote = quote.strip_suffix(" und").unwrap_or(&quote).to_string();
+            let desc = parts
+                .iter()
+                .map(|(n, u)| match *u {
+                    "o'clock" => format!("hours = {n}"),
+                    u => format!("{u} = {n}"),
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            let clock = match parts.as_slice() {
+                [(h, "o'clock"), (m, "minutes"), (s, "seconds")] => {
+                    format!(" (clock time {h:0>2}:{m:0>2}:{s:0>2})")
+                }
+                _ => String::new(),
+            };
+            lines.push(format!("- \"{quote}\": {desc}{clock}"));
+            i = j;
+            continue;
+        }
+        if let (Some(n), Some(unit)) = (plain_number(words[i]), words.get(i + 1)) {
+            let unit = trim_trailing(unit);
+            if OTHER_UNITS.contains(&unit.to_lowercase().as_str()) {
+                lines.push(format!(
+                    "- \"{} {unit}\": {n} {}",
+                    trim_trailing(words[i]),
+                    unit.to_lowercase()
+                ));
+                i += 2;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    if lines.is_empty() {
+        return String::new();
+    }
+    format!("{FIXED_VALUES_HEADING}\n{}", lines.join("\n"))
+}
+
 /// Start of a solution answer (written into the prompt): the model
 /// continues inside the code block.
 pub fn code_prefill(language: &str) -> String {
@@ -361,6 +545,32 @@ pub fn repair_messages(
         "The program does not compile:\n```\n{}\n```\nFix the error. Answer with the complete \
          corrected program in exactly one ```{} code block.",
         errors.trim_end(),
+        fence(language)
+    )));
+    conversation
+}
+
+/// Part of the solution prompt for a task without input.
+pub const NO_INPUT_NOTE: &str = "This program reads no input. Use the values given in the task \
+as constants in the code; do not read anything from standard input.";
+
+/// Repair hint for a solution that read input although the task reads
+/// none (German meaning: „Die Aufgabe liest keine Eingabe; verwende die
+/// vorgegebenen Werte“).
+pub const NO_INPUT_REPAIR: &str = "The program reads input, but the task reads no input: it \
+crashed, waited for input or printed something different when run without input. Use the \
+values given in the task as constants in the code and remove every read from standard input.";
+
+/// Follow-up after a solution read input although the task reads none.
+pub fn no_input_repair_messages(
+    mut conversation: Vec<ChatMessage>,
+    previous_answer: &str,
+    language: &str,
+) -> Vec<ChatMessage> {
+    conversation.push(ChatMessage::assistant(previous_answer));
+    conversation.push(ChatMessage::user(format!(
+        "{NO_INPUT_REPAIR} Answer with the complete corrected program in exactly one ```{} \
+         code block.",
         fence(language)
     )));
     conversation
@@ -513,6 +723,22 @@ pub fn extract_code(answer: &str, language: &str) -> Option<String> {
 }
 
 #[cfg(test)]
+/// Task sheet „Aufgabe 2.2 – Time“, verbatim (KI-Benchmark 1.1.1).
+pub(crate) const TIME_SHEET: &str = "Aufgabe 2.2 - Time:
+a) Öffnen Sie die bereitgestellte Java-Klasse Time.
+b) Legen Sie Variablen mit den Namen hour, minute und second an. Weisen Sie den Variablen die Werte für 15 Uhr, 10 Minuten und 30 Sekunden zu. Das ist eine fiktive Startzeit.
+c) Lassen Sie das Programm nun berechnen, wie viele Sekunden seit Mitternacht vergangen sind und geben Sie die Antwort in dem folgenden Format aus:
+12345678 seconds have passed since midnight.
+d) Berechnen und geben Sie in der nächsten Zeile aus, wie viele Sekunden der Tag noch übrig hat. Das Ausgabeformat ist:
+12345678 seconds are left until midnight.
+e) Erstellen Sie nun drei Variablen, welche die fiktive Zeit 15 Uhr, 17 Minuten und 51 Sekunden repräsentieren. Lassen Sie das Programm berechnen, wie viel Zeit von der fiktiven Startzeit bis zu der fiktiven aktuellen Zeit vergangen ist. Geben Sie die Antwort in der nächsten Zeile nach dem folgenden Format aus.
+Since I started with the task 12345678 seconds have passed.
+Beachten Sie, dass die Änderungen in den Teilaufgaben a) bis e) die vorherigen Ausgabeergebnisse und Ausgaben nicht verändern dürfen. Am Ende von Aufgabe 2.2 muss Ihr Programm drei Ausgaben haben. Die Ausgabe sollte folgendermaßen aussehen:
+12345678 seconds have passed since midnight.
+12345678 seconds are left until midnight.
+Since I started with the task 12345678 seconds have passed.";
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -566,6 +792,7 @@ mod tests {
             examples: &[("3\n".into(), "6\n".into())],
             output_templates: &[],
             class_name: None,
+            no_input: false,
         };
         let m = solution_messages("Verdopple n.", "java", &ctx);
         assert!(m[0].content.contains("public class Main"));
@@ -610,6 +837,7 @@ mod tests {
             examples: &[],
             output_templates: &templates,
             class_name: None,
+            no_input: false,
         };
         let m = solution_messages("t", "python", &ctx);
         assert!(m[1].content.contains("Placeholders: `12345678`"));
@@ -651,6 +879,162 @@ mod tests {
     }
 
     #[test]
+    fn no_input_prompt_forbids_reading() {
+        let ctx = SolutionContext {
+            input_format: "hour minute second",
+            output_format: "",
+            examples: &[],
+            output_templates: &[],
+            class_name: Some("Time"),
+            no_input: true,
+        };
+        let m = solution_messages("Aufgabe 2.2 Time", "java", &ctx);
+        assert!(m[0].content.contains("never use `java.util.Scanner`"));
+        assert!(!m[0].content.contains("Read the input with"));
+        assert!(m[0].content.contains(FIXED_VALUES_RULE));
+        assert!(m[1].content.contains(NO_INPUT_NOTE));
+        // A wrong input format of the model is not passed on.
+        assert!(!m[1].content.contains("hour minute second"));
+        let m = solution_messages("t", "python", &ctx);
+        assert!(m[0].content.contains("never call `input()`"));
+        let r = no_input_repair_messages(m, "```python\nx = input()\n```", "python");
+        assert_eq!(r.len(), 4);
+        assert!(r[3].content.contains(NO_INPUT_REPAIR));
+        assert!(r[3].content.contains("```python"));
+        // The general rule is part of every solution prompt.
+        let ctx = SolutionContext {
+            no_input: false,
+            ..ctx
+        };
+        let m = solution_messages("t", "python", &ctx);
+        assert!(m[0].content.contains(FIXED_VALUES_RULE));
+        assert!(m[0]
+            .content
+            .contains("Read the input from standard input (`input()`"));
+    }
+
+    #[test]
+    fn fixed_values_of_the_time_sheet() {
+        let b = fixed_values_block(TIME_SHEET);
+        assert_eq!(
+            b,
+            format!(
+                "{FIXED_VALUES_HEADING}\n\
+                 - \"15 Uhr, 10 Minuten und 30 Sekunden\": hours = 15, minutes = 10, seconds = 30 \
+                 (clock time 15:10:30)\n\
+                 - \"15 Uhr, 17 Minuten und 51 Sekunden\": hours = 15, minutes = 17, seconds = 51 \
+                 (clock time 15:17:51)"
+            )
+        );
+        // The literal sentence on its own: 15:17:51, never 17:51:00.
+        let b = fixed_values_block(
+            "die fiktive Zeit 15 Uhr, 17 Minuten und 51 Sekunden repräsentieren.",
+        );
+        assert!(b.contains("hours = 15, minutes = 17, seconds = 51 (clock time 15:17:51)"));
+        assert!(!b.contains("17:51:00"));
+        // Placeholders of the format lines are not taken.
+        assert!(!fixed_values_block(TIME_SHEET).contains("12345678"));
+    }
+
+    #[test]
+    fn fixed_values_of_other_sheets() {
+        let film = "Aufgabe 3 - Film:\nEin Film beginnt um 20 Uhr, 45 Minuten und 10 Sekunden. Er \
+                    dauert 2 Stunden, 38 Minuten und 55 Sekunden.\na) Legen Sie Variablen an.\n\
+                    b) Berechnen Sie die Dauer des Films in Sekunden und geben Sie sie aus:\n\
+                    Der Film dauert 1234 Sekunden.\nc) Geben Sie die Endzeit aus:\n\
+                    Der Film endet um hh:mm:ss Uhr.";
+        let b = fixed_values_block(film);
+        assert!(b.contains(
+            "- \"20 Uhr, 45 Minuten und 10 Sekunden\": hours = 20, minutes = 45, seconds = 10 \
+             (clock time 20:45:10)"
+        ));
+        assert!(b.contains(
+            "- \"2 Stunden, 38 Minuten und 55 Sekunden\": hours = 2, minutes = 38, seconds = 55"
+        ));
+        assert!(!b.contains("1234"), "{b}");
+        let lauf = "Aufgabe 5 - Lauftraining\nEine Läuferin läuft 10,5 km in 52 Minuten und 30 \
+                    Sekunden.\nAusgabeformat:\nGeschwindigkeit: 0.00 km/h\nPace: 0:00 min/km";
+        assert_eq!(
+            fixed_values_block(lauf),
+            format!(
+                "{FIXED_VALUES_HEADING}\n- \"10,5 km\": 10.5 km\n\
+                 - \"52 Minuten und 30 Sekunden\": minutes = 52, seconds = 30"
+            )
+        );
+        let minuten = "Eine Zugfahrt dauert 437 Minuten. Speichern Sie diesen Wert.\n\
+                       Ausgabe (X, Y und Z sind Platzhalter):\nDie Fahrt dauert X Stunden und Y Minuten.";
+        assert_eq!(
+            fixed_values_block(minuten),
+            format!("{FIXED_VALUES_HEADING}\n- \"437 Minuten\": minutes = 437")
+        );
+        let parken = "Ein Parkhaus berechnet: die erste Stunde kostet 2 Euro, jede weitere \
+                      angefangene Stunde 1,50 Euro, höchstens aber 15 Euro pro Tag.\n\
+                      Beispiel\nEingabe:\n130\nAusgabe:\nPreis: 5.00 Euro";
+        let b = fixed_values_block(parken);
+        assert!(
+            b.contains("- \"2 Euro\": 2 euro\n- \"1,50 Euro\": 1.50 euro\n- \"15 Euro\": 15 euro")
+        );
+        assert!(!b.contains("5.00"), "{b}");
+    }
+
+    #[test]
+    fn fixed_values_need_number_and_unit() {
+        for text in [
+            "",
+            "Lies drei ganze Zahlen ein und gib die größte aus.",
+            "Aufgabe 2.2 - Schleifen: Geben Sie die Zahlen von 1 bis 40 aus.",
+            "Die erste Stunde kostet extra, jede Minute zählt.",
+            "Version 1.2.3 km",
+            "Es sind 12345678 seconds.",
+            "Seite 5 von 10, Abschnitt 3 Uhrzeit",
+            // Format and example lines after a line ending with „:“.
+            "Ausgabe:\nDer Film dauert 1234 Sekunden.\nGeschwindigkeit: 0.00 km/h\n5.00 Euro",
+            "Beispiel:\n3 Stunden",
+        ] {
+            assert_eq!(fixed_values_block(text), "", "{text}");
+        }
+        // The block ends at an empty line or an enumerated line.
+        assert!(fixed_values_block("Format:\n1 km\n\nEs sind 5 km.").contains("\"5 km\""));
+        assert!(!fixed_values_block("Format:\n1 km\n\nEs sind 5 km.").contains("\"1 km\""));
+        assert!(fixed_values_block("Format:\nx\nb) Er läuft 3 km.").contains("\"3 km\""));
+    }
+
+    #[test]
+    fn steps_rule_and_fixed_values_only_without_input() {
+        let ctx = SolutionContext {
+            input_format: "",
+            output_format: "",
+            examples: &[],
+            output_templates: &[],
+            class_name: Some("Time"),
+            no_input: true,
+        };
+        let m = solution_messages(TIME_SHEET, "java", &ctx);
+        assert!(m[0].content.ends_with(STEPS_RULE));
+        let u = &m[1].content;
+        let note = u.find(NO_INPUT_NOTE).unwrap();
+        let fixed = u.find(FIXED_VALUES_HEADING).unwrap();
+        assert!(note < fixed);
+        assert!(u.contains("(clock time 15:17:51)"));
+        // With input: unchanged (it made the solutions worse there).
+        let ctx = SolutionContext {
+            no_input: false,
+            ..ctx
+        };
+        let m = solution_messages(TIME_SHEET, "java", &ctx);
+        assert!(!m[0].content.contains(STEPS_RULE));
+        assert!(!m[1].content.contains(FIXED_VALUES_HEADING));
+        // Without input but nothing to extract: no empty heading.
+        let ctx = SolutionContext {
+            no_input: true,
+            ..ctx
+        };
+        let m = solution_messages("Gib die Zahlen von 1 bis 40 aus.", "python", &ctx);
+        assert!(!m[1].content.contains(FIXED_VALUES_HEADING));
+        assert!(m[0].content.contains(STEPS_RULE));
+    }
+
+    #[test]
     fn solution_prompt_uses_class_from_task() {
         let ctx = SolutionContext {
             input_format: "",
@@ -658,6 +1042,7 @@ mod tests {
             examples: &[],
             output_templates: &[],
             class_name: Some("Time"),
+            no_input: false,
         };
         let m = solution_messages("Klasse Time", "java", &ctx);
         assert!(m[0].content.contains("`public class Time`"));

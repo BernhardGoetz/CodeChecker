@@ -210,7 +210,8 @@ Pull Request, den du prüfst.
       enthalten muss, in den QAS-Lauf.
 - [ ] Der Lauf legt den PR „KI-Modellkatalog pinnen“ an (Branch
       `pin-models/run-<id>`). Im PR die Tabelle prüfen: Revision in der Commit-Historie
-      von `Qwen/Qwen2.5-Coder-1.5B-Instruct-GGUF` bzw. `Qwen/Qwen2.5-Coder-7B-Instruct-GGUF`,
+      von `Qwen/Qwen2.5-Coder-7B-Instruct-GGUF` (das 1.5B-Modell wird nicht mehr angeboten;
+      der Lauf entfernt seinen Eintrag aus `catalog.json`),
       Dateiname, Größe und SHA-256 unter „Files and versions“ auf huggingface.co.
 - [ ] Die CI startet für diesen PR nicht von selbst (PRs des `GITHUB_TOKEN` lösen keine
       Workflows aus). Bei Bedarf PR schließen und wieder öffnen.

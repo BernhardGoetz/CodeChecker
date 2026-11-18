@@ -130,13 +130,12 @@ pub fn ctx_size(parallel: usize) -> u32 {
     (parallel.max(1) as u32 * CTX_PER_SLOT).max(CTX_SIZE)
 }
 
-/// Threads for prompt processing (batches): all logical cores; this part
-/// is compute-bound and profits from hyper-threads.
+/// Threads for prompt processing (batches): the physical cores, like
+/// [`thread_count`]. Measured with the pinned build on a CPU: hyper-threads
+/// brought nothing for the prompt either, and more threads than cores made
+/// it about 8 % slower.
 pub fn batch_thread_count() -> usize {
-    std::thread::available_parallelism()
-        .map(|n| n.get())
-        .unwrap_or_else(|_| thread_count())
-        .clamp(1, 64)
+    thread_count()
 }
 
 /// Threads for inference: the physical cores (hyper-threads do not help).
@@ -173,8 +172,10 @@ pub struct ServerConfig {
     pub threads_batch: usize,
     /// Parallel slots (solutions generated at the same time).
     pub parallel: usize,
-    /// KV cache as q8_0 (half the memory of f16). Needs a head size that is
-    /// a multiple of 32; otherwise the start is retried without.
+    /// KV cache as q8_0 (half the memory of f16, but about 20 % slower
+    /// prompt processing): only when memory is short ([`kv_quant_needed`]).
+    /// Needs a head size that is a multiple of 32; otherwise the start is
+    /// retried without.
     pub kv_quant: bool,
 }
 
@@ -225,12 +226,33 @@ pub fn server_args(c: &ServerConfig) -> Vec<String> {
         args.extend(["--n-gpu-layers".into(), "0".into()]);
     }
     if c.kv_quant {
-        // Half the memory of the f16 default: leaves more for Docker.
+        // Half the memory of the f16 default: only when memory is short.
         for flag in ["--cache-type-k", "--cache-type-v"] {
             args.extend([flag.into(), "q8_0".into()]);
         }
     }
     args
+}
+
+/// Free memory beyond the model file below which the KV cache is
+/// quantized: the f16 cache of all slots needs up to about 1 GB (7B model,
+/// 16k tokens), plus room for the containers of the check.
+pub const KV_QUANT_HEADROOM: u64 = 2 * 1024 * 1024 * 1024;
+
+/// Whether the KV cache is stored as q8_0: only if the available memory
+/// (0 = unknown → f16) is below the model size plus [`KV_QUANT_HEADROOM`].
+/// q8_0 costs about 20–24 % of the prompt throughput, f16 is the default.
+/// Pure.
+pub fn kv_quant_needed(available_bytes: u64, model_bytes: u64) -> bool {
+    available_bytes > 0 && available_bytes < model_bytes.saturating_add(KV_QUANT_HEADROOM)
+}
+
+/// Memory available now (0 if unknown).
+fn available_memory() -> u64 {
+    use sysinfo::{MemoryRefreshKind, RefreshKind, System};
+    System::new_with_specifics(RefreshKind::nothing().with_memory(MemoryRefreshKind::everything()))
+        .map(|sys| sys.available_memory())
+        .unwrap_or(0)
 }
 
 /// Environment changes for llama-server: the API key, and no inherited
@@ -465,7 +487,8 @@ pub async fn ensure_running(
 
     let binary = server_path()?;
     on_status("KI-Modell wird geladen …".into());
-    let mut kv_quant = true;
+    let model_bytes = std::fs::metadata(model).map(|m| m.len()).unwrap_or(0);
+    let mut kv_quant = kv_quant_needed(available_memory(), model_bytes);
     loop {
         let config = ServerConfig {
             model: model.to_path_buf(),
@@ -788,6 +811,26 @@ pub struct ChatResponse {
 pub trait Llm {
     fn chat(&self, req: &ChatRequest)
         -> impl Future<Output = Result<ChatResponse, AiError>> + Send;
+
+    /// `n` answers to the same request. llama-server processes the prompt
+    /// once and copies it into `n` slots (`/completion` with `"n"`); each
+    /// answer has its own seed. All answers arrive together. The default
+    /// sends `n` separate requests at the same time (mocks).
+    fn chat_n(
+        &self,
+        req: &ChatRequest,
+        n: usize,
+    ) -> impl Future<Output = Result<Vec<ChatResponse>, AiError>> + Send
+    where
+        Self: Sync,
+    {
+        async move {
+            futures_util::future::join_all((0..n).map(|_| self.chat(req)))
+                .await
+                .into_iter()
+                .collect()
+        }
+    }
 }
 
 // The client uses llama-server's native endpoints: `/apply-template`
@@ -819,6 +862,16 @@ pub fn completion_body(prompt: &str, req: &ChatRequest) -> Value {
     }
     if !req.stop.is_empty() {
         body["stop"] = json!(req.stop);
+    }
+    body
+}
+
+/// Body for `/completion` with `n` answers (`n_cmpl`, alias `n`; at most
+/// the number of slots, `--parallel`).
+pub fn completion_body_n(prompt: &str, req: &ChatRequest, n: usize) -> Value {
+    let mut body = completion_body(prompt, req);
+    if n > 1 {
+        body["n"] = json!(n);
     }
     body
 }
@@ -892,6 +945,28 @@ pub fn parse_completion(raw: &str) -> Result<ChatResponse, AiError> {
             }
         }),
     })
+}
+
+/// Parses a `/completion` answer with `n` results: an array (a single
+/// result is a plain object). Each child slot reports the parent's prompt
+/// timings (the prompt was processed once and copied).
+pub fn parse_completions(raw: &str, n: usize) -> Result<Vec<ChatResponse>, AiError> {
+    let v: Value = serde_json::from_str(raw)
+        .map_err(|e| AiError::Http(format!("Unerwartete Antwort ({e})")))?;
+    let items = match v {
+        Value::Array(items) => items,
+        other => vec![other],
+    };
+    if items.len() != n {
+        return Err(AiError::Http(format!(
+            "Unerwartete Antwort ({} statt {n} Ergebnisse)",
+            items.len()
+        )));
+    }
+    items
+        .iter()
+        .map(|item| parse_completion(&item.to_string()))
+        .collect()
 }
 
 /// HTTP client for the running llama-server.
@@ -974,6 +1049,29 @@ impl Llm for LlamaClient {
             r = send => r,
         }
     }
+
+    async fn chat_n(&self, req: &ChatRequest, n: usize) -> Result<Vec<ChatResponse>, AiError> {
+        if n <= 1 {
+            return Ok(vec![self.chat(req).await?]);
+        }
+        // Dropping the request on cancel closes the connection; the server
+        // then stops all child slots.
+        let send = async {
+            let prompt = full_prompt(&self.template(req).await?, req);
+            let raw = self
+                .post("/completion", &completion_body_n(&prompt, req, n))
+                .await?;
+            Ok(parse_completions(&raw, n)?
+                .into_iter()
+                .map(|r| assemble_answer(req, r))
+                .collect())
+        };
+        tokio::select! {
+            biased;
+            _ = self.cancel.cancelled() => Err(AiError::Cancelled),
+            r = send => r,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1032,9 +1130,9 @@ mod tests {
             alias: "code-pruefer-abc".into(),
             template,
             threads: 6,
-            threads_batch: 12,
+            threads_batch: 6,
             parallel: 4,
-            kv_quant: true,
+            kv_quant: false,
         }
     }
 
@@ -1056,19 +1154,43 @@ mod tests {
         assert!(!args.iter().any(|a| a == "--chat-template"));
         assert_eq!(pair("--ctx-size"), "16384");
         assert_eq!(pair("--threads"), "6");
-        assert_eq!(pair("--threads-batch"), "12");
+        assert_eq!(pair("--threads-batch"), "6");
         assert_eq!(pair("--parallel"), "4");
         assert_eq!(pair("--flash-attn"), "on");
-        assert_eq!(pair("--cache-type-k"), "q8_0");
-        assert_eq!(pair("--cache-type-v"), "q8_0");
         for flag in ["--no-webui", "--offline", "--jinja", "--kv-unified"] {
             assert!(args.iter().any(|a| a == flag), "{flag}");
         }
-        let plain = server_args(&ServerConfig {
-            kv_quant: false,
+        // Default: f16 KV cache (no flag); q8_0 only when memory is short.
+        assert!(!args.iter().any(|a| a.starts_with("--cache-type")));
+        let quant = server_args(&ServerConfig {
+            kv_quant: true,
             ..config(ChatTemplate::FromModel)
         });
-        assert!(!plain.iter().any(|a| a.starts_with("--cache-type")));
+        let pair = |flag: &str| {
+            let i = quant.iter().position(|a| a == flag).expect(flag);
+            quant[i + 1].clone()
+        };
+        assert_eq!(pair("--cache-type-k"), "q8_0");
+        assert_eq!(pair("--cache-type-v"), "q8_0");
+    }
+
+    #[test]
+    fn kv_cache_is_quantized_only_when_memory_is_short() {
+        const GB: u64 = 1024 * 1024 * 1024;
+        let model = 5 * GB;
+        assert!(!kv_quant_needed(16 * GB, model));
+        assert!(!kv_quant_needed(7 * GB, model), "exactly enough");
+        assert!(kv_quant_needed(7 * GB - 1, model));
+        assert!(kv_quant_needed(4 * GB, model));
+        // Unknown memory: the fast default.
+        assert!(!kv_quant_needed(0, model));
+        assert!(!kv_quant_needed(3 * GB, 0));
+        assert!(kv_quant_needed(GB, 0));
+    }
+
+    #[test]
+    fn batch_threads_are_the_physical_cores() {
+        assert_eq!(batch_thread_count(), thread_count());
     }
 
     #[test]
@@ -1265,10 +1387,17 @@ mod tests {
                         }
                         let path = text.split_whitespace().nth(1).unwrap_or("").to_string();
                         *counts.lock().unwrap().entry(path.clone()).or_default() += 1;
+                        let request: Value = serde_json::from_slice(&buf[end + 4..end + 4 + len])
+                            .unwrap_or_default();
+                        let one = r#"{"content":"x","tokens_predicted":1,"stop_type":"eos","timings":{"prompt_n":40,"prompt_ms":400.0,"predicted_per_second":10.0}}"#;
                         let body = if path == "/apply-template" {
-                            r#"{"prompt":"<p>"}"#
+                            r#"{"prompt":"<p>"}"#.to_string()
+                        } else if let Some(n) = request["n"].as_u64() {
+                            // Like llama-server: an array, the prompt
+                            // timings copied into every child.
+                            format!("[{}]", vec![one; n as usize].join(","))
                         } else {
-                            r#"{"content":"x","tokens_predicted":1,"stop_type":"eos"}"#
+                            one.to_string()
                         };
                         let resp = format!(
                             "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
@@ -1313,6 +1442,54 @@ mod tests {
         assert_eq!(c.get("/apply-template"), Some(&2), "{c:?}");
         assert_eq!(c.get("/completion"), Some(&4), "{c:?}");
         assert_eq!(client.template_calls(), 2);
+        // n answers: one template call (cached), one completion request.
+        let rs = client.chat_n(&same, 3).await.unwrap();
+        assert_eq!(rs.len(), 3);
+        assert!(rs.iter().all(|r| r.content == "x"));
+        let c = counts.lock().unwrap().clone();
+        assert_eq!(c.get("/completion"), Some(&5), "{c:?}");
+        assert_eq!(client.template_calls(), 2);
+        assert_eq!(client.chat_n(&same, 1).await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn cancel_stops_a_request_with_n_answers() {
+        // A server that accepts but never answers.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let mut keep = Vec::new();
+            while let Ok((sock, _)) = listener.accept().await {
+                keep.push(sock);
+            }
+        });
+        let cancel = CancellationToken::new();
+        let client = LlamaClient::new(
+            Endpoint {
+                base_url: format!("http://{addr}"),
+                api_key: "k".into(),
+            },
+            cancel.clone(),
+        )
+        .unwrap();
+        let req = ChatRequest {
+            messages: vec![ChatMessage::user("u")],
+            temperature: 0.7,
+            max_tokens: 5,
+            json_schema: None,
+            seed: None,
+            prefill: None,
+            stop: Vec::new(),
+        };
+        let c = cancel.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            c.cancel();
+        });
+        let r = tokio::time::timeout(Duration::from_secs(5), client.chat_n(&req, 3))
+            .await
+            .expect("cancel ends the request");
+        assert!(matches!(r, Err(AiError::Cancelled)));
     }
 
     #[test]
@@ -1365,11 +1542,17 @@ mod tests {
             &ChatRequest {
                 json_schema: None,
                 seed: None,
-                ..req
+                ..req.clone()
             },
         );
         assert!(plain.get("json_schema").is_none());
         assert!(plain.get("seed").is_none());
+        // n answers in one request; prefill, stop and schema stay the same.
+        let many = completion_body_n("<p>", &req, 3);
+        assert_eq!(many["n"], 3);
+        assert_eq!(many["json_schema"]["type"], "object");
+        assert_eq!(many["n_predict"], 100);
+        assert!(completion_body_n("<p>", &req, 1).get("n").is_none());
     }
 
     #[test]
@@ -1393,5 +1576,14 @@ mod tests {
         assert_eq!(r.tokens_per_second, None);
         assert_eq!((r.prompt_tokens, r.prompt_ms), (None, None));
         assert!(parse_completion("kaputt").is_err());
+        // n results: an array; a single result is an object.
+        let arr = format!("[{raw},{raw},{raw}]");
+        let rs = parse_completions(&arr, 3).unwrap();
+        assert_eq!(rs.len(), 3);
+        assert!(rs.iter().all(|r| r.content == "hallo"));
+        assert_eq!(parse_completions(raw, 1).unwrap()[0].content, "hallo");
+        assert!(parse_completions(&arr, 2).is_err(), "count must match");
+        assert!(parse_completions(raw, 3).is_err());
+        assert!(parse_completions("kaputt", 3).is_err());
     }
 }

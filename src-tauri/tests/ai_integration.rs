@@ -5,8 +5,8 @@
 //! - `CODE_PRUEFER_LLAMA_SERVER`: path to llama-server (debug builds only),
 //!   e.g. `scripts/fetch-llama-server.sh linux-x64 /tmp/llama` and
 //!   `/tmp/llama/llama-server`,
-//! - `CODE_PRUEFER_TEST_MODEL`: a GGUF model, ideally
-//!   Qwen2.5-Coder-1.5B-Instruct Q5_K_M (any GGUF with a chat template works
+//! - `CODE_PRUEFER_TEST_MODEL`: a GGUF model, ideally the app's
+//!   Qwen2.5-Coder-7B-Instruct Q4_K_M (any GGUF with a chat template works
 //!   for the plumbing test),
 //! - for `pipeline_on_sample_tasks` additionally the `:dev` runner images
 //!   (see `docker_integration.rs`).
@@ -369,15 +369,21 @@ const SAMPLES: &[Sample] = &[
 async fn pipeline_on_sample_tasks() {
     setup_images();
     let cancel = CancellationToken::new();
-    let endpoint = llama::ensure_running(&model(), 4, ChatTemplate::FromModel, &cancel, |m| {
-        eprintln!("{m}")
-    })
-    .await
-    .expect("llama-server starten");
     let solutions: usize = std::env::var("CODE_PRUEFER_TEST_SOLUTIONS")
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(5);
+    // As in the app: one slot per solution (they are requested together
+    // with "n") plus one for the inputs.
+    let endpoint = llama::ensure_running(
+        &model(),
+        solutions + 1,
+        ChatTemplate::FromModel,
+        &cancel,
+        |m| eprintln!("{m}"),
+    )
+    .await
+    .expect("llama-server starten");
     let llm = LlamaClient::new(endpoint, cancel.clone()).unwrap();
     let exec = SandboxExecutor::connect(cancel.clone(), |m| eprintln!("{m}"))
         .await
@@ -400,6 +406,7 @@ async fn pipeline_on_sample_tasks() {
             Settings {
                 solutions,
                 repair_rounds: 1,
+                speeds: None,
             },
             &cancel,
             |p| eprintln!("  [{:?}] {}", p.phase, p.message),
@@ -506,6 +513,7 @@ async fn pipeline_with_real_sandbox() {
         Settings {
             solutions: 4,
             repair_rounds: 1,
+            speeds: None,
         },
         &cancel,
         |_| {},
@@ -546,6 +554,7 @@ async fn pipeline_with_real_sandbox() {
         Settings {
             solutions: 3,
             repair_rounds: 1,
+            speeds: None,
         },
         &cancel,
         |_| {},
@@ -691,6 +700,7 @@ async fn pipeline_survives_engine_restart() {
         Settings {
             solutions: 3,
             repair_rounds: 1,
+            speeds: None,
         },
         &cancel,
         |p| eprintln!("  [{:?}] {}", p.phase, p.message),

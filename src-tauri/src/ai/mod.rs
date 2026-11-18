@@ -5,9 +5,12 @@
 //! Everything runs on this machine; the only network access is the model
 //! download from huggingface.co (`models`).
 
+pub mod eta;
 pub mod gguf;
+pub mod limits;
 pub mod llama;
 pub mod models;
+pub mod no_input;
 pub mod ocr_fix;
 pub mod pipeline;
 pub mod prompts;
