@@ -29,9 +29,15 @@
 # wird nur gemeldet. So pinnt der Release nie selbst (kein Vertrauen beim
 # ersten Abruf): Pins entstehen über den Workflow pin-models.yml als Pull
 # Request, den Bernhard prüft und mergt (docs/RELEASE_QAS.md).
+# Gepinnt werden nur die Modelle aus SUPPORTED_MODELS (dieselbe Liste wie
+# SUPPORTED_MODELS in src-tauri/src/ai/models.rs). Andere Einträge (z. B. das
+# entfernte 1.5B-Modell) streicht das Pinnen aus catalog.json; --check
+# meldet sie als Fehler, damit kein Release sie noch auflistet.
 # CATALOG=<Pfad> wählt eine andere Katalogdatei, HF_API=<https-URL> eine
 # andere API-Basis (Tests).
 set -euo pipefail
+
+SUPPORTED_MODELS="qwen2.5-coder-7b"
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
 catalog="${CATALOG:-$root/src-tauri/src/ai/catalog.json}"
@@ -47,9 +53,18 @@ is_part='def is_part: .name | ascii_downcase | test("-[0-9]{5}-of-[0-9]{5}\\.ggu
 effective="$is_part"' def effective: [.[] | select(is_part | not)] as $s
   | if ($s | length) == 1 then $s else . end;'
 
+# jq-Liste der unterstützten IDs.
+supported_json="$(printf '%s\n' $SUPPORTED_MODELS | jq -R . | jq -sc .)"
+
 if [ "${1:-}" = "--check" ]; then
   if [ "$(jq '.models | length' "$catalog")" -eq 0 ]; then
     echo "catalog.json enthält keine Modelle." >&2
+    exit 1
+  fi
+  extra="$(jq -r --argjson ids "$supported_json" \
+    '.models[] | select(.id as $i | $ids | index($i) | not) | .id' "$catalog" | tr '\n' ' ')"
+  if [ -n "$extra" ]; then
+    echo "Nicht mehr unterstützte Modelle in catalog.json: $extra(Workflow „KI-Modellkatalog pinnen“, pin-models.yml, starten; er entfernt sie)" >&2
     exit 1
   fi
   unpinned="$(jq -r "$is_part"' .models[]
@@ -139,11 +154,23 @@ fi
 
 tmp="$(mktemp)"
 trap 'rm -f "$tmp"' EXIT
-cp "$catalog" "$tmp"
+# Nur unterstützte Modelle bleiben im Katalog.
+jq --argjson ids "$supported_json" '.models |= map(select(.id as $i | $ids | index($i)))' \
+  "$catalog" >"$tmp"
+for id in $SUPPORTED_MODELS; do
+  if [ "$(jq --arg id "$id" '[.models[] | select(.id == $id)] | length' "$tmp")" -ne 1 ]; then
+    echo "$id fehlt in catalog.json (Eintrag mit id, name, repo, quant, license und solutions anlegen)." >&2
+    exit 1
+  fi
+done
+for id in $(jq -r --argjson ids "$supported_json" \
+  '.models[] | select(.id as $i | $ids | index($i) | not) | .id' "$catalog"); do
+  echo "$id: nicht mehr unterstützt, aus catalog.json entfernt."
+done
 
-for id in $(jq -r '.models[].id' "$catalog"); do
-  repo="$(jq -r --arg id "$id" '.models[] | select(.id == $id) | .repo' "$catalog")"
-  quant="$(jq -r --arg id "$id" '.models[] | select(.id == $id) | .quant' "$catalog")"
+for id in $SUPPORTED_MODELS; do
+  repo="$(jq -r --arg id "$id" '.models[] | select(.id == $id) | .repo' "$tmp")"
+  quant="$(jq -r --arg id "$id" '.models[] | select(.id == $id) | .quant' "$tmp")"
   rev="$(get "$api/$repo/revision/main" | jq -r .sha)"
   if ! [[ "$rev" =~ ^[0-9a-f]{40}$ ]]; then
     echo "$repo: keine Revision gefunden." >&2

@@ -1971,7 +1971,7 @@ pub async fn generate<L: Llm + Sync, E: Executor>(
                     no_input: false,
                     solution_tokens: Vec::new(),
                     compiled: lang.id == "java",
-                    prior: settings.speeds.unwrap_or_else(|| eta::default_speeds("")),
+                    prior: settings.speeds.unwrap_or_else(eta::default_speeds),
                 }
             },
             meter: eta::Meter::default(),
@@ -2661,9 +2661,7 @@ pub async fn run(
     let settings = Settings {
         solutions: model.solutions as usize,
         repair_rounds: 1,
-        speeds: Some(
-            super::models::load_speeds(&model.id).unwrap_or_else(|| eta::default_speeds(&model.id)),
-        ),
+        speeds: Some(super::models::load_speeds(&model.id).unwrap_or_else(eta::default_speeds)),
     };
     let r = generate(&llm, &exec, &req, settings, cancel, |p| on_progress(p)).await;
     if let Some(speeds) = r.as_ref().ok().and_then(|r| r.stats.measured_speeds) {
@@ -3674,7 +3672,7 @@ mod tests {
             no_input: false,
             solution_tokens: Vec::new(),
             compiled: true,
-            prior: eta::default_speeds("qwen2.5-coder-7b"),
+            prior: eta::default_speeds(),
         }
     }
 

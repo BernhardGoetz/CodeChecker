@@ -131,9 +131,10 @@ export function OcrFixPanel({ text, original, onTextChange, ai, aiBusy, onOpenSe
     onTextChange(original);
   };
 
-  const ready = ai !== null && ai.runtimeAvailable && ai.modelReady;
+  const ready = ai !== null && ai.hardware.aiAvailable && ai.runtimeAvailable && ai.modelReady;
   const blocked = (() => {
     if (ai === null) return "KI-Status wird geladen …";
+    if (!ai.hardware.aiAvailable) return "Die KI-Funktion ist auf diesem Rechner nicht verfügbar (zu wenig Arbeitsspeicher).";
     if (!ai.runtimeAvailable) return ai.runtimeError ?? "KI-Laufzeit nicht gefunden.";
     if (aiBusy) return "Bitte warten, bis die KI-Testfälle fertig sind.";
     if (text.trim() === "") return "Es gibt keinen Text zum Korrigieren.";
@@ -144,7 +145,12 @@ export function OcrFixPanel({ text, original, onTextChange, ai, aiBusy, onOpenSe
   return (
     <div className="ocr-fix small">
       <div className="row">
-        {ai !== null && ai.runtimeAvailable && !ai.modelReady ? (
+        {ai !== null && !ai.hardware.aiAvailable ? (
+          <span className="muted">
+            Die KI-Korrektur ist auf diesem Rechner nicht verfügbar (zu wenig Arbeitsspeicher); den Text bitte
+            von Hand prüfen.
+          </span>
+        ) : ai !== null && ai.runtimeAvailable && !ai.modelReady ? (
           <>
             <span className="muted">Für „Erkennungsfehler mit KI korrigieren“ wird ein KI-Modell benötigt.</span>
             <button onClick={onOpenSetup} disabled={aiBusy}>

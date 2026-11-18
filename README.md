@@ -61,16 +61,18 @@ Die KI ist nur eine Hilfe. Ob dein Code richtig ist, entscheidet immer das **tat
 | **Betriebssystem** | **Windows**: ein aktuelles Windows 10 oder 11 (64 Bit). Der Code-Prüfer nutzt zum Lesen von Bildern und PDF-Dateien Funktionen, die Windows selbst mitbringt (`Windows.Media.Ocr` für die Texterkennung und `Windows.Data.Pdf` für PDF-Seiten). Dein Windows muss diese Funktionen haben; eine bestimmte Build-Nummer ist im Programm nicht festgelegt. **macOS**: ebenfalls aktuell. Dort nutzt das Programm die Apple-Funktionen *Vision* (Texterkennung) und *PDFKit* (PDF-Seiten). Es gibt Installationsdateien für Apple Silicon und Intel-Macs. |
 | **Prozessor** | Muss **Virtualisierung** unterstützen (nur Windows, siehe Abschnitt 3). Fast alle Prozessoren der letzten Jahre können das. |
 | **Container-Programm** | **Docker Desktop** (empfohlen) oder **Podman**. Unter Windows kann der Installer des Code-Prüfers die gewählte Engine für dich installieren. |
-| **Arbeitsspeicher (RAM)** | Mindestens **8 GB**, bzw. so viel, dass dein Betriebssystem auch mit Docker/Podman im Hintergrund noch flüssig läuft. Für die **KI-Funktionen** gilt zusätzlich die Tabelle unten: Unter 12 GB RAM schlägt die App das kleine Modell vor, ab 12 GB das große. Unter 6 GB RAM warnt die App, dass es knapp wird. |
-| **Speicherplatz** | Etwa **10 GB** frei (Code-Prüfer mit den Java-/Python-Umgebungen, Docker Desktop bzw. Podman und ein KI-Modell von ca. 1,2 GB oder 4,4 GB). |
+| **Arbeitsspeicher (RAM)** | Mindestens **8 GB**, bzw. so viel, dass dein Betriebssystem auch mit Docker/Podman im Hintergrund noch flüssig läuft. Für die **KI-Funktionen** brauchst du mindestens **12 GB** (z. B. 16 GB), siehe unten. Mit weniger zeigt die App, dass die KI auf diesem Rechner nicht verfügbar ist; das Prüfen ohne KI funktioniert weiter. |
+| **Speicherplatz** | Etwa **10 GB** frei (Code-Prüfer mit den Java-/Python-Umgebungen, Docker Desktop bzw. Podman und das KI-Modell mit ca. 4,4 GB). |
 | **Internet** | Nur zum Installieren, zum Herunterladen des KI-Modells und für Updates. Zum Prüfen von Code brauchst du **kein** Internet. |
 
-**Welches KI-Modell passt zu meinem Rechner?**
+**Welches KI-Modell braucht die App?**
 
-| Dein Arbeitsspeicher | Vorschlag der App | Dateigröße | Dauer pro Aufgabe (Schätzung der Entwickler, nicht auf Schul-PCs gemessen) |
+| Dein Arbeitsspeicher | KI-Modell | Dateigröße | Dauer pro Aufgabe (Schätzung der Entwickler, nicht auf Schul-PCs gemessen) |
 |---|---|---|---|
-| unter 12 GB | Qwen2.5-Coder 1.5B (klein, schneller, etwas schwächer) | ca. 1,2 GB | ca. 1–4 Minuten |
-| ab 12 GB | Qwen2.5-Coder 7B (größer, besser, langsamer) | ca. 4,4 GB | ca. 4–10 Minuten |
+| unter 12 GB | keins: Die KI-Funktion ist auf diesem Rechner nicht verfügbar. Code prüfen und eigene Testfälle gehen ohne KI. | – | – |
+| ab 12 GB | Qwen2.5-Coder 7B | ca. 4,4 GB | ca. 4–10 Minuten |
+
+Das frühere kleine Modell (Qwen2.5-Coder 1.5B) wird seit Version 1.1.1 nicht mehr unterstützt: Es lieferte zu oft falsche Testfälle. Hast du es schon heruntergeladen, zeigt die App unter „KI-Modell“ einen Hinweis und bietet an, es zu löschen.
 
 Hat dein Prozessor kein sogenanntes *AVX2* (eine Rechenfunktion), warnt dich die App: Die KI ist dann sehr langsam. Die KI ist freiwillig – ohne sie funktioniert das Prüfen trotzdem.
 

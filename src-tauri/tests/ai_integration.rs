@@ -5,8 +5,8 @@
 //! - `CODE_PRUEFER_LLAMA_SERVER`: path to llama-server (debug builds only),
 //!   e.g. `scripts/fetch-llama-server.sh linux-x64 /tmp/llama` and
 //!   `/tmp/llama/llama-server`,
-//! - `CODE_PRUEFER_TEST_MODEL`: a GGUF model, ideally
-//!   Qwen2.5-Coder-1.5B-Instruct Q5_K_M (any GGUF with a chat template works
+//! - `CODE_PRUEFER_TEST_MODEL`: a GGUF model, ideally the app's
+//!   Qwen2.5-Coder-7B-Instruct Q4_K_M (any GGUF with a chat template works
 //!   for the plumbing test),
 //! - for `pipeline_on_sample_tasks` additionally the `:dev` runner images
 //!   (see `docker_integration.rs`).

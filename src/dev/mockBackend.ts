@@ -46,11 +46,11 @@ const LANGUAGES: LanguageInfo[] = [
 ];
 
 const AI: AiStatus = {
-  hardware: { totalRamBytes: 16e9, physicalCores: 8, appleSilicon: false, avx2: true, suggestedModel: "qwen-7b", warnings: [] },
+  hardware: { totalRamBytes: 16e9, physicalCores: 8, appleSilicon: false, avx2: true, aiAvailable: true, suggestedModel: "qwen-7b", warnings: [] },
   models: [
-    { id: "qwen-1.5b", name: "Qwen2.5-Coder 1.5B", sizeBytes: 1.1e9, license: "Apache-2.0", known: true, pinned: true, installed: false, verified: false, repo: null, quant: "Q4_K_M", importedParts: 0, missingParts: [], partialBytes: 0, suggested: false, selected: false },
     { id: "qwen-7b", name: "Qwen2.5-Coder 7B", sizeBytes: 4.7e9, license: "Apache-2.0", known: true, pinned: true, installed: true, verified: true, repo: null, quant: "Q4_K_M", importedParts: 0, missingParts: [], partialBytes: 0, suggested: true, selected: true },
   ],
+  retired: [],
   selected: "qwen-7b",
   modelReady: true,
   runtimeAvailable: true,

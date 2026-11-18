@@ -183,6 +183,7 @@ export function AiPanel({
   };
 
   const modelReady = status?.modelReady ?? false;
+  const aiAvailable = status?.hardware.aiAvailable ?? true;
   const suggestion = result?.suggestedCompareMode ?? null;
   const showSuggestion =
     suggestion !== null && !modeApplied && !sameMode(suggestion, compareMode) && result?.confidence.level !== "red";
@@ -191,9 +192,10 @@ export function AiPanel({
     <section className="card ai-panel" aria-labelledby="ai-heading">
       <div className="card-header">
         <h2 id="ai-heading">Testfälle mit KI</h2>
-        {!modelReady && (
+        {!modelReady && (aiAvailable || (status?.retired.length ?? 0) > 0) && (
+          // Without enough RAM only to delete a no longer supported model.
           <button onClick={onOpenSetup} disabled={running} className="attention">
-            KI-Modell einrichten …
+            {aiAvailable ? "KI-Modell einrichten …" : "KI-Modell verwalten …"}
           </button>
         )}
       </div>

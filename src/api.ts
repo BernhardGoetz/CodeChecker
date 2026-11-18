@@ -217,9 +217,22 @@ export interface Hardware {
   appleSilicon: boolean;
   /** null on non-x86 CPUs. */
   avx2: boolean | null;
-  suggestedModel: string;
-  /** German notes (slow CPU, little RAM). */
+  /** Enough RAM for the 7B model (or unknown). Otherwise the AI is not available here. */
+  aiAvailable: boolean;
+  /** null if the AI is not available on this machine. */
+  suggestedModel: string | null;
+  /** German notes (slow CPU, too little RAM). */
   warnings: string[];
+}
+
+/** A model the app no longer supports whose files are still on disk (deletable). */
+export interface RetiredModel {
+  id: string;
+  name: string;
+  /** Bytes deleting it frees. */
+  sizeBytes: number;
+  /** German note: no longer supported. */
+  note: string;
 }
 
 export interface ModelInfo {
@@ -250,6 +263,8 @@ export interface ModelInfo {
 export interface AiStatus {
   hardware: Hardware;
   models: ModelInfo[];
+  /** Retired models still on disk (e.g. the removed 1.5B model). */
+  retired: RetiredModel[];
   selected: string | null;
   /** A model is selected and installed. */
   modelReady: boolean;

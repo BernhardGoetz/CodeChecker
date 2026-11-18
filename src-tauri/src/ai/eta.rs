@@ -52,23 +52,12 @@ impl Speeds {
     }
 }
 
-/// Conservative speeds without a previous run: slow CPUs without AVX-512,
-/// several slots at once. Small models (1.5B and below) are faster.
-pub fn default_speeds(model_id: &str) -> Speeds {
-    let id = model_id.to_lowercase();
-    let small = ["0.5b", "1b", "1.5b", "-1.5", "0.5-", "1.5-"]
-        .iter()
-        .any(|k| id.contains(k));
-    if small {
-        Speeds {
-            prompt_tps: 18.0,
-            gen_tps: 4.0,
-        }
-    } else {
-        Speeds {
-            prompt_tps: 6.0,
-            gen_tps: 1.5,
-        }
+/// Conservative speeds without a previous run (7B model): slow CPUs
+/// without AVX-512, several slots at once.
+pub fn default_speeds() -> Speeds {
+    Speeds {
+        prompt_tps: 6.0,
+        gen_tps: 1.5,
     }
 }
 
@@ -364,12 +353,8 @@ mod tests {
     }
 
     #[test]
-    fn defaults_by_model_size() {
-        assert_eq!(default_speeds("qwen2.5-coder-7b"), SLOW);
-        assert_eq!(default_speeds("qwen2.5-coder-1.5b").gen_tps, 4.0);
-        assert_eq!(default_speeds("qwen2.5-coder-1.5b").prompt_tps, 18.0);
-        // Unknown imported models: the slow assumption.
-        assert_eq!(default_speeds("import-abc"), SLOW);
+    fn defaults_are_the_slow_assumption() {
+        assert_eq!(default_speeds(), SLOW);
     }
 
     #[test]
