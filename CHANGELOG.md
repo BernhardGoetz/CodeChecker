@@ -9,7 +9,40 @@ Format nach [Keep a Changelog](https://keepachangelog.com/de/1.1.0/), Versionen 
 
 ## [1.1.1] - 2026-11-16
 
+### Entfernt
+
+- KI: Das kleine Modell Qwen2.5-Coder 1.5B wird nicht mehr angeboten. Es lieferte bei
+  Aufgaben ohne Eingabe in einem Vergleich mit 12 Läufen nur 2 richtige Ergebnisse. Die KI
+  verwendet nur noch das 7B-Modell. Wer das 1.5B schon heruntergeladen hat, sieht unter
+  „KI-Modell“ den Hinweis, dass es nicht mehr unterstützt wird, und kann es dort löschen,
+  um Speicherplatz freizugeben. War es ausgewählt, übernimmt das 7B-Modell, wenn es
+  eingerichtet ist; sonst ist kein Modell ausgewählt. Eine Auswahl oder ein Import der
+  1.5B-Datei wird abgelehnt.
+- KI: Rechner mit weniger als 12 GB Arbeitsspeicher bekamen bisher das 1.5B-Modell
+  empfohlen. Jetzt zeigt die App dort ehrlich an, dass die KI-Funktion auf diesem Rechner
+  nicht verfügbar ist. Code prüfen und eigene Testfälle funktionieren weiterhin.
+
 ### Behoben
+
+- KI: Bei Aufgaben ohne Eingabe lasen alle Lösungen eine Zeitangabe gleich falsch
+  („15 Uhr, 17 Minuten und 51 Sekunden“ als 17:51:00, Blatt „Aufgabe 2.2 Time“,
+  7B-Modell); ein Mehrheitsentscheid kann das nicht korrigieren. Die App liest jetzt
+  Angaben aus Zahl und Einheit (Uhr, Stunden, Minuten, Sekunden, km, Euro, % …) ohne KI
+  aus dem Aufgabentext und gibt sie den Lösungen als feste Werte vor; Format- und
+  Beispielzeilen zählen nicht dazu. Außerdem schreibt jede Lösung je Ausgabezeile einen
+  Kommentar mit den verwendeten Werten. Im Vergleich stimmte das Blatt „Time“ damit in 3
+  von 3 Läufen (vorher 0 von 3). Aufgaben mit Eingabe sind davon nicht betroffen. Die
+  Lösungen werden dadurch länger; die Restdauer rechnet damit.
+- KI: Eingaben der KI, die außerhalb der Grenzen der Aufgabe liegen (z. B. „1 <= n <= 100“,
+  „von 1 bis 1440“, „positive Zahl“), werden verworfen. Eine Grenze zählt nur, wenn sie im
+  Aufgabentext steht.
+- KI: Testfälle mit einem Ganzzahl-Überlauf konnten grün sein. Beispiel: Für die Summe der
+  Quadrate bis 5000 gaben alle Java-Lösungen mit `int` dieselbe negative Zahl aus. Solche
+  Java-Testfälle (große negative Zahl, obwohl Eingabe und Beispiele keine negativen Zahlen
+  haben) werden jetzt verworfen, und das Ergebnis ist höchstens gelb, mit Begründung. Ein
+  Überlauf, der eine positive Zahl ergibt, wird so nicht erkannt.
+- KI: Grün gibt es nur noch, wenn alle Lösungen bei jedem Testfall dieselbe Ausgabe haben.
+  Bisher genügten 4 von 5.
 
 - KI: Die Testfall-Erzeugung konnte vorzeitig enden, sobald eine bloße Mehrheit (z. B. 2 von
   3 Lösungen) übereinstimmte, auch wenn diese falsch war und die nicht abgewartete Lösung
