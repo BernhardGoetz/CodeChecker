@@ -29,6 +29,23 @@ const SITE_PATH = new URL(SITE_URL).pathname; // "/CodeChecker/"
 const REPO = "https://github.com/BernhardGoetz/CodeChecker";
 const OG_IMAGE = "img/og-image.png";
 
+// Content-Security-Policy jeder Seite (als <meta>, GitHub Pages setzt keine
+// eigenen Header). Alles kommt von der Website selbst; es gibt keine
+// Inline-Styles, <style>-Blöcke, Inline-Skripte oder data:-Bilder, deshalb
+// weder 'unsafe-inline' noch data:. frame-ancestors wirkt in <meta> nicht
+// und fehlt deshalb. scripts/check-site-links.mjs prüft, dass jede Seite
+// diese Richtlinie trägt und nichts Inline enthält.
+export const CSP = [
+  "default-src 'none'",
+  "img-src 'self'",
+  "style-src 'self'",
+  "script-src 'self'",
+  "font-src 'self'",
+  "base-uri 'none'",
+  "form-action 'none'",
+  "object-src 'none'",
+].join("; ");
+
 // Doku-Unterseiten: Quelle im Repository -> Pfad auf der Website.
 const DOCS = [
   {
@@ -399,6 +416,7 @@ function layout({ urlPath, title, description, lang = "de", nav, body, version, 
 <html lang="${lang}">
 <head>
   <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="${CSP}">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>${escapeHtml(title)}</title>
   <meta name="description" content="${escapeHtml(description)}">

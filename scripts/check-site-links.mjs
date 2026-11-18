@@ -7,10 +7,13 @@
 //   vorhandene Datei; ein Anker (#...) muss auf der Zielseite als id stehen.
 // - Eingebundene Ressourcen (Stylesheets, Skripte, Bilder, Icons) liegen alle
 //   auf der Website selbst: keine externen Ressourcen (Datenschutz).
+// - Jede Seite trägt die Content-Security-Policy aus build-site.mjs und
+//   enthält keine Inline-Styles, <style>-Blöcke oder Inline-Skripte.
 // Externe Links (<a href="https://...">) werden nicht abgerufen.
 import { readdir, readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { CSP } from "./build-site.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const OUT = path.join(ROOT, "site-dist");
@@ -57,6 +60,18 @@ for (const file of htmlFiles) {
   const rel = path.relative(OUT, file).split(path.sep).join("/");
   // Basis-URL der Seite, als läge site-dist unter /CodeChecker/.
   const base = new URL(rel, `https://example.invalid${SITE_PATH}`);
+
+  // Content-Security-Policy (siehe build-site.mjs) und nichts, was sie
+  // blockieren würde: keine Inline-Styles, <style>-Blöcke, Inline-Skripte
+  // oder Event-Handler-Attribute.
+  const csp = [...html.matchAll(/<meta http-equiv="Content-Security-Policy" content="([^"]*)">/g)];
+  if (csp.length !== 1 || decode(csp[0][1]) !== CSP) errors.push(`${rel}: Content-Security-Policy fehlt oder weicht ab`);
+  if (/<[a-z][^>]*\sstyle\s*=/i.test(html)) errors.push(`${rel}: Inline-Style (style=...)`);
+  if (/<style[\s>]/i.test(html)) errors.push(`${rel}: <style>-Block`);
+  if (/<[a-z][^>]*\son[a-z]+\s*=/i.test(html)) errors.push(`${rel}: Event-Handler-Attribut (on...=)`);
+  for (const m of html.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script>/gi)) {
+    if (!/\ssrc="/i.test(m[1]) || m[2].trim()) errors.push(`${rel}: Inline-Skript`);
+  }
 
   const refs = [];
   for (const m of html.matchAll(/<(a|link|script|img|source)\b([^>]*)>/gi)) {
