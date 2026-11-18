@@ -1247,6 +1247,11 @@ pub fn decide_confidence(e: &Evidence) -> Confidence {
 /// real answers are known.
 const STRUCTURE_EXPECTED_TOKENS: f64 = 250.0;
 const SOLUTION_EXPECTED_TOKENS: f64 = 350.0;
+/// Without input the solutions also comment every output line with the
+/// values used ([`prompts::STEPS_RULE`]): measured 219 instead of 142 tokens
+/// on average (KI-Benchmark 1.1.1, 7B model), so the prior grows by the same
+/// factor (350 × 219 / 142 ≈ 540).
+const SOLUTION_EXPECTED_TOKENS_NO_INPUT: f64 = 540.0;
 const INPUTS_EXPECTED_TOKENS: f64 = 250.0;
 /// Characters per prompt token until the structure step measured it
 /// (German task text, code: rather 3.5; fewer means more tokens).
@@ -1287,6 +1292,8 @@ struct Plan {
     solutions: usize,
     /// The inputs are requested alongside the solutions.
     parallel_inputs: bool,
+    /// The task reads no input: longer solution answers are expected.
+    no_input: bool,
     /// Output tokens of the solution answers so far.
     solution_tokens: Vec<f64>,
     compiled: bool,
@@ -1308,7 +1315,11 @@ impl Plan {
     /// Realistic output of one solution: the mean of the answers so far.
     fn solution_gen(&self) -> f64 {
         if self.solution_tokens.is_empty() {
-            SOLUTION_EXPECTED_TOKENS
+            if self.no_input {
+                SOLUTION_EXPECTED_TOKENS_NO_INPUT
+            } else {
+                SOLUTION_EXPECTED_TOKENS
+            }
         } else {
             self.solution_tokens.iter().sum::<f64>() / self.solution_tokens.len() as f64
         }
@@ -1957,6 +1968,7 @@ pub async fn generate<L: Llm + Sync, E: Executor>(
                     inputs_chars: structure_chars,
                     solutions: settings.solutions,
                     parallel_inputs: true,
+                    no_input: false,
                     solution_tokens: Vec::new(),
                     compiled: lang.id == "java",
                     prior: settings.speeds.unwrap_or_else(|| eta::default_speeds("")),
@@ -2093,6 +2105,7 @@ pub async fn generate<L: Llm + Sync, E: Executor>(
             s.plan.solution_chars = chars(&base_messages);
             s.plan.inputs_chars = chars(&prompts::inputs_messages(&req.task_text, &inputs_ctx));
             s.plan.parallel_inputs = !no_input;
+            s.plan.no_input = no_input;
         }
         run.step(Step::Round);
         run.progress(
@@ -2953,6 +2966,14 @@ mod tests {
         }
     }
 
+    fn req_with_text(text: &str) -> GenerateRequest {
+        GenerateRequest {
+            task_text: text.into(),
+            language: "python".into(),
+            compare_mode: None,
+        }
+    }
+
     fn settings(n: usize) -> Settings {
         Settings {
             solutions: n,
@@ -3650,6 +3671,7 @@ mod tests {
             inputs_chars: 2910.0,
             solutions: 3,
             parallel_inputs: true,
+            no_input: false,
             solution_tokens: Vec::new(),
             compiled: true,
             prior: eta::default_speeds("qwen2.5-coder-7b"),
@@ -3673,6 +3695,13 @@ mod tests {
         p.parallel_inputs = false;
         p.solution_tokens = vec![200.0, 400.0];
         assert_eq!(p.work(Step::Round).gen_tokens, 900.0);
+        // Without input the answers are longer (comments per output line).
+        let mut p = plan(Step::Round);
+        p.parallel_inputs = false;
+        p.no_input = true;
+        assert_eq!(p.work(Step::Round).gen_tokens, 3.0 * 540.0);
+        p.solution_tokens = vec![219.0];
+        assert_eq!(p.work(Step::Round).gen_tokens, 3.0 * 219.0);
         assert_eq!(p.later(Step::Round).sandbox_seconds, 10.0);
         assert_eq!(p.later(Step::Majority), eta::Work::default());
         // Structure: the round and the majority vote are still to come.
@@ -4420,6 +4449,78 @@ mod tests {
                 count: 1
             }]
         );
+    }
+
+    /// Regression „Aufgabe 2.2 – Time“ (KI-Benchmark 1.1.1, 7B model): the
+    /// model read „15 Uhr, 17 Minuten und 51 Sekunden“ as 17:51:00 in every
+    /// solution alike (third line 9630 instead of 441), which no majority
+    /// can correct. Without input the solution prompt now names the values
+    /// found by rules and asks for one comment per output line; the mock
+    /// model gets the time right only with them.
+    #[test]
+    fn time_sheet_gets_fixed_values_in_the_solution_prompt() {
+        let structure = serde_json::json!({
+            "inputFormat": "no input",
+            "readsInput": false,
+            "inputConstraints": "",
+            "outputFormat": "three lines",
+            "examples": [],
+            "outputTemplates": [{"text": QAS_LINES.join("\n"), "placeholders": ["12345678"]}],
+            "compareMode": "lines"
+        })
+        .to_string();
+        let llm = MockLlm::new(move |r: &ChatRequest, _| {
+            if is_structure(r) {
+                Ok(structure.clone())
+            } else if is_inputs(r) {
+                Ok(r#"{"inputs": ["15 10 30"]}"#.into())
+            } else if r.messages[1].content.contains("(clock time 15:17:51)")
+                && r.messages[0].content.contains(prompts::STEPS_RULE)
+            {
+                Ok(java_program("qas"))
+            } else {
+                Ok(java_program("wrongdiff"))
+            }
+        });
+        let req = GenerateRequest {
+            task_text: prompts::TIME_SHEET.into(),
+            language: "java".into(),
+            compare_mode: None,
+        };
+        let r = generate_with(&llm, req, 3).unwrap();
+        let calls = llm.calls();
+        let solution = calls
+            .iter()
+            .find(|c| !is_structure(c) && !is_inputs(c))
+            .unwrap();
+        let user = &solution.messages[1].content;
+        assert!(user.contains(
+            "- \"15 Uhr, 10 Minuten und 30 Sekunden\": hours = 15, minutes = 10, seconds = 30 \
+             (clock time 15:10:30)\n- \"15 Uhr, 17 Minuten und 51 Sekunden\": hours = 15, \
+             minutes = 17, seconds = 51 (clock time 15:17:51)"
+        ));
+        assert!(r.stats.no_input);
+        assert_eq!(r.tests.len(), 1, "{:?}", r.tests);
+        assert_eq!(r.tests[0].input, "");
+        assert_eq!(r.tests[0].expected, QAS_OUTPUT);
+        assert_eq!(r.tests[0].agreement, 1.0);
+        // A task with input keeps the old prompt.
+        let llm = MockLlm::new(scripted(
+            structure_json(&[("21", "42"), ("5", "10")], "lines"),
+            vec!["a"],
+            r#"{"inputs": ["7"]}"#,
+        ));
+        let r = generate_with(&llm, req_with_text("Lies 15 Minuten ein.\n\nBeispiel:\nEingabe:\n  21\nAusgabe:\n  42\n\nEingabe: 5\nAusgabe: 10\n"), 3).unwrap();
+        assert!(!r.stats.no_input);
+        let calls = llm.calls();
+        let solution = calls
+            .iter()
+            .find(|c| !is_structure(c) && !is_inputs(c))
+            .unwrap();
+        assert!(!solution.messages[0].content.contains(prompts::STEPS_RULE));
+        assert!(!solution.messages[1]
+            .content
+            .contains(prompts::FIXED_VALUES_HEADING));
     }
 
     /// Regression case B (release 1.1.0, 1.5B model, five solutions): the
