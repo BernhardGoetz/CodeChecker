@@ -80,6 +80,11 @@ function phaseTimes(stats: GenerateResult["stats"]): string | null {
   return text ? text + prompt : null;
 }
 
+/** Number of tests on which the solutions disagreed (with outputs to show). */
+function disagreeing(r: GenerateResult): number {
+  return r.tests.filter((t) => (t.alternatives ?? []).length > 0).length;
+}
+
 export function modeName(m: CompareMode): string {
   if (m.kind === "lines") return "Zeilen (exakt)";
   if (m.kind === "tokens") return "Wörter (Leerraum egal)";
@@ -94,7 +99,8 @@ function progressLine(p: AiProgress | null, seconds: number): string {
   if (!p) return `KI wird gestartet … (${seconds} s)`;
   const parts = [p.message];
   if (p.tokensPerSecond !== null) parts.push(`${p.tokensPerSecond.toFixed(1).replace(".", ",")} Token/s`);
-  if (p.etaSeconds !== null && p.etaSeconds > 0) parts.push(`noch ca. ${formatDuration(p.etaSeconds)}`);
+  if (p.etaText) parts.push(`noch ${p.etaText}`);
+  else if (p.etaSeconds !== null && p.etaSeconds > 0) parts.push(`noch ca. ${formatDuration(p.etaSeconds)}`);
   parts.push(`${formatDuration(seconds)} vergangen`);
   return parts.join(" · ");
 }
@@ -177,6 +183,7 @@ export function AiPanel({
   };
 
   const modelReady = status?.modelReady ?? false;
+  const aiAvailable = status?.hardware.aiAvailable ?? true;
   const suggestion = result?.suggestedCompareMode ?? null;
   const showSuggestion =
     suggestion !== null && !modeApplied && !sameMode(suggestion, compareMode) && result?.confidence.level !== "red";
@@ -185,9 +192,10 @@ export function AiPanel({
     <section className="card ai-panel" aria-labelledby="ai-heading">
       <div className="card-header">
         <h2 id="ai-heading">Testfälle mit KI</h2>
-        {!modelReady && (
+        {!modelReady && (aiAvailable || (status?.retired.length ?? 0) > 0) && (
+          // Without enough RAM only to delete a no longer supported model.
           <button onClick={onOpenSetup} disabled={running} className="attention">
-            KI-Modell einrichten …
+            {aiAvailable ? "KI-Modell einrichten …" : "KI-Modell verwalten …"}
           </button>
         )}
       </div>
@@ -240,16 +248,51 @@ export function AiPanel({
             {(result.stats.templatesDiscarded ?? 0) + (result.stats.templatesMerged ?? 0) > 0 &&
               ` (${(result.stats.templatesDiscarded ?? 0) + (result.stats.templatesMerged ?? 0)} verworfen/zusammengeführt)`}
             {result.stats.noInput && " · Aufgabe liest keine Eingabe"}
-            {(result.stats.solutionsCancelled ?? 0) > 0 &&
-              ` · ${result.stats.solutionsCancelled} Lösung(en) nicht abgewartet`}
+            {result.stats.fixedValues && " (feste Werte laut Aufgabentext)"}
+            {(result.stats.solutionsReadInput ?? 0) > 0 &&
+              ` · ${result.stats.solutionsReadInput} Lösung(en) lasen trotzdem eine Eingabe (verworfen)`}
             {(result.stats.inputsInvalid ?? 0) > 0 &&
               ` · ${result.stats.inputsInvalid} ungültige KI-Eingabe(n) nicht übernommen`}
             {(result.stats.testsRedundant ?? 0) > 0 &&
-              ` · ${result.stats.testsRedundant} gleichartige Testfälle weggelassen`} ·{" "}
+              ` · ${result.stats.testsRedundant} gleichartige Testfälle weggelassen`}
+            {(result.stats.inputsOutOfRange ?? 0) > 0 &&
+              ` · ${result.stats.inputsOutOfRange} KI-Eingabe(n) außerhalb der Grenzen der Aufgabe verworfen`}
+            {(result.stats.testsOverflow ?? 0) > 0 &&
+              ` · ${result.stats.testsOverflow} Testfall/-fälle mit vermutetem Überlauf verworfen`} ·{" "}
             {Math.round(result.stats.durationMs / 1000)} s
             {result.stats.tokensPerSecond !== null &&
               ` · ${result.stats.tokensPerSecond.toFixed(1).replace(".", ",")} Token/s`}
           </p>
+          {disagreeing(result) > 0 && (
+            <div className="note warn small">
+              Bei {disagreeing(result)} {disagreeing(result) === 1 ? "Testfall" : "Testfällen"} waren sich die
+              Lösungen nicht einig. Die abweichenden Ausgaben stehen beim jeweiligen Testfall (Reiter
+              „Testfälle“) – bitte die erwartete Ausgabe dort prüfen.
+              <details>
+                <summary>Abweichende Ausgaben anzeigen</summary>
+                {result.tests
+                  .filter((t) => (t.alternatives ?? []).length > 0)
+                  .map((t) => (
+                    <div key={t.name}>
+                      <strong>{t.name}</strong>: übernommen (Mehrheit, {Math.round(t.agreement * 100)} %)
+                      <pre className="output">{t.expected}</pre>
+                      Andere Lösungen gaben aus:
+                      {(t.alternatives ?? []).map((a, i) => (
+                        <div key={i}>
+                          <span className="muted">
+                            {a.count}× {a.truncated && "(gekürzt)"}
+                          </span>
+                          <pre className="output">
+                            {a.output}
+                            {a.truncated && "…"}
+                          </pre>
+                        </div>
+                      ))}
+                    </div>
+                  ))}
+              </details>
+            </div>
+          )}
           {phaseTimes(result.stats) && (
             <details className="small muted">
               <summary>Zeit je Schritt</summary>

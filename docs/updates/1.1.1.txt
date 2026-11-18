@@ -1,0 +1,11 @@
+Code-Prüfer 1.1.1 – richtigere und schnellere KI-Testfälle.
+
+- KI-Testfälle: Die KI wartet jetzt immer alle Lösungen ab. Vorher konnte eine falsche Mehrheit von 2 der 3 Lösungen gewinnen, bevor die richtige dritte fertig war.
+- Sind sich die Lösungen uneinig, zeigt der Testfall auch die abweichenden Ausgaben an. Prüfe dann selbst, welche Ausgabe stimmt.
+- Nennt die Aufgabe feste Werte und verlangt keine Eingabe, liest die KI-Lösung die Werte nicht mehr ein. Zeitangaben wie „15 Uhr, 17 Minuten und 51 Sekunden“ werden jetzt richtig übernommen.
+- KI-Testfälle halten sich an die Grenzen der Aufgabe. Ein vermuteter Zahlenüberlauf bei Java-Lösungen wird nicht mehr grün angezeigt.
+- Grün gibt es nur noch, wenn sich alle Lösungen einig sind.
+- Das kleine KI-Modell (1.5B) wird nicht mehr unterstützt; die KI verwendet nur noch das 7B-Modell. Hast du das kleine Modell schon geladen, kannst du es unter „KI-Modell“ löschen. Mit weniger als 12 GB Arbeitsspeicher steht die KI nicht zur Verfügung; Code prüfen geht weiterhin.
+- Die Testfälle sind schneller fertig, und die Restdauer wird als vorsichtige Spanne angezeigt.
+
+Alle Änderungen stehen auf der Release-Seite auf GitHub.

@@ -61,16 +61,18 @@ Die KI ist nur eine Hilfe. Ob dein Code richtig ist, entscheidet immer das **tat
 | **Betriebssystem** | **Windows**: ein aktuelles Windows 10 oder 11 (64 Bit). Der Code-Prüfer nutzt zum Lesen von Bildern und PDF-Dateien Funktionen, die Windows selbst mitbringt (`Windows.Media.Ocr` für die Texterkennung und `Windows.Data.Pdf` für PDF-Seiten). Dein Windows muss diese Funktionen haben; eine bestimmte Build-Nummer ist im Programm nicht festgelegt. **macOS**: ebenfalls aktuell. Dort nutzt das Programm die Apple-Funktionen *Vision* (Texterkennung) und *PDFKit* (PDF-Seiten). Es gibt Installationsdateien für Apple Silicon und Intel-Macs. |
 | **Prozessor** | Muss **Virtualisierung** unterstützen (nur Windows, siehe Abschnitt 3). Fast alle Prozessoren der letzten Jahre können das. |
 | **Container-Programm** | **Docker Desktop** (empfohlen) oder **Podman**. Unter Windows kann der Installer des Code-Prüfers die gewählte Engine für dich installieren. |
-| **Arbeitsspeicher (RAM)** | Mindestens **8 GB**, bzw. so viel, dass dein Betriebssystem auch mit Docker/Podman im Hintergrund noch flüssig läuft. Für die **KI-Funktionen** gilt zusätzlich die Tabelle unten: Unter 12 GB RAM schlägt die App das kleine Modell vor, ab 12 GB das große. Unter 6 GB RAM warnt die App, dass es knapp wird. |
-| **Speicherplatz** | Etwa **10 GB** frei (Code-Prüfer mit den Java-/Python-Umgebungen, Docker Desktop bzw. Podman und ein KI-Modell von ca. 1,2 GB oder 4,4 GB). |
+| **Arbeitsspeicher (RAM)** | Mindestens **8 GB**, bzw. so viel, dass dein Betriebssystem auch mit Docker/Podman im Hintergrund noch flüssig läuft. Für die **KI-Funktionen** brauchst du mindestens **12 GB** (z. B. 16 GB), siehe unten. Mit weniger zeigt die App, dass die KI auf diesem Rechner nicht verfügbar ist; das Prüfen ohne KI funktioniert weiter. |
+| **Speicherplatz** | Etwa **10 GB** frei (Code-Prüfer mit den Java-/Python-Umgebungen, Docker Desktop bzw. Podman und das KI-Modell mit ca. 4,4 GB). |
 | **Internet** | Nur zum Installieren, zum Herunterladen des KI-Modells und für Updates. Zum Prüfen von Code brauchst du **kein** Internet. |
 
-**Welches KI-Modell passt zu meinem Rechner?**
+**Welches KI-Modell braucht die App?**
 
-| Dein Arbeitsspeicher | Vorschlag der App | Dateigröße | Dauer pro Aufgabe (Schätzung der Entwickler, nicht auf Schul-PCs gemessen) |
+| Dein Arbeitsspeicher | KI-Modell | Dateigröße | Dauer pro Aufgabe (Schätzung der Entwickler, nicht auf Schul-PCs gemessen) |
 |---|---|---|---|
-| unter 12 GB | Qwen2.5-Coder 1.5B (klein, schneller, etwas schwächer) | ca. 1,2 GB | ca. 1–4 Minuten |
-| ab 12 GB | Qwen2.5-Coder 7B (größer, besser, langsamer) | ca. 4,4 GB | ca. 4–10 Minuten |
+| unter 12 GB | keins: Die KI-Funktion ist auf diesem Rechner nicht verfügbar. Code prüfen und eigene Testfälle gehen ohne KI. | – | – |
+| ab 12 GB | Qwen2.5-Coder 7B | ca. 4,4 GB | ca. 4–10 Minuten |
+
+Das frühere kleine Modell (Qwen2.5-Coder 1.5B) wird seit Version 1.1.1 nicht mehr unterstützt: Es lieferte zu oft falsche Testfälle. Hast du es schon heruntergeladen, zeigt die App unter „KI-Modell“ einen Hinweis und bietet an, es zu löschen.
 
 Hat dein Prozessor kein sogenanntes *AVX2* (eine Rechenfunktion), warnt dich die App: Die KI ist dann sehr langsam. Die KI ist freiwillig – ohne sie funktioniert das Prüfen trotzdem.
 
@@ -318,7 +320,11 @@ Lässt sich dein Code gar nicht übersetzen, siehst du statt der Testfälle eine
 3. Die **erwartete Ausgabe** ist die, auf die sich die Mehrheit der Lösungen einigt. Die KI *schreibt* die erwarteten Ausgaben also nie selbst.
 4. Du bekommst eine **Konfidenz** (Vertrauensstufe): **Grün** = hohe Sicherheit (die Beispiele des Aufgabenblatts bestanden, die Lösungen sind sich einig), **Gelb** = nur ein Hinweis, bitte die erwarteten Ausgaben prüfen, **Rot** = keine verlässlichen Testfälle möglich (dann gibt es auch keine).
 
-Die erzeugten Testfälle werden an deine vorhandenen angehängt und mit **„KI“** markiert. Du kannst sie bearbeiten. Die Musterlösung der KI ist zunächst verborgen; mit **„Musterlösung anzeigen“** blendest du sie ein und mit **„Musterlösung ausblenden“** wieder aus (bei jeder neuen Erzeugung ist sie wieder verborgen). Bei Aufgaben ohne Beispiele, mit mehreren richtigen Lösungen, mit Zufall, GUI oder Dateien ist das Ergebnis höchstens ein Hinweis. Liest eine Aufgabe keine Eingabe, erzeugt die KI keine Testeingaben (das spart Zeit); es gibt dann einen Testfall mit leerer Eingabe. Unter „Zeit je Schritt“ siehst du, wie lange die einzelnen Schritte gedauert haben.
+Die erzeugten Testfälle werden an deine vorhandenen angehängt und mit **„KI“** markiert. Du kannst sie bearbeiten. Die Musterlösung der KI ist zunächst verborgen; mit **„Musterlösung anzeigen“** blendest du sie ein und mit **„Musterlösung ausblenden“** wieder aus (bei jeder neuen Erzeugung ist sie wieder verborgen). Bei Aufgaben ohne Beispiele, mit mehreren richtigen Lösungen, mit Zufall, GUI oder Dateien ist das Ergebnis höchstens ein Hinweis. Liest eine Aufgabe keine Eingabe, erzeugt die KI keine Testeingaben (das spart Zeit); es gibt dann einen Testfall mit leerer Eingabe. Nennt das Blatt feste Werte (z. B. „Die Uhrzeit ist 15:17:51 … Speichern Sie Stunde, Minute und Sekunde in Variablen“) und verlangt nirgends eine Eingabe, erkennt der Code-Prüfer das auch ohne KI: Lösungen der KI, die trotzdem etwas einlesen, zählen dann als fehlgeschlagen und werden mit dem Hinweis repariert, die vorgegebenen Werte zu verwenden. Unter „Zeit je Schritt“ siehst du, wie lange die einzelnen Schritte gedauert haben.
+
+**Uneinige Lösungen.** Sind sich die Lösungen bei einem Testfall nicht einig, übernimmt der Testfall die Ausgabe der Mehrheit; beim Testfall steht dann, was die **anderen Lösungen ausgegeben** haben (mit Anzahl, lange Ausgaben gekürzt). Prüfe in diesem Fall anhand der Aufgabe, welche Ausgabe stimmt – die Mehrheit kann sich irren. Die KI wartet immer alle Lösungen ab: Sie werden in einem Durchgang gemeinsam geschrieben und kommen zusammen an (deshalb zählt die Anzeige die Lösungen erst beim Prüfen hoch).
+
+**Restdauer.** Während die KI arbeitet, zeigt die Anzeige eine Spanne wie „noch ca. 4–6 Min.“. Sie wird aus der gemessenen Geschwindigkeit deines Rechners berechnet, alle paar Sekunden aktualisiert und eher vorsichtig geschätzt. Beim ersten Lauf eines Modells nimmt die App einen langsamen Rechner an; danach merkt sie sich die gemessene Geschwindigkeit (Datei `ai-speed.json` im Konfigurationsordner).
 
 **Passende Testeingaben.** Die KI bekommt für die Testeingaben das Ausgabeformat, die Beispiele des Blatts und die Grenzen der Eingabe (z. B. „1 ≤ n ≤ 1000“), sofern das Blatt welche nennt. Ein Beispiel aus dem Blatt zählt nur, wenn Eingabe und Ausgabe im Text nahe beieinanderstehen (die Ausgabe nach der Eingabe). Brechen **alle** Lösungen bei einer KI-Eingabe ab, passt die Eingabe wohl nicht zur Aufgabe: Sie wird nicht übernommen und nur als Hinweis genannt (die Konfidenz wird dadurch nicht schlechter). Haben mehr als drei KI-Testfälle dieselbe erwartete Ausgabe, werden nur die ersten drei übernommen.
 

@@ -14,6 +14,7 @@ import {
   type PickedFiles,
   type ModelInfo,
   type ModelsProgress,
+  type RetiredModel,
 } from "../api";
 import { Modal } from "./Modal";
 
@@ -167,6 +168,13 @@ export function ModelSetup({ status, onStatus, onClose, returnFocus }: Props) {
 
   const nameOf = (id: string | null) => status?.models.find((m) => m.id === id)?.name ?? "dieses Modell";
 
+  const removeRetired = (r: RetiredModel) =>
+    act(`${r.name} wird gelöscht …`, async () => {
+      setConfirmDelete(null);
+      onStatus(await deleteModel(r.id));
+      setNote(`${r.name} wurde gelöscht (${formatGb(r.sizeBytes)} freigegeben).`);
+    });
+
   const remove = (m: ModelInfo) =>
     act(`${m.name} wird gelöscht …`, async () => {
       setConfirmDelete(null);
@@ -179,6 +187,8 @@ export function ModelSetup({ status, onStatus, onClose, returnFocus }: Props) {
     });
 
   const idle = busy === null;
+  // Too little RAM for the 7B model: no download, import or selection.
+  const available = status?.hardware.aiAvailable ?? true;
 
   return (
     <Modal
@@ -201,8 +211,30 @@ export function ModelSetup({ status, onStatus, onClose, returnFocus }: Props) {
             {hardwareText(status)} · KI-Laufzeit llama.cpp {status.llamaVersion}
           </p>
           {status.hardware.warnings.map((w) => (
-            <div key={w} className="hint small">
+            <div key={w} className={available ? "hint small" : "banner warn small"}>
               {w}
+            </div>
+          ))}
+          {status.retired.map((r) => (
+            <div key={r.id} className="banner warn small">
+              <p>
+                {r.note} Die Datei{r.sizeBytes > 0 ? ` (${formatGb(r.sizeBytes)})` : ""} liegt noch auf
+                diesem Rechner und kann gelöscht werden, um Speicherplatz freizugeben.
+              </p>
+              <div className="row">
+                {confirmDelete === r.id ? (
+                  <>
+                    <button className="danger" onClick={() => void removeRetired(r)} disabled={!idle}>
+                      Wirklich löschen?
+                    </button>
+                    <button onClick={() => setConfirmDelete(null)}>Nein</button>
+                  </>
+                ) : (
+                  <button className="danger" onClick={() => setConfirmDelete(r.id)} disabled={!idle}>
+                    {r.sizeBytes > 0 ? `Löschen (${formatGb(r.sizeBytes)} freigeben)` : "Löschen"}
+                  </button>
+                )}
+              </div>
             </div>
           ))}
           {!status.runtimeAvailable && status.runtimeError && (
@@ -251,13 +283,13 @@ export function ModelSetup({ status, onStatus, onClose, returnFocus }: Props) {
                     <button
                       className={m.suggested ? "primary" : undefined}
                       onClick={() => void download(m)}
-                      disabled={!idle}
+                      disabled={!idle || !available}
                     >
                       {m.partialBytes > 0 ? "Download fortsetzen" : "Herunterladen"}
                     </button>
                   )}
                   {m.installed && !m.selected && (
-                    <button onClick={() => void choose(m)} disabled={!idle}>
+                    <button onClick={() => void choose(m)} disabled={!idle || !available}>
                       Auswählen
                     </button>
                   )}
@@ -282,7 +314,7 @@ export function ModelSetup({ status, onStatus, onClose, returnFocus }: Props) {
                       </button>
                     ))}
                 </div>
-                {m.known && !m.installed && (
+                {m.known && !m.installed && available && (
                   // Without a pinned download the import is the only way: shown open.
                   <details className="more-options" open={!m.pinned}>
                     <summary className="small">Weitere Optionen (ohne Internet)</summary>
@@ -293,8 +325,8 @@ export function ModelSetup({ status, onStatus, onClose, returnFocus }: Props) {
             ))}
           </ul>
           <p className="small muted">
-            Faustregel: unter 12 GB Arbeitsspeicher das 1.5B-Modell (schneller, schwächer), ab 12 GB
-            (z. B. 16 GB) das 7B-Modell (deutlich besser, langsamer).
+            Die KI braucht mindestens 12 GB Arbeitsspeicher (z. B. 16 GB). Mit weniger ist sie auf dem
+            Rechner nicht verfügbar; Code prüfen und eigene Testfälle gehen auch ohne KI.
             {status.modelsDir && <> Speicherort: {status.modelsDir}</>}
           </p>
         </>
@@ -302,7 +334,7 @@ export function ModelSetup({ status, onStatus, onClose, returnFocus }: Props) {
       <details className="more-options">
         <summary className="small">Weitere Optionen (ohne Internet)</summary>
         <div className="row">
-          <button onClick={() => void pickImport()} disabled={!idle}>
+          <button onClick={() => void pickImport()} disabled={!idle || !available}>
             Anderes Modell importieren (.gguf) …
           </button>
           <span className="small muted">

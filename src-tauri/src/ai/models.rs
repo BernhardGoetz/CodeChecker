@@ -1,5 +1,5 @@
-//! Model management: fixed catalog (Qwen2.5-Coder 1.5B / 7B, pinned to a
-//! Hugging Face revision with SHA-256 and size), hardware-based suggestion,
+//! Model management: fixed catalog (Qwen2.5-Coder 7B, pinned to a Hugging
+//! Face revision with SHA-256 and size), hardware check (enough RAM for it),
 //! download with resume and hash check, import of local `.gguf` files,
 //! selection (persisted in `ai.json` in the app config directory).
 //!
@@ -27,16 +27,19 @@ pub const MODELS_SUBDIR: &str = "models";
 /// the verified catalog files, and with their original names so llama.cpp
 /// finds the other parts of a split GGUF.
 pub const UNVERIFIED_SUBDIR: &str = "unverified";
-/// Below this much RAM the small model is suggested (OS-reported RAM of a
-/// "16 GB" machine is ~15.5 GiB, of an "8 GB" one ~7.7 GiB).
-pub const SMALL_MODEL_RAM_BYTES: u64 = 12 * GIB;
-pub const SMALL_MODEL: &str = "qwen2.5-coder-1.5b";
+/// Below this much RAM the 7B model (about 4.7 GB, plus context, Docker
+/// and the system) does not fit: the AI feature is not available. OS-reported
+/// RAM of a "12 GB" machine is ~11.7 GiB, of an "8 GB" one ~7.7 GiB.
+pub const MIN_AI_RAM_BYTES: u64 = 11 * GIB;
 pub const LARGE_MODEL: &str = "qwen2.5-coder-7b";
+/// Catalog entries the app offers; other entries of `catalog.json` (e.g. a
+/// removed model before the catalog is pinned again) are ignored. The same
+/// list is in `scripts/pin-models.sh` (`SUPPORTED_MODELS`).
+pub const SUPPORTED_MODELS: &[&str] = &[LARGE_MODEL];
 /// Upper bound for imported files.
 pub const MAX_IMPORT_BYTES: u64 = 32 * GIB;
 /// Solutions per task for imported (unknown) models.
-const IMPORTED_SOLUTIONS_SMALL: u32 = 5;
-const IMPORTED_SOLUTIONS_LARGE: u32 = 3;
+const IMPORTED_SOLUTIONS: u32 = 3;
 const GIB: u64 = 1024 * 1024 * 1024;
 const CHUNK: usize = 8 * 1024 * 1024;
 const PROGRESS_INTERVAL: Duration = Duration::from_millis(250);
@@ -96,8 +99,50 @@ pub fn parse_catalog(json: &str) -> Result<Vec<CatalogModel>, String> {
         .map_err(|e| e.to_string())
 }
 
+/// The supported entries of a catalog ([`SUPPORTED_MODELS`]), in order.
+pub fn supported(models: Vec<CatalogModel>) -> Vec<CatalogModel> {
+    models
+        .into_iter()
+        .filter(|m| SUPPORTED_MODELS.contains(&m.id.as_str()))
+        .collect()
+}
+
 pub fn catalog() -> &'static [CatalogModel] {
-    CATALOG.get_or_init(|| parse_catalog(CATALOG_JSON).expect("catalog.json is valid"))
+    CATALOG.get_or_init(|| supported(parse_catalog(CATALOG_JSON).expect("catalog.json is valid")))
+}
+
+/// A model the app no longer supports: users who downloaded it get a note
+/// and can delete it; it is never used or selected again.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RetiredModel {
+    pub id: &'static str,
+    pub name: &'static str,
+    /// Files the download stored in the models directory.
+    pub files: &'static [&'static str],
+    /// Their SHA-256 (an import of such a file is refused).
+    pub sha256: &'static [&'static str],
+}
+
+/// The 1.5B model was removed in 1.1.1: on tasks without input it was right
+/// in 2 of 12 runs (KI-Benchmark 1.1.1); the 7B model is the only one.
+pub const RETIRED_MODELS: &[RetiredModel] = &[RetiredModel {
+    id: "qwen2.5-coder-1.5b",
+    name: "Qwen2.5-Coder 1.5B Instruct (Q5_K_M)",
+    files: &["qwen2.5-coder-1.5b-instruct-q5_k_m.gguf"],
+    sha256: &["f15d02e8e51a5c6f9448b972819acfa66aee4d8bb7d881a8b8ba3d90da08ef09"],
+}];
+
+pub fn retired(id: &str) -> Option<&'static RetiredModel> {
+    RETIRED_MODELS.iter().find(|r| r.id == id)
+}
+
+/// German note for a retired model.
+pub fn retired_note(r: &RetiredModel) -> String {
+    format!(
+        "„{}“ wird nicht mehr unterstützt: Es lieferte zu oft falsche Testfälle. Die KI \
+         verwendet nur noch das 7B-Modell.",
+        r.name
+    )
 }
 
 fn is_hex(s: &str, len: usize) -> bool {
@@ -313,17 +358,42 @@ pub struct Hardware {
     pub apple_silicon: bool,
     /// `None` on non-x86 CPUs.
     pub avx2: Option<bool>,
-    pub suggested_model: String,
-    /// German notes (slow CPU, little RAM).
+    /// Enough RAM for the 7B model (or the RAM is unknown). Otherwise the
+    /// AI feature is not available; checking code without it still is.
+    pub ai_available: bool,
+    /// `None` if the AI is not available on this machine.
+    pub suggested_model: Option<String>,
+    /// German notes (slow CPU, too little RAM).
     pub warnings: Vec<String>,
 }
 
-/// Small model below 12 GiB RAM, else the 7B model.
-pub fn suggest(total_ram_bytes: u64) -> &'static str {
-    if total_ram_bytes < SMALL_MODEL_RAM_BYTES {
-        SMALL_MODEL
+/// Whether the AI can run with this much RAM (0 = unknown: not blocked).
+pub fn ai_available(total_ram_bytes: u64) -> bool {
+    total_ram_bytes == 0 || total_ram_bytes >= MIN_AI_RAM_BYTES
+}
+
+/// The 7B model if it fits into the RAM, else none.
+pub fn suggest(total_ram_bytes: u64) -> Option<&'static str> {
+    ai_available(total_ram_bytes).then_some(LARGE_MODEL)
+}
+
+/// German message when the RAM is too small for the 7B model.
+pub fn ram_too_small(total_ram_bytes: u64) -> String {
+    format!(
+        "Die KI-Funktion ist auf diesem Rechner nicht verfügbar: Das KI-Modell braucht \
+         mindestens 12 GB Arbeitsspeicher, dieser Rechner hat {} GB. Code prüfen und eigene \
+         Testfälle funktionieren weiterhin ohne KI.",
+        gib(total_ram_bytes)
+    )
+}
+
+/// Error if the AI cannot run on this machine (too little RAM).
+fn ensure_ai_available() -> Result<(), AiError> {
+    let ram = total_ram();
+    if ai_available(ram) {
+        Ok(())
     } else {
-        LARGE_MODEL
+        Err(AiError::Other(ram_too_small(ram)))
     }
 }
 
@@ -338,12 +408,8 @@ pub fn hardware_warnings(total_ram_bytes: u64, avx2: Option<bool>) -> Vec<String
             "Der Prozessor unterstützt kein AVX2 – die KI läuft damit sehr langsam.".to_string(),
         );
     }
-    if total_ram_bytes > 0 && total_ram_bytes < 6 * GIB {
-        w.push(format!(
-            "Wenig Arbeitsspeicher ({} GB) – schon das kleine Modell kann knapp werden; \
-             andere Programme vorher schließen.",
-            gib(total_ram_bytes)
-        ));
+    if !ai_available(total_ram_bytes) {
+        w.push(ram_too_small(total_ram_bytes));
     }
     w
 }
@@ -359,21 +425,24 @@ fn detect_avx2() -> Option<bool> {
     }
 }
 
-pub fn hardware() -> Hardware {
+/// Total RAM in bytes; 0 = unknown (never blocks, see [`ai_available`]).
+fn total_ram() -> u64 {
     use sysinfo::{MemoryRefreshKind, RefreshKind, System};
-    // 0 = unbekannt; hardware_warnings ignoriert das.
-    let ram = System::new_with_specifics(
-        RefreshKind::nothing().with_memory(MemoryRefreshKind::everything()),
-    )
-    .map(|sys| sys.total_memory())
-    .unwrap_or(0);
+    System::new_with_specifics(RefreshKind::nothing().with_memory(MemoryRefreshKind::everything()))
+        .map(|sys| sys.total_memory())
+        .unwrap_or(0)
+}
+
+pub fn hardware() -> Hardware {
+    let ram = total_ram();
     let avx2 = detect_avx2();
     Hardware {
         total_ram_bytes: ram,
         physical_cores: llama::thread_count(),
         apple_silicon: cfg!(all(target_os = "macos", target_arch = "aarch64")),
         avx2,
-        suggested_model: suggest(ram).to_string(),
+        ai_available: ai_available(ram),
+        suggested_model: suggest(ram).map(str::to_string),
         warnings: hardware_warnings(ram, avx2),
     }
 }
@@ -448,6 +517,47 @@ fn update_config(f: impl FnOnce(&mut AiConfig)) -> Result<AiConfig, AiError> {
     Ok(c)
 }
 
+/// Measured llama-server speeds of the last run per model (start value of
+/// the remaining-time estimate, see `eta`), next to `ai.json`.
+pub const SPEEDS_FILE: &str = "ai-speed.json";
+/// Serializes read-modify-write of [`SPEEDS_FILE`].
+static SPEEDS_LOCK: Mutex<()> = Mutex::new(());
+
+fn read_speeds_from(dir: &Path) -> std::collections::BTreeMap<String, super::eta::Speeds> {
+    std::fs::read_to_string(dir.join(SPEEDS_FILE))
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default()
+}
+
+fn write_speeds_to(dir: &Path, id: &str, speeds: super::eta::Speeds) -> Result<(), AiError> {
+    let _lock = SPEEDS_LOCK.lock();
+    let mut all = read_speeds_from(dir);
+    all.insert(id.to_string(), speeds);
+    let json = serde_json::to_string_pretty(&all).map_err(|e| AiError::Other(e.to_string()))?;
+    std::fs::create_dir_all(dir)
+        .and_then(|_| std::fs::write(dir.join(SPEEDS_FILE), json))
+        .map_err(|e| AiError::Other(format!("Messwerte konnten nicht gespeichert werden: {e}")))
+}
+
+/// Speeds measured in the last run of model `id` (implausible values are
+/// ignored).
+pub fn load_speeds(id: &str) -> Option<super::eta::Speeds> {
+    let dir = CONFIG_DIR.get()?;
+    read_speeds_from(dir)
+        .get(id)
+        .copied()
+        .filter(|s| s.prompt_tps.is_finite() && s.gen_tps.is_finite())
+        .filter(|s| {
+            (0.01..100_000.0).contains(&s.prompt_tps) && (0.01..10_000.0).contains(&s.gen_tps)
+        })
+}
+
+/// Stores the speeds measured for model `id`.
+pub fn save_speeds(id: &str, speeds: super::eta::Speeds) -> Result<(), AiError> {
+    write_speeds_to(config_dir()?, id, speeds)
+}
+
 pub fn models_dir() -> Result<PathBuf, AiError> {
     DATA_DIR
         .get()
@@ -491,6 +601,8 @@ pub struct ModelInfo {
 pub struct AiStatus {
     pub hardware: Hardware,
     pub models: Vec<ModelInfo>,
+    /// Models no longer supported whose files are still on disk.
+    pub retired: Vec<RetiredInfo>,
     pub selected: Option<String>,
     /// A model is selected and installed.
     pub model_ready: bool,
@@ -498,6 +610,92 @@ pub struct AiStatus {
     pub runtime_error: Option<String>,
     pub llama_version: String,
     pub models_dir: Option<String>,
+}
+
+/// A retired model still on disk (see [`RETIRED_MODELS`]).
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct RetiredInfo {
+    pub id: String,
+    pub name: String,
+    /// Bytes deleting it frees (files, interrupted downloads, imports).
+    pub size_bytes: u64,
+    /// German note: no longer supported, can be deleted.
+    pub note: String,
+}
+
+/// Files of a retired model: its downloads (with interrupted `.part` files)
+/// and the files imported for it.
+fn retired_files(dir: &Path, config: &AiConfig, r: &RetiredModel) -> Vec<PathBuf> {
+    r.files
+        .iter()
+        .flat_map(|f| {
+            let p = dir.join(f);
+            [part_path(&p), p]
+        })
+        .chain(
+            config
+                .imported
+                .iter()
+                .filter(|i| i.catalog_id.as_deref() == Some(r.id))
+                .map(|i| imported_path(dir, i)),
+        )
+        .collect()
+}
+
+/// Retired models with files on disk (or imports recorded for them).
+pub fn retired_on_disk(dir: &Path, config: &AiConfig) -> Vec<RetiredInfo> {
+    RETIRED_MODELS
+        .iter()
+        .filter_map(|r| {
+            let files = retired_files(dir, config, r);
+            let present: Vec<u64> = files.iter().filter_map(|p| file_len(p)).collect();
+            let recorded = config
+                .imported
+                .iter()
+                .any(|i| i.catalog_id.as_deref() == Some(r.id));
+            (!present.is_empty() || recorded).then(|| RetiredInfo {
+                id: r.id.to_string(),
+                name: r.name.to_string(),
+                size_bytes: present.iter().sum(),
+                note: retired_note(r),
+            })
+        })
+        .collect()
+}
+
+/// A selected model that is neither a supported catalog entry nor an
+/// imported file (e.g. the retired 1.5B model) falls back to the 7B model
+/// if it is installed, else to no selection; the change is stored. Returns
+/// the retired model that was selected, if any.
+fn repair_selection(config: &mut AiConfig, dir: Option<&Path>) -> Option<&'static RetiredModel> {
+    let id = config.selected.clone()?;
+    let known = catalog().iter().any(|m| m.id == id)
+        || config
+            .imported
+            .iter()
+            .any(|i| i.id == id && i.catalog_id.is_none());
+    if known {
+        return None;
+    }
+    let fallback = dir.and_then(|d| {
+        catalog()
+            .iter()
+            .find(|m| m.id == LARGE_MODEL)
+            .filter(|m| {
+                catalog_installed(d, m) || unverified_parts(d, config, &m.id).first().is_some()
+            })
+            .map(|m| m.id.clone())
+    });
+    config.selected = fallback.clone();
+    if CONFIG_DIR.get().is_some() {
+        let _ = update_config(|c| {
+            if c.selected.as_deref() == Some(id.as_str()) {
+                c.selected = fallback;
+            }
+        });
+    }
+    retired(&id)
 }
 
 fn file_len(p: &Path) -> Option<u64> {
@@ -573,8 +771,9 @@ pub fn catalog_installed(dir: &Path, m: &CatalogModel) -> bool {
 
 pub fn status() -> AiStatus {
     let hw = hardware();
-    let config = read_config();
+    let mut config = read_config();
     let dir = models_dir().ok();
+    repair_selection(&mut config, dir.as_deref());
     let selected = config.selected.clone();
     let mut models: Vec<ModelInfo> = catalog()
         .iter()
@@ -626,7 +825,7 @@ pub fn status() -> AiStatus {
                 imported_parts,
                 missing_parts,
                 partial_bytes: partial,
-                suggested: m.id == hw.suggested_model,
+                suggested: hw.suggested_model.as_deref() == Some(m.id.as_str()),
                 selected: selected.as_deref() == Some(m.id.as_str()),
             }
         })
@@ -658,9 +857,14 @@ pub fn status() -> AiStatus {
         Ok(_) => (true, None),
         Err(e) => (false, Some(e.to_string())),
     };
+    let retired = dir
+        .as_ref()
+        .map(|d| retired_on_disk(d, &config))
+        .unwrap_or_default();
     AiStatus {
         hardware: hw,
         models,
+        retired,
         selected,
         model_ready,
         runtime_available,
@@ -707,9 +911,18 @@ pub fn selected_model() -> Result<SelectedModel, AiError> {
                 .into(),
         )
     };
-    let config = read_config();
-    let id = config.selected.clone().ok_or_else(not_ready)?;
+    ensure_ai_available()?;
+    let mut config = read_config();
     let dir = models_dir()?;
+    if let Some(r) = repair_selection(&mut config, Some(&dir)) {
+        if config.selected.is_none() {
+            return Err(AiError::Other(format!(
+                "{} Bitte unter „KI-Modell“ das 7B-Modell herunterladen und auswählen.",
+                retired_note(r)
+            )));
+        }
+    }
+    let id = config.selected.clone().ok_or_else(not_ready)?;
     if let Some(m) = catalog().iter().find(|m| m.id == id) {
         let start = installed_files(&dir, m).and_then(|v| start_file(&v));
         let verified = start.is_some();
@@ -739,16 +952,16 @@ pub fn selected_model() -> Result<SelectedModel, AiError> {
     Ok(SelectedModel {
         id,
         path,
-        solutions: if imp.size > 3 * GIB {
-            IMPORTED_SOLUTIONS_LARGE
-        } else {
-            IMPORTED_SOLUTIONS_SMALL
-        },
+        solutions: IMPORTED_SOLUTIONS,
         verified: false,
     })
 }
 
 pub fn select(id: &str) -> Result<AiStatus, AiError> {
+    ensure_ai_available()?;
+    if let Some(r) = retired(id) {
+        return Err(AiError::Other(retired_note(r)));
+    }
     let st = status();
     match st.models.iter().find(|m| m.id == id) {
         Some(m) if m.installed => {}
@@ -777,7 +990,9 @@ fn select_if_none(id: &str) {
 pub async fn delete(id: &str) -> Result<AiStatus, AiError> {
     let dir = models_dir()?;
     let config = read_config();
-    let files: Vec<PathBuf> = if let Some(m) = catalog().iter().find(|m| m.id == id) {
+    let files: Vec<PathBuf> = if let Some(r) = retired(id) {
+        retired_files(&dir, &config, r)
+    } else if let Some(m) = catalog().iter().find(|m| m.id == id) {
         m.files
             .iter()
             .map(|f| dir.join(&f.name))
@@ -1052,6 +1267,7 @@ pub async fn download(
     cancel: &CancellationToken,
     mut on_progress: impl FnMut(ModelsProgress),
 ) -> Result<AiStatus, AiError> {
+    ensure_ai_available()?;
     let m = catalog()
         .iter()
         .find(|m| m.id == id)
@@ -1179,6 +1395,7 @@ pub async fn import(
     cancel: &CancellationToken,
     mut on_progress: impl FnMut(ModelsProgress),
 ) -> Result<ImportOutcome, AiError> {
+    ensure_ai_available()?;
     let (name, size) = check_gguf_file(path).await?;
 
     let _guard = TransferGuard::acquire()?;
@@ -1219,6 +1436,15 @@ pub async fn import(
         }
     }
     let sha256 = hex(&hasher.finalize());
+    if let Some(r) = RETIRED_MODELS
+        .iter()
+        .find(|r| r.sha256.contains(&sha256.as_str()))
+    {
+        return Err(AiError::Other(format!(
+            "{} Die Datei wurde nicht importiert.",
+            retired_note(r)
+        )));
+    }
 
     let (target_name, model_id, known) = match match_hash(catalog(), &sha256) {
         Match::Catalog(m, f) => (f.name.clone(), m.id.clone(), true),
@@ -1414,6 +1640,7 @@ pub async fn import_for(
     cancel: &CancellationToken,
     mut on_progress: impl FnMut(ModelsProgress),
 ) -> Result<ImportOutcome, AiError> {
+    ensure_ai_available()?;
     let m = catalog()
         .iter()
         .find(|m| m.id == catalog_id)
@@ -1579,6 +1806,34 @@ pub async fn import_for(
 mod tests {
     use super::*;
 
+    #[test]
+    fn speeds_are_stored_per_model() {
+        let dir = std::env::temp_dir().join(format!("cp-speeds-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(read_speeds_from(&dir).is_empty());
+        let a = super::super::eta::Speeds {
+            prompt_tps: 7.5,
+            gen_tps: 2.25,
+        };
+        let b = super::super::eta::Speeds {
+            prompt_tps: 20.0,
+            gen_tps: 5.0,
+        };
+        write_speeds_to(&dir, LARGE_MODEL, a).unwrap();
+        write_speeds_to(&dir, "import-abc", b).unwrap();
+        write_speeds_to(&dir, "import-abc", a).unwrap();
+        let all = read_speeds_from(&dir);
+        assert_eq!(all.len(), 2);
+        assert_eq!(all[LARGE_MODEL], a);
+        assert_eq!(all["import-abc"], a);
+        let raw = std::fs::read_to_string(dir.join(SPEEDS_FILE)).unwrap();
+        assert!(raw.contains("\"promptTps\": 7.5"), "{raw}");
+        // A broken file counts as empty.
+        std::fs::write(dir.join(SPEEDS_FILE), "{kaputt").unwrap();
+        assert!(read_speeds_from(&dir).is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     fn pinned(id: &str, files: &[(&str, u64, char)]) -> CatalogModel {
         CatalogModel {
             id: id.into(),
@@ -1601,10 +1856,24 @@ mod tests {
 
     #[test]
     fn bundled_catalog_is_valid() {
-        let models = parse_catalog(CATALOG_JSON).unwrap();
+        // catalog.json is only changed by pin-models.yml: until it is pinned
+        // again it may still list a retired model, which the app ignores.
+        let raw = parse_catalog(CATALOG_JSON).unwrap();
+        for m in &raw {
+            if let Some(r) = retired(&m.id) {
+                let names: Vec<&str> = m.files.iter().map(|f| f.name.as_str()).collect();
+                let hashes: Vec<&str> = m.files.iter().map(|f| f.sha256.as_str()).collect();
+                assert_eq!(names, r.files, "{}", m.id);
+                assert_eq!(hashes, r.sha256, "{}", m.id);
+            } else {
+                assert!(SUPPORTED_MODELS.contains(&m.id.as_str()), "{}", m.id);
+            }
+        }
+        let models = catalog();
         let ids: Vec<&str> = models.iter().map(|m| m.id.as_str()).collect();
-        assert_eq!(ids, vec![SMALL_MODEL, LARGE_MODEL]);
-        for m in &models {
+        assert_eq!(ids, SUPPORTED_MODELS);
+        assert_eq!(ids, vec![LARGE_MODEL]);
+        for m in models {
             assert!(m.repo.starts_with("Qwen/Qwen2.5-Coder-"), "{}", m.repo);
             assert!(m.repo.ends_with("-Instruct-GGUF"), "{}", m.repo);
             assert_eq!(m.license, "Apache-2.0");
@@ -1635,8 +1904,37 @@ mod tests {
                 assert_eq!(m.size(), eff.iter().map(|f| f.size).sum::<u64>());
             }
         }
-        assert_eq!(models[0].solutions, 5);
-        assert_eq!(models[1].solutions, 3);
+        assert_eq!(models[0].solutions, 3);
+    }
+
+    #[test]
+    fn unsupported_catalog_entries_are_ignored() {
+        let models = vec![
+            pinned("qwen2.5-coder-1.5b", &[("a-q4_k_m.gguf", 1, 'a')]),
+            pinned(LARGE_MODEL, &[("b-q4_k_m.gguf", 1, 'b')]),
+            pinned("unbekannt", &[("c-q4_k_m.gguf", 1, 'c')]),
+        ];
+        let ids: Vec<String> = supported(models).into_iter().map(|m| m.id).collect();
+        assert_eq!(ids, vec![LARGE_MODEL.to_string()]);
+        assert!(retired("qwen2.5-coder-1.5b").is_some());
+        assert!(retired(LARGE_MODEL).is_none());
+        assert!(!SUPPORTED_MODELS
+            .iter()
+            .any(|id| RETIRED_MODELS.iter().any(|r| r.id == *id)));
+    }
+
+    /// `SUPPORTED_MODELS` in `scripts/pin-models.sh` is the app's list.
+    #[test]
+    fn pin_script_lists_the_supported_models() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let script = std::fs::read_to_string(root.join("../scripts/pin-models.sh")).unwrap();
+        let line = script
+            .lines()
+            .find_map(|l| l.strip_prefix("SUPPORTED_MODELS=\""))
+            .and_then(|l| l.strip_suffix('"'))
+            .expect("SUPPORTED_MODELS=\"…\" in pin-models.sh");
+        let ids: Vec<&str> = line.split_whitespace().collect();
+        assert_eq!(ids, SUPPORTED_MODELS);
     }
 
     /// `scripts/pin-models.sh --check` (release workflow) and
@@ -1673,7 +1971,7 @@ mod tests {
         let file = |name: &str, size: serde_json::Value, sha: &str| serde_json::json!({"name": name, "size": size, "sha256": sha});
         let model = |revision: &str, files: Vec<serde_json::Value>| {
             serde_json::json!({"models": [{
-                "id": "m", "name": "M", "repo": "Qwen/X-GGUF", "quant": "q4_k_m",
+                "id": LARGE_MODEL, "name": "M", "repo": "Qwen/X-GGUF", "quant": "q4_k_m",
                 "license": "Apache-2.0", "solutions": 3, "revision": revision, "files": files
             }]})
         };
@@ -1764,12 +2062,23 @@ mod tests {
                 "{name}"
             );
         }
+        // An entry the app does not offer (retired, unknown) stops the
+        // release until the catalog is pinned again (pin-models.yml).
+        let mut retired_too = model(&rev, vec![file("m-q4_k_m.gguf", 10.into(), &sha)]);
+        let mut old = retired_too["models"][0].clone();
+        old["id"] = "qwen2.5-coder-1.5b".into();
+        retired_too["models"].as_array_mut().unwrap().insert(0, old);
+        assert!(!check("retired", &retired_too));
         // The committed catalog (pinned via pin-models.yml, or not yet):
         // script and app agree.
         let committed: serde_json::Value = serde_json::from_str(CATALOG_JSON).unwrap();
+        let only_supported = parse_catalog(CATALOG_JSON)
+            .unwrap()
+            .iter()
+            .all(|m| SUPPORTED_MODELS.contains(&m.id.as_str()));
         assert_eq!(
             check("committed", &committed),
-            catalog().iter().all(CatalogModel::is_pinned)
+            only_supported && catalog().iter().all(CatalogModel::is_pinned)
         );
         std::fs::remove_dir_all(&dir).unwrap();
     }
@@ -1929,22 +2238,30 @@ mod tests {
 
     #[test]
     fn suggestion_by_ram() {
-        assert_eq!(suggest(8 * GIB), SMALL_MODEL);
-        assert_eq!(suggest(12 * GIB - 1), SMALL_MODEL);
-        assert_eq!(suggest(12 * GIB), LARGE_MODEL);
-        assert_eq!(suggest(32 * GIB), LARGE_MODEL);
-        // "16 GB" as reported by the OS.
-        assert_eq!(suggest(15_800_000_000), LARGE_MODEL);
+        // "8 GB" as reported by the OS: too little for the 7B model.
+        assert_eq!(suggest(7_700_000_000), None);
+        assert_eq!(suggest(11 * GIB - 1), None);
+        assert!(!ai_available(8 * GIB));
+        // "12 GB" (~11.7 GiB) and "16 GB" machines.
+        assert_eq!(suggest(12_500_000_000), Some(LARGE_MODEL));
+        assert_eq!(suggest(15_800_000_000), Some(LARGE_MODEL));
+        assert_eq!(suggest(32 * GIB), Some(LARGE_MODEL));
+        // Unknown RAM never blocks.
+        assert_eq!(suggest(0), Some(LARGE_MODEL));
+        assert!(ai_available(0));
     }
 
     #[test]
     fn hardware_warnings_are_german() {
         assert!(hardware_warnings(16 * GIB, Some(true)).is_empty());
         assert!(hardware_warnings(16 * GIB, None).is_empty());
-        let w = hardware_warnings(4 * GIB, Some(false));
+        assert!(hardware_warnings(0, None).is_empty());
+        let w = hardware_warnings(8 * GIB, Some(false));
         assert_eq!(w.len(), 2);
         assert!(w[0].contains("AVX2"));
-        assert!(w[1].contains("4,0 GB"), "{}", w[1]);
+        assert!(w[1].contains("8,0 GB"), "{}", w[1]);
+        assert!(w[1].contains("nicht verfügbar"), "{}", w[1]);
+        assert!(w[1].contains("ohne KI"), "{}", w[1]);
     }
 
     #[test]
@@ -1952,7 +2269,12 @@ mod tests {
         let h = hardware();
         assert!(h.total_ram_bytes > 0);
         assert!(h.physical_cores >= 1);
-        assert!(h.suggested_model == SMALL_MODEL || h.suggested_model == LARGE_MODEL);
+        assert_eq!(
+            h.suggested_model.is_some(),
+            h.ai_available,
+            "{:?}",
+            h.suggested_model
+        );
     }
 
     #[test]
@@ -2115,15 +2437,15 @@ mod tests {
             "qwen2.5-coder-7b-instruct-q5_k_m.gguf",
             "q4_k_m"
         ));
-        let small = catalog().iter().find(|m| m.id == SMALL_MODEL).unwrap();
-        assert!(name_warnings(small, &["qwen2.5-coder-1.5b-instruct-q5_k_m.gguf"]).is_empty());
+        let large = catalog().iter().find(|m| m.id == LARGE_MODEL).unwrap();
+        assert!(name_warnings(large, &["qwen2.5-coder-7b-instruct-q4_k_m.gguf"]).is_empty());
         let w = name_warnings(
-            small,
-            &["qwen2.5-coder-1.5b-instruct-q5_k_m.gguf", "llama-q8_0.gguf"],
+            large,
+            &["qwen2.5-coder-7b-instruct-q4_k_m.gguf", "llama-q8_0.gguf"],
         );
         assert_eq!(w.len(), 1);
         assert!(
-            w[0].contains("llama-q8_0.gguf") && w[0].contains("*q5_k_m*.gguf"),
+            w[0].contains("llama-q8_0.gguf") && w[0].contains("*q4_k_m*.gguf"),
             "{}",
             w[0]
         );
@@ -2235,10 +2557,8 @@ mod tests {
             .enable_all()
             .build()
             .unwrap();
-        let root = std::env::temp_dir().join(format!("cp-impfor-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
-        init(root.join("config"), root.join("data"));
-        let src = root.join("src");
+        let (root, _lock) = test_dirs();
+        let src = root.join("src-impfor");
         std::fs::create_dir_all(&src).unwrap();
         let p1 = "qwen2.5-coder-7b-instruct-q4_k_m-00001-of-00002.gguf";
         let p2 = "qwen2.5-coder-7b-instruct-q4_k_m-00002-of-00002.gguf";
@@ -2324,7 +2644,105 @@ mod tests {
         assert!(!m.installed && m.imported_parts == 0 && !m.selected);
         assert!(!dir.exists());
         assert!(read_config().imported.is_empty());
-        std::fs::remove_dir_all(&root).unwrap();
+        std::fs::remove_dir_all(&src).unwrap();
+    }
+
+    /// The app's config and data directories for tests that need them
+    /// (set once per process), held exclusively while the guard lives.
+    fn test_dirs() -> (PathBuf, std::sync::MutexGuard<'static, ()>) {
+        static LOCK: Mutex<()> = Mutex::new(());
+        let guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let root = std::env::temp_dir().join(format!("cp-models-app-{}", std::process::id()));
+        if CONFIG_DIR.get().is_none() {
+            let _ = std::fs::remove_dir_all(&root);
+            init(root.join("config"), root.join("data"));
+        }
+        let _ = std::fs::remove_dir_all(models_dir().unwrap());
+        write_config_to(config_dir().unwrap(), &AiConfig::default()).unwrap();
+        (root, guard)
+    }
+
+    /// Users who downloaded the removed 1.5B model: no crash, a note with
+    /// the size, the selection falls back (7B if installed, else none),
+    /// and deleting frees the space.
+    #[test]
+    fn retired_model_is_shown_and_can_be_deleted() {
+        let (_root, _lock) = test_dirs();
+        let old = &RETIRED_MODELS[0];
+        let dir = models_dir().unwrap();
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join(old.files[0]);
+        std::fs::write(&file, vec![0u8; 1000]).unwrap();
+        std::fs::write(part_path(&file), vec![0u8; 24]).unwrap();
+        let select_old = || {
+            write_config_to(
+                config_dir().unwrap(),
+                &AiConfig {
+                    selected: Some(old.id.into()),
+                    imported: Vec::new(),
+                },
+            )
+            .unwrap()
+        };
+
+        // Selected and the 7B model missing: a clear error, no model.
+        select_old();
+        let e = selected_model().err().unwrap().to_string();
+        assert!(
+            e.contains("nicht mehr unterstützt") && e.contains("7B"),
+            "{e}"
+        );
+        assert_eq!(read_config().selected, None);
+        select_old();
+        let st = status();
+        assert_eq!(st.selected, None);
+        assert!(!st.model_ready);
+        assert!(!st.models.iter().any(|m| m.id == old.id));
+        assert_eq!(
+            st.retired,
+            vec![RetiredInfo {
+                id: old.id.into(),
+                name: old.name.into(),
+                size_bytes: 1024,
+                note: retired_note(old),
+            }]
+        );
+        assert_eq!(read_config().selected, None);
+        let e = select(old.id).unwrap_err().to_string();
+        assert!(e.contains("nicht mehr unterstützt"), "{e}");
+
+        // With the 7B model installed it takes over the selection.
+        let large = catalog().iter().find(|m| m.id == LARGE_MODEL).unwrap();
+        if large.is_pinned() {
+            for f in effective_files(&large.files) {
+                // Sparse file: only the size is checked here.
+                std::fs::File::create(dir.join(&f.name))
+                    .unwrap()
+                    .set_len(f.size)
+                    .unwrap();
+            }
+            select_old();
+            let st = status();
+            assert_eq!(st.selected.as_deref(), Some(LARGE_MODEL));
+            assert!(st.model_ready);
+            assert_eq!(read_config().selected.as_deref(), Some(LARGE_MODEL));
+            select_old();
+            assert_eq!(selected_model().unwrap().id, LARGE_MODEL);
+            for f in effective_files(&large.files) {
+                std::fs::remove_file(dir.join(&f.name)).unwrap();
+            }
+        }
+
+        // Deleting removes the files and the note.
+        select_old();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let st = rt.block_on(delete(old.id)).unwrap();
+        assert!(st.retired.is_empty());
+        assert!(!file.exists() && !part_path(&file).exists());
+        assert_eq!(read_config().selected, None);
     }
 
     /// Minimal HTTP server for `download_file` (plain http on 127.0.0.1;

@@ -42,11 +42,11 @@ Code-Prüfer – Hinweise zu Drittanbieter-Software / Third-party notices
    "Distributable Code" der Microsoft-Software-Lizenzbedingungen für
    Visual Studio weitergegeben.
 
-4. KI-Modelle (NICHT enthalten)
-   Qwen2.5-Coder-1.5B-Instruct-GGUF und Qwen2.5-Coder-7B-Instruct-GGUF
+4. KI-Modell (NICHT enthalten)
+   Qwen2.5-Coder-7B-Instruct-GGUF
    von Qwen (Alibaba Cloud), https://huggingface.co/Qwen – Lizenz:
-   Apache License 2.0. Die Modelle sind nicht Teil des Installers; sie
-   werden von der Anwenderin bzw. dem Anwender selbst von huggingface.co
+   Apache License 2.0. Das Modell ist nicht Teil des Installers; es
+   wird von der Anwenderin bzw. dem Anwender selbst von huggingface.co
    heruntergeladen oder importiert. Qwen2.5-Coder-3B wird wegen seiner
    nicht-kommerziellen Lizenz bewusst nicht angeboten.
 

@@ -27,7 +27,9 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
 
+use super::eta;
 use super::llama::{ChatRequest, ChatResponse, Llm};
+use super::no_input;
 use super::prompts::{self, SolutionContext, MAX_EXAMPLES, MAX_INPUTS};
 use super::AiError;
 use crate::engine;
@@ -40,8 +42,14 @@ use crate::runner::{self, languages, StepOutput};
 pub const MAX_TASK_CHARS: usize = 12_000;
 /// Longest generated test input.
 pub const MAX_GENERATED_INPUT_BYTES: usize = 16 * 1024;
-/// Share of solutions that must agree for "green".
-pub const GREEN_AGREEMENT: f64 = 0.8;
+/// Share of solutions that must agree for "green": all of them. A test on
+/// which the solutions disagree is at most yellow, also with a clear
+/// majority.
+pub const GREEN_AGREEMENT: f64 = 1.0;
+/// Java tests whose expected output has a negative number at least this
+/// large although input and sheet outputs have none look like an `int`
+/// overflow (see [`overflow_suspect`]).
+pub const OVERFLOW_MAGNITUDE: f64 = 1_000_000.0;
 pub const SOLUTION_TEMPERATURE: f32 = 0.7;
 const STRUCTURE_TEMPERATURE: f32 = 0.0;
 const INPUTS_TEMPERATURE: f32 = 0.4;
@@ -104,6 +112,60 @@ pub struct GeneratedTest {
     pub source: TestSource,
     /// Share of surviving solutions that produced this output.
     pub agreement: f64,
+    /// Outputs of the solutions outside the majority (agreement below
+    /// 100 %): shown so that the expectation can be checked by hand.
+    pub alternatives: Vec<Alternative>,
+}
+
+/// A differing output of the minority (see [`alternatives`]).
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Alternative {
+    /// The output, cut to [`MAX_ALTERNATIVE_CHARS`].
+    pub output: String,
+    pub truncated: bool,
+    /// Number of solutions that printed it.
+    pub count: usize,
+}
+
+/// Longest alternative output shown.
+pub const MAX_ALTERNATIVE_CHARS: usize = 400;
+/// At most this many different alternative outputs per test.
+pub const MAX_ALTERNATIVES: usize = 3;
+
+/// The valid outputs of the solutions outside `members` (the majority
+/// including outputs merged for input prompts), grouped per comparison
+/// mode, largest group first, cut to [`MAX_ALTERNATIVES`] and
+/// [`MAX_ALTERNATIVE_CHARS`]. Crashes and timeouts are not shown (they
+/// have no output to compare). Pure.
+pub fn alternatives(
+    mode: &CompareMode,
+    outputs: &[Option<&StepOutput>],
+    members: &[usize],
+) -> Vec<Alternative> {
+    let others: Vec<&str> = outputs
+        .iter()
+        .enumerate()
+        .filter(|(i, o)| !members.contains(i) && o.is_some_and(valid))
+        .map(|(_, o)| o.map_or("", |o| o.stdout.as_str()))
+        .collect();
+    group_outputs(mode, &others)
+        .into_iter()
+        .take(MAX_ALTERNATIVES)
+        .map(|g| {
+            let text = others[g[0]];
+            let truncated = text.chars().count() > MAX_ALTERNATIVE_CHARS;
+            Alternative {
+                output: if truncated {
+                    text.chars().take(MAX_ALTERNATIVE_CHARS).collect()
+                } else {
+                    text.to_string()
+                },
+                truncated,
+                count: g.len(),
+            }
+        })
+        .collect()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -145,20 +207,35 @@ pub struct Stats {
     /// Model tests left out because more than [`MAX_TESTS_PER_OUTPUT`]
     /// had the same expected output.
     pub tests_redundant: usize,
+    /// Model inputs outside the limits the task states (dropped before
+    /// running, see [`super::limits`]).
+    pub inputs_out_of_range: usize,
+    /// Model tests dropped as a suspected integer overflow
+    /// ([`overflow_suspect`]).
+    pub tests_overflow: usize,
     /// The task reads no input (confirmed by running): no inputs were
     /// requested from the model.
     pub no_input: bool,
-    /// Solutions not waited for: the majority was already certain.
-    pub solutions_cancelled: usize,
+    /// The task text gives fixed values and asks for no input (see
+    /// [`no_input::task_without_input`]): no inputs, reading counts as failure.
+    pub fixed_values: bool,
+    /// Solutions that read input although the task reads none (after the
+    /// repair round).
+    pub solutions_read_input: usize,
     pub llm_calls: usize,
     pub completion_tokens: u64,
-    /// Prompt tokens processed (without the prompt cache) and the time.
+    /// Prompt tokens processed (without the prompt cache; a prompt shared
+    /// by several answers of one request once) and the wall time of the
+    /// prompt processing (concurrent requests counted once).
     pub prompt_tokens: u64,
     pub prompt_ms: u64,
     pub tokens_per_second: Option<f64>,
     pub duration_ms: u64,
     /// Duration per step (for measuring where the time goes).
     pub phase_ms: PhaseTimes,
+    /// Measured throughput of the server (all slots together), stored as
+    /// the start value of the next run; `None` if too little was measured.
+    pub measured_speeds: Option<eta::Speeds>,
 }
 
 /// Duration of the steps in milliseconds. The inputs are requested while
@@ -225,8 +302,13 @@ pub struct AiProgress {
     pub current: Option<usize>,
     pub total: Option<usize>,
     pub tokens_per_second: Option<f64>,
-    /// Rough remaining time of the model work (see [`eta_seconds`]).
+    /// Remaining time of the test generation, upper end of the range (see
+    /// [`eta`]).
     pub eta_seconds: Option<u64>,
+    /// Lower end of the range.
+    pub eta_low_seconds: Option<u64>,
+    /// The range as German text ("ca. 4–6 Min.").
+    pub eta_text: Option<String>,
 }
 
 impl AiProgress {
@@ -238,6 +320,8 @@ impl AiProgress {
             total: None,
             tokens_per_second: None,
             eta_seconds: None,
+            eta_low_seconds: None,
+            eta_text: None,
         }
     }
 }
@@ -612,6 +696,9 @@ fn engine_progress_text(p: &runner::Progress) -> String {
 pub struct Settings {
     pub solutions: usize,
     pub repair_rounds: usize,
+    /// Server throughput for the remaining-time estimate before anything
+    /// is measured (last run of the model); `None`: conservative defaults.
+    pub speeds: Option<eta::Speeds>,
 }
 
 // ---------------------------------------------------------------------------
@@ -875,55 +962,6 @@ pub fn input_need(s: &Structure, examples: &[Example]) -> InputNeed {
     }
 }
 
-/// Whether the unfinished solutions can be cancelled without changing the
-/// tests and without overstating the confidence: `g` solutions agree on
-/// every check input, `rest` others passed or are not finished yet. The
-/// majority is certain (`g > rest`), and green – if possible at all – is
-/// not lost when the rest counts as disagreeing. Pure.
-pub fn can_stop(g: usize, rest: usize, green_possible: bool) -> bool {
-    g >= 2 && g > rest && (!green_possible || g as f64 / (g + rest) as f64 >= GREEN_AGREEMENT)
-}
-
-/// Size of the largest group of solutions whose outputs on the inputs
-/// `compare` are valid, fit the templates and match each other, and which
-/// ignore their input (the empty input and the probe give the same
-/// output). `outs[i]`: the outputs of a passing solution on the check
-/// inputs.
-pub fn agreeing_group(
-    mode: &CompareMode,
-    templates: &[OutputTemplate],
-    outs: &[&[StepOutput]],
-    compare: std::ops::Range<usize>,
-    empty: usize,
-    probe: usize,
-) -> usize {
-    let ok = |o: &[StepOutput]| {
-        let (Some(e), Some(p)) = (o.get(empty), o.get(probe)) else {
-            return false;
-        };
-        valid(e)
-            && valid(p)
-            && mode.matches(&e.stdout, &p.stdout)
-            && compare.clone().all(|j| {
-                o.get(j)
-                    .is_some_and(|x| valid(x) && fits_templates(templates, x))
-            })
-    };
-    let good: Vec<&[StepOutput]> = outs.iter().copied().filter(|o| ok(o)).collect();
-    good.iter()
-        .map(|a| {
-            good.iter()
-                .filter(|b| {
-                    compare
-                        .clone()
-                        .all(|j| mode.matches(&a[j].stdout, &b[j].stdout))
-                })
-                .count()
-        })
-        .max()
-        .unwrap_or(0)
-}
-
 /// Name of the test with empty input that is added when the task has an
 /// output template or reads no input, but has no test without input.
 pub const EMPTY_INPUT_TEST: &str = "KI-Test (ohne Eingabe)";
@@ -1084,11 +1122,8 @@ pub struct Evidence {
     pub examples: usize,
     pub tests: usize,
     pub dropped: usize,
-    /// Lowest agreement over the generated tests (cancelled solutions count
-    /// as disagreeing).
+    /// Lowest agreement over the generated tests.
     pub min_agreement: Option<f64>,
-    /// Solutions not waited for (see [`can_stop`]).
-    pub cancelled: usize,
     /// The templates were dropped: no output fitted them.
     pub template_fallback: bool,
     /// No test because no output fitted the templates.
@@ -1097,6 +1132,42 @@ pub struct Evidence {
     pub prompt_merged: usize,
     /// Model inputs on which every solution crashed (only a note).
     pub invalid: usize,
+    /// Tests dropped as a suspected integer overflow: yellow.
+    pub overflow: usize,
+}
+
+/// German confidence reason for tests dropped as suspected overflow.
+pub fn overflow_reason(n: usize) -> String {
+    format!(
+        "{n} KI-Testfall/-fälle verworfen: Die Lösungen gaben bei großen Eingaben große negative \
+         Zahlen aus – vermutlich ein Ganzzahl-Überlauf (int). Ob die Aufgabe so große Eingaben \
+         verlangt, bitte selbst prüfen."
+    )
+}
+
+/// Integer tokens of a text („-1270505460“, also „Summe: -5.“).
+fn integers(text: &str) -> impl Iterator<Item = f64> + '_ {
+    text.split(|c: char| c.is_whitespace() || ",;:=()[]{}".contains(c))
+        .filter_map(|w| {
+            let w = w.trim_end_matches('.');
+            let digits = w.strip_prefix('-').unwrap_or(w);
+            (!digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit()))
+                .then(|| w.parse::<f64>().ok())
+                .flatten()
+        })
+}
+
+/// A generated Java test that looks like an `int` overflow: its expected
+/// output has a negative number of at least [`OVERFLOW_MAGNITUDE`], while
+/// neither its input nor any sheet output has a negative number. All
+/// solutions overflow alike (regression „summe_java“, KI-Benchmark 1.1.1:
+/// inputs 5000 and 65535, sum of squares negative, 100 % agreement). An
+/// overflow that wraps to a positive number is not found this way. Pure.
+pub fn overflow_suspect(input: &str, expected: &str, sheet_outputs: &[String]) -> bool {
+    let negative = |t: &str| integers(t).any(|x| x < 0.0);
+    !negative(input)
+        && !sheet_outputs.iter().any(|o| negative(o))
+        && integers(expected).any(|x| x <= -OVERFLOW_MAGNITUDE)
 }
 
 /// Note (no reason for yellow) when model inputs were invalid for the task.
@@ -1107,24 +1178,12 @@ fn invalid_note(n: usize) -> String {
     )
 }
 
-fn early_stop_reason(e: &Evidence) -> String {
-    let voters = (e.survivors + e.cancelled) as f64;
-    let agreeing = e
-        .min_agreement
-        .map_or(e.survivors, |a| (a * voters).round() as usize);
-    format!(
-        "Die Erzeugung wurde vorzeitig beendet: {agreeing} von {} Lösungen stimmten auf allen \
-         Eingaben überein, {} Lösung(en) wurden nicht abgewartet.",
-        e.solutions, e.cancelled
-    )
-}
-
 fn pct(x: f64) -> String {
     format!("{:.0} %", x * 100.0)
 }
 
 /// Green: the sheet's examples were passed, at least two solutions survived
-/// and every test has at least 80 % agreement. Red: no solution survived or
+/// and they all agree on every test (no suspected overflow). Red: no solution survived or
 /// no test is left. Yellow otherwise (a hint, not a reliable expectation).
 pub fn decide_confidence(e: &Evidence) -> Confidence {
     if e.survivors == 0 {
@@ -1179,15 +1238,16 @@ pub fn decide_confidence(e: &Evidence) -> Confidence {
             "Nur eine Lösung hat die Prüfung bestanden – kein Mehrheitsvergleich möglich.".into(),
         );
     }
-    if let Some(a) = e.min_agreement.filter(|a| *a < GREEN_AGREEMENT) {
-        yellow.push(if e.cancelled > 0 {
-            early_stop_reason(e)
-        } else {
-            format!(
-                "Bei mindestens einem Testfall waren sich die Lösungen nur knapp einig ({}).",
-                pct(a)
-            )
-        });
+    let close = e.min_agreement.filter(|a| *a < GREEN_AGREEMENT);
+    if let Some(a) = close {
+        yellow.push(format!(
+            "Bei mindestens einem Testfall waren sich die Lösungen nicht einig (gleiche Ausgabe \
+             bei {}); die abweichenden Ausgaben stehen beim Testfall.",
+            pct(a)
+        ));
+    }
+    if e.overflow > 0 {
+        yellow.push(overflow_reason(e.overflow));
     }
     if e.template_fallback {
         yellow.push(TEMPLATE_FALLBACK_REASON.into());
@@ -1208,9 +1268,6 @@ pub fn decide_confidence(e: &Evidence) -> Confidence {
              Übereinstimmung der Lösungen je Testfall: mindestens {agree}.",
             e.survivors, e.solutions, e.examples
         )];
-        if e.cancelled > 0 {
-            reasons.push(early_stop_reason(e));
-        }
         if e.invalid > 0 {
             reasons.push(invalid_note(e.invalid));
         }
@@ -1237,25 +1294,163 @@ pub fn decide_confidence(e: &Evidence) -> Confidence {
 // ---------------------------------------------------------------------------
 // Flow
 
-/// Expected answer lengths for the time estimate (tokens).
-const STRUCTURE_EXPECTED_TOKENS: f64 = 200.0;
+/// Expected answer lengths for the remaining-time estimate (tokens) until
+/// real answers are known.
+const STRUCTURE_EXPECTED_TOKENS: f64 = 250.0;
 const SOLUTION_EXPECTED_TOKENS: f64 = 350.0;
+/// Without input the solutions also comment every output line with the
+/// values used ([`prompts::STEPS_RULE`]): measured 219 instead of 142 tokens
+/// on average (KI-Benchmark 1.1.1, 7B model), so the prior grows by the same
+/// factor (350 × 219 / 142 ≈ 540).
+const SOLUTION_EXPECTED_TOKENS_NO_INPUT: f64 = 540.0;
+const INPUTS_EXPECTED_TOKENS: f64 = 250.0;
+/// Characters per prompt token until the structure step measured it
+/// (German task text, code: rather 3.5; fewer means more tokens).
+const CHARS_PER_TOKEN: f64 = 3.0;
+/// Chat template tokens per request.
+const TEMPLATE_TOKENS: f64 = 30.0;
+/// A repair request also carries the first answer and the error.
+const REPAIR_EXTRA_CHARS: f64 = 2000.0;
+/// Sandbox time of the solution check (compile, examples, probe) and of
+/// the majority vote, for compiled languages (Java) and others.
+const CHECK_SECONDS: (f64, f64) = (10.0, 4.0);
+const MAJORITY_SECONDS: (f64, f64) = (10.0, 5.0);
+/// How often the progress line (and its remaining time) is refreshed
+/// while nothing else happens.
+const ETA_TICK: Duration = Duration::from_secs(5);
 
-/// Rough remaining time in seconds from the measured generation speed (per
-/// sequence; parallel solutions finish at about the same time). `None`
-/// while the speed is unknown or the rest is sandbox work. Pure,
-/// unit-tested.
-pub fn eta_seconds(phase: Phase, done: usize, total: usize, tps: Option<f64>) -> Option<u64> {
-    let tps = tps.filter(|t| *t > 0.0)?;
-    let tokens = match phase {
-        Phase::Structure => STRUCTURE_EXPECTED_TOKENS + SOLUTION_EXPECTED_TOKENS,
-        Phase::Solutions => {
-            let left = total.saturating_sub(done) as f64 / total.max(1) as f64;
-            SOLUTION_EXPECTED_TOKENS * left
+/// Step of a run, for the remaining-time estimate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Step {
+    Structure,
+    /// All solutions at once (and the inputs, if requested alongside).
+    Round,
+    /// Repairs of this many solutions.
+    Repairs(usize),
+    /// Inputs requested after the solutions (no-input guess was wrong).
+    Inputs,
+    Majority,
+}
+
+/// What the remaining-time estimate knows about the run (see [`eta`]).
+struct Plan {
+    step: Step,
+    step_started: Instant,
+    chars_per_token: f64,
+    structure_chars: f64,
+    solution_chars: f64,
+    inputs_chars: f64,
+    solutions: usize,
+    /// The inputs are requested alongside the solutions.
+    parallel_inputs: bool,
+    /// The task reads no input: longer solution answers are expected.
+    no_input: bool,
+    /// Output tokens of the solution answers so far.
+    solution_tokens: Vec<f64>,
+    compiled: bool,
+    prior: eta::Speeds,
+}
+
+fn chars(messages: &[super::llama::ChatMessage]) -> f64 {
+    messages
+        .iter()
+        .map(|m| m.content.chars().count())
+        .sum::<usize>() as f64
+}
+
+impl Plan {
+    fn prompt(&self, chars: f64) -> f64 {
+        chars / self.chars_per_token + TEMPLATE_TOKENS
+    }
+
+    /// Realistic output of one solution: the mean of the answers so far.
+    fn solution_gen(&self) -> f64 {
+        if self.solution_tokens.is_empty() {
+            if self.no_input {
+                SOLUTION_EXPECTED_TOKENS_NO_INPUT
+            } else {
+                SOLUTION_EXPECTED_TOKENS
+            }
+        } else {
+            self.solution_tokens.iter().sum::<f64>() / self.solution_tokens.len() as f64
         }
-        _ => return None,
-    };
-    Some((tokens / tps).ceil() as u64)
+    }
+
+    fn sandbox(&self, s: (f64, f64)) -> f64 {
+        if self.compiled {
+            s.0
+        } else {
+            s.1
+        }
+    }
+
+    fn work(&self, step: Step) -> eta::Work {
+        let solution = eta::Work {
+            prompt_tokens: self.prompt(self.solution_chars),
+            gen_tokens: self.solution_gen(),
+            sandbox_seconds: 0.0,
+        };
+        let inputs = eta::Work {
+            prompt_tokens: self.prompt(self.inputs_chars),
+            gen_tokens: INPUTS_EXPECTED_TOKENS,
+            sandbox_seconds: 0.0,
+        };
+        let check = eta::Work {
+            sandbox_seconds: self.sandbox(CHECK_SECONDS),
+            ..eta::Work::default()
+        };
+        match step {
+            Step::Structure => eta::Work {
+                prompt_tokens: self.prompt(self.structure_chars),
+                gen_tokens: STRUCTURE_EXPECTED_TOKENS,
+                sandbox_seconds: 0.0,
+            },
+            Step::Round => {
+                // One request for all solutions: the prompt is processed
+                // once, the answers are generated together.
+                let round = eta::Work {
+                    gen_tokens: solution.gen_tokens * self.solutions as f64,
+                    ..solution
+                }
+                .plus(check);
+                if self.parallel_inputs {
+                    round.plus(inputs)
+                } else {
+                    round
+                }
+            }
+            Step::Repairs(k) => eta::Work {
+                prompt_tokens: self.prompt(self.solution_chars + REPAIR_EXTRA_CHARS),
+                ..solution
+            }
+            .times(k as f64)
+            .plus(check),
+            Step::Inputs => inputs,
+            Step::Majority => eta::Work {
+                sandbox_seconds: self.sandbox(MAJORITY_SECONDS),
+                ..eta::Work::default()
+            },
+        }
+    }
+
+    /// Work of the steps after `step` (repairs are only counted once they
+    /// start).
+    fn later(&self, step: Step) -> eta::Work {
+        let majority = self.work(Step::Majority);
+        match step {
+            Step::Structure => self.work(Step::Round).plus(majority),
+            Step::Round | Step::Repairs(_) | Step::Inputs => majority,
+            Step::Majority => eta::Work::default(),
+        }
+    }
+}
+
+/// Last progress line, repeated with a fresh remaining time.
+#[derive(Clone)]
+struct LastProgress {
+    phase: Phase,
+    message: String,
+    step: Option<(usize, usize)>,
 }
 
 /// Repair rounds are skipped once a clear majority of the solutions passed
@@ -1270,6 +1465,31 @@ struct Shared<P> {
     tps_sum: f64,
     tps_n: usize,
     on_progress: P,
+    plan: Plan,
+    meter: eta::Meter,
+    /// Start of the run (time base of the meter).
+    clock: Instant,
+    /// Prompt processing per request on the clock (start, end) in seconds;
+    /// concurrent requests overlap (see [`eta::covered_seconds`]).
+    prompt_spans: Vec<(f64, f64)>,
+    last: Option<LastProgress>,
+}
+
+/// Ends a request on the meter also when it is dropped (cancelled, early
+/// end): the concurrency must not stay counted.
+struct InFlight<'s, P> {
+    shared: &'s Mutex<Shared<P>>,
+    started: f64,
+    sample: Option<eta::Sample>,
+}
+
+impl<P> Drop for InFlight<'_, P> {
+    fn drop(&mut self) {
+        let mut s = self.shared.lock().unwrap_or_else(|e| e.into_inner());
+        let now = s.clock.elapsed().as_secs_f64();
+        let (started, sample) = (self.started, self.sample.take());
+        s.meter.finish(now, started, sample);
+    }
 }
 
 /// State of one test generation, shared by the concurrent solution tasks.
@@ -1298,8 +1518,10 @@ struct Attempt<S> {
     llm_error: Option<AiError>,
     /// The sandbox failed or the run was cancelled: aborts everything.
     fatal: Option<AiError>,
-    /// Not waited for: the majority was already certain (see [`can_stop`]).
-    cancelled_early: bool,
+    /// The task reads no input, but the program read some (crashed, timed
+    /// out or printed something else on the probe): reason for a repair
+    /// round with [`prompts::NO_INPUT_REPAIR`].
+    reads_input: bool,
 }
 
 impl<S> Attempt<S> {
@@ -1315,7 +1537,7 @@ impl<S> Attempt<S> {
             example_outputs: Vec::new(),
             llm_error: None,
             fatal: None,
-            cancelled_early: false,
+            reads_input: false,
         }
     }
 }
@@ -1345,38 +1567,119 @@ where
 
     fn progress(&self, phase: Phase, message: String, step: Option<(usize, usize)>) {
         let tps = self.tps();
-        let eta = eta_seconds(phase, step.map_or(0, |s| s.0), step.map_or(1, |s| s.1), tps);
         let mut s = self.shared();
+        s.last = Some(LastProgress {
+            phase,
+            message: message.clone(),
+            step,
+        });
+        let eta = {
+            let p = &s.plan;
+            let speeds = s.meter.blended(p.prior);
+            eta::eta_range(
+                p.work(p.step),
+                p.step_started.elapsed().as_secs_f64(),
+                p.later(p.step),
+                speeds,
+            )
+        };
         (s.on_progress)(AiProgress {
             phase,
             message,
             current: step.map(|s| s.0),
             total: step.map(|s| s.1),
             tokens_per_second: tps,
-            eta_seconds: eta,
+            eta_seconds: eta.map(|e| e.high),
+            eta_low_seconds: eta.map(|e| e.low),
+            eta_text: eta.map(eta::format_range),
         });
     }
 
+    /// Enters the next step of the remaining-time estimate.
+    fn step(&self, step: Step) {
+        let mut s = self.shared();
+        s.plan.step = step;
+        s.plan.step_started = Instant::now();
+    }
+
+    /// Repeats the last progress line with a fresh remaining time.
+    fn tick(&self) {
+        let last = self.shared().last.clone();
+        if let Some(l) = last {
+            self.progress(l.phase, l.message, l.step);
+        }
+    }
+
     async fn chat(&self, req: ChatRequest) -> Result<ChatResponse, AiError> {
+        let mut rs = self.chat_n(req, 1).await?;
+        rs.pop()
+            .ok_or_else(|| AiError::Http("Leere Antwort der KI-Laufzeit".into()))
+    }
+
+    /// `n` answers to one request (see [`Llm::chat_n`]); `n = 1` is a plain
+    /// request.
+    async fn chat_n(&self, req: ChatRequest, n: usize) -> Result<Vec<ChatResponse>, AiError> {
         self.check()?;
+        let (started, wall) = {
+            let mut s = self.shared();
+            let now = s.clock.elapsed().as_secs_f64();
+            (s.meter.start(now), now)
+        };
+        let mut flight = InFlight {
+            shared: &self.shared,
+            started,
+            sample: None,
+        };
         let r = tokio::select! {
             biased;
             _ = self.cancel.cancelled() => Err(AiError::Cancelled),
-            r = self.llm.chat(&req) => r,
-        }?;
+            r = self.llm.chat_n(&req, n) => r,
+        };
+        let samples: Vec<eta::Sample> = r
+            .iter()
+            .flatten()
+            .map(|r| eta::Sample {
+                prompt_tokens: r.prompt_tokens,
+                prompt_ms: r.prompt_ms,
+                gen_tokens: r.completion_tokens,
+                gen_tps: r.tokens_per_second,
+            })
+            .collect();
+        // One request: its prompt was processed once.
+        let combined = eta::Sample::combine(&samples);
+        flight.sample = combined;
+        drop(flight);
+        let rs = r?;
         {
             let mut s = self.shared();
+            for r in &rs {
+                if let Some(t) = r.completion_tokens.filter(|_| req.prefill.is_some()) {
+                    // A solution answer: realistic length for the estimate.
+                    s.plan.solution_tokens.push(t as f64);
+                }
+                if let Some(t) = r.tokens_per_second {
+                    s.tps_sum += t;
+                    s.tps_n += 1;
+                }
+                s.stats.completion_tokens += r.completion_tokens.unwrap_or(0);
+            }
+            let prompt_tokens = combined.and_then(|c| c.prompt_tokens);
+            if s.plan.step == Step::Structure {
+                if let Some(t) = prompt_tokens.filter(|t| *t > 50) {
+                    let cpt = s.plan.structure_chars / t as f64;
+                    s.plan.chars_per_token = cpt.clamp(1.5, 4.5);
+                }
+            }
             s.stats.llm_calls += 1;
-            s.stats.completion_tokens += r.completion_tokens.unwrap_or(0);
-            s.stats.prompt_tokens += r.prompt_tokens.unwrap_or(0);
-            s.stats.prompt_ms += r.prompt_ms.map_or(0, |m| m.round() as u64);
-            if let Some(t) = r.tokens_per_second {
-                s.tps_sum += t;
-                s.tps_n += 1;
+            s.stats.prompt_tokens += prompt_tokens.unwrap_or(0);
+            if let Some(ms) = combined.and_then(|c| c.prompt_ms).filter(|m| *m > 0.0) {
+                // The prompt is processed right at the start of the request
+                // (the template comes from the cache or takes milliseconds).
+                s.prompt_spans.push((wall, wall + ms / 1000.0));
             }
         }
         self.check()?;
-        Ok(r)
+        Ok(rs)
     }
 
     /// JSON step with one retry on unparsable answers.
@@ -1428,10 +1731,12 @@ where
         example_mode: &CompareMode,
         example_inputs: &[String],
         templates: &[OutputTemplate],
+        no_input: Option<NoInputCheck>,
     ) -> Result<(), AiError> {
         let answer = a.answer.clone().unwrap_or_default();
         a.failure = None;
         a.passes = false;
+        a.reads_input = false;
         let code = match prompts::extract_code(&answer, self.lang.id) {
             None => {
                 a.failure = Some("No code block found in the answer.".into());
@@ -1475,6 +1780,25 @@ where
                     && fits_templates(templates, o)
                     && example_mode.matches(&ex.output, &o.stdout)
             });
+        // A task without input (recognised from the text): reading input
+        // disqualifies the solution, the empty input and the probe must give
+        // the same valid output.
+        if let Some(c) = no_input.filter(|_| a.passes) {
+            let ok = match (
+                a.example_outputs.get(c.empty),
+                a.example_outputs.get(c.probe),
+            ) {
+                (Some(e), Some(p)) => {
+                    valid(e) && valid(p) && example_mode.matches(&e.stdout, &p.stdout)
+                }
+                _ => false,
+            };
+            if !ok {
+                a.passes = false;
+                a.reads_input = true;
+                a.failure = Some(prompts::NO_INPUT_REPAIR.into());
+            }
+        }
         Ok(())
     }
 
@@ -1492,6 +1816,19 @@ where
         }
     }
 }
+
+/// Indices of the empty input and the probe in the check inputs, for a
+/// task recognised as reading no input (see [`no_input::task_without_input`]).
+#[derive(Debug, Clone, Copy)]
+struct NoInputCheck {
+    empty: usize,
+    probe: usize,
+}
+
+/// German note when the text gave fixed values and no input.
+pub const FIXED_VALUES_REASON: &str = "Laut Aufgabentext gibt es feste Werte und keine Eingabe: \
+Es wurden keine Testeingaben erzeugt, und Lösungen, die trotzdem etwas einlesen, zählen als \
+fehlgeschlagen.";
 
 /// Compile output as text for the repair prompt.
 fn compiler_text(c: Option<&StepOutput>) -> String {
@@ -1639,17 +1976,12 @@ pub fn vote(
                 TestSource::Generated
             },
             agreement,
+            // From all valid outputs, also those that missed the templates
+            // (e.g. „441.0“ for an integer placeholder).
+            alternatives: alternatives(mode, &raw, &maj.members),
         });
     }
     v
-}
-
-/// Results of the first round for the early end (see [`can_stop`]).
-struct EarlyStop {
-    enabled: bool,
-    token: CancellationToken,
-    /// Per finished solution: its check outputs if it passed.
-    finished: Mutex<Vec<Option<Vec<StepOutput>>>>,
 }
 
 pub async fn generate<L: Llm + Sync, E: Executor>(
@@ -1675,547 +2007,657 @@ pub async fn generate<L: Llm + Sync, E: Executor>(
             tps_sum: 0.0,
             tps_n: 0,
             on_progress,
+            plan: {
+                let structure_chars = chars(&prompts::structure_messages(&req.task_text));
+                Plan {
+                    step: Step::Structure,
+                    step_started: Instant::now(),
+                    chars_per_token: CHARS_PER_TOKEN,
+                    structure_chars,
+                    // Until the prompts are known: about the same size.
+                    solution_chars: structure_chars,
+                    inputs_chars: structure_chars,
+                    solutions: settings.solutions,
+                    parallel_inputs: true,
+                    no_input: false,
+                    solution_tokens: Vec::new(),
+                    compiled: lang.id == "java",
+                    prior: settings.speeds.unwrap_or_else(eta::default_speeds),
+                }
+            },
+            meter: eta::Meter::default(),
+            clock: Instant::now(),
+            prompt_spans: Vec::new(),
+            last: None,
         }),
     };
-
-    // 1. Structure.
-    run.progress(
-        Phase::Structure,
-        "Aufgabe wird analysiert (Ein-/Ausgabe, Beispiele) …".into(),
-        None,
-    );
-    let phase = Instant::now();
-    let structure: Structure = run
-        .json_step(
-            prompts::structure_messages(&req.task_text),
-            prompts::structure_schema(),
-            STRUCTURE_TEMPERATURE,
-            STRUCTURE_MAX_TOKENS,
-        )
-        .await?
-        .unwrap_or_default();
-    let (examples, discarded) = verify_examples(&req.task_text, &structure.examples);
-    // Templates of the model plus the ones found without it, joined and
-    // checked the same way.
-    let detected = template::detect_templates(&req.task_text);
-    let report =
-        template::verify_templates_with(&req.task_text, &structure.output_templates, &detected);
-    let declared = template::declared_placeholder_tokens(&req.task_text);
-    let (templates, contradicted) =
-        drop_contradicted_templates(report.templates, &report.from_model, &declared, &examples);
-    // Templates never become examples or tests.
-    let (examples, template_examples) = drop_template_examples(examples, &templates);
-    {
-        let mut s = run.shared();
-        s.stats.examples_found = examples.len();
-        s.stats.examples_discarded = discarded + template_examples;
-        s.stats.templates_found = templates.len();
-        s.stats.templates_discarded = report.discarded + contradicted;
-        s.stats.templates_merged = report.merged;
-        s.stats.phase_ms.structure = ms(phase.elapsed());
-    }
-    let suggested = suggested_mode(&structure);
-    let mode = req.compare_mode.or(suggested).unwrap_or_default();
-    // Sheet text cannot show trailing spaces: examples are checked leniently.
-    let example_mode = match mode {
-        CompareMode::Lines { .. } => CompareMode::Lines { trim: true },
-        m => m,
-    };
-    let example_inputs: Vec<String> = examples.iter().map(|e| as_stdin(&e.input)).collect();
-    // Without input the model writes no inputs; this is confirmed by
-    // running the solutions on a probe input (see below).
-    let no_input = input_need(&structure, &examples) == InputNeed::NoInput;
-    let empty_example = example_inputs
-        .iter()
-        .position(|i| normalize_for_match(i).is_empty());
-    // With an output template (or without input) but no example without
-    // input, a test with empty input is forced: the solutions run it right
-    // away, its expectation comes from the majority.
-    let force_empty = (no_input || (!templates.is_empty() && !reads_input(&structure)))
-        && empty_example.is_none();
-    let check_inputs: Vec<String> = example_inputs
-        .iter()
-        .cloned()
-        .chain(force_empty.then(String::new))
-        .collect();
-    let empty_index = empty_example.unwrap_or(example_inputs.len());
-    let probe_index = check_inputs.len();
-    // The probe runs with the check inputs, but is never a test.
-    let run_inputs: Vec<String> = check_inputs
-        .iter()
-        .cloned()
-        .chain(no_input.then(|| PROBE_INPUT.to_string()))
-        .collect();
-    let example_pairs: Vec<(String, String)> = examples
-        .iter()
-        .map(|e| (e.input.clone(), e.output.clone()))
-        .collect();
-    // The inputs prompt sees the verified sheet pairs (never model outputs).
-    let inputs_ctx = prompts::InputsContext {
-        input_format: &structure.input_format,
-        output_format: &structure.output_format,
-        constraints: &structure.input_constraints,
-        examples: &example_pairs,
-        known_inputs: &[],
-    };
-
-    // 2.–4. Solutions, all at the same time (llama-server has a slot per
-    // solution): generate while the containers start, check each one as
-    // soon as it is written. The test inputs (5.) only need the task, so
-    // they are generated alongside – unless the task reads no input.
-    // Java: the class named by the task sheet (e.g. „Klasse Time“), else Main.
-    let class_name = (lang.id == "java")
-        .then(|| prompts::class_name_from_task(&req.task_text))
-        .flatten();
-    let ctx = SolutionContext {
-        input_format: &structure.input_format,
-        output_format: &structure.output_format,
-        examples: &example_pairs,
-        output_templates: &templates,
-        class_name: class_name.as_deref(),
-    };
-    let base_messages = prompts::solution_messages(&req.task_text, lang.id, &ctx);
-    let n = settings.solutions;
-    run.progress(
-        Phase::Solutions,
-        format!("{n} Lösungen werden gleichzeitig geschrieben …"),
-        Some((0, n)),
-    );
-    let done = AtomicUsize::new(0);
-    // Early end: only without input, where the check inputs are all
-    // inputs (the tests are then the same as in a full run).
-    let early = EarlyStop {
-        enabled: no_input,
-        token: CancellationToken::new(),
-        finished: Mutex::new(Vec::new()),
-    };
-    let green_possible = !examples.is_empty();
-    let first_round = (0..n).map(|_| {
-        let run = &run;
-        let messages = base_messages.clone();
-        let (examples, example_mode, run_inputs, templates, done, early) = (
-            &examples,
-            &example_mode,
-            &run_inputs,
-            &templates,
-            &done,
-            &early,
-        );
-        async move {
-            let mut a = Attempt::new(messages.clone());
-            let chat = async {
-                let chat = run.chat(run.solution_request(messages));
-                if !early.enabled {
-                    return Some(chat.await);
-                }
-                // The answer first: a finished answer is never thrown away.
-                tokio::select! {
-                    biased;
-                    r = chat => Some(r),
-                    _ = early.token.cancelled() => None,
-                }
-            };
-            let (answer, session) = futures_util::future::join(chat, async {
-                run.check()?;
-                tokio::select! {
-                    biased;
-                    _ = run.cancel.cancelled() => Err(AiError::Cancelled),
-                    s = run.exec.open(lang.id) => s,
-                }
-            })
-            .await;
-            match session {
-                Ok(s) => a.session = Some(s),
-                Err(e) => run.record_error(&mut a, e, false),
-            }
-            match answer {
-                Some(Ok(r)) => a.answer = Some(r.content),
-                Some(Err(e)) => run.record_error(&mut a, e, true),
-                None => a.cancelled_early = true,
-            }
-            if a.fatal.is_none() && a.llm_error.is_none() && !a.cancelled_early {
-                if let Err(e) = run
-                    .check_answer(&mut a, examples, example_mode, run_inputs, templates)
-                    .await
-                {
-                    run.record_error(&mut a, e, false);
-                }
-            }
-            if early.enabled && !a.cancelled_early {
-                let mut f = early.finished.lock().unwrap_or_else(|e| e.into_inner());
-                f.push(a.passes.then(|| a.example_outputs.clone()));
-                let outs: Vec<&[StepOutput]> = f.iter().flatten().map(Vec::as_slice).collect();
-                let g = agreeing_group(
-                    &mode,
-                    templates,
-                    &outs,
-                    examples.len()..probe_index,
-                    empty_index,
-                    probe_index,
-                );
-                let rest = outs.len() - g + (n - f.len());
-                if can_stop(g, rest, green_possible) {
-                    early.token.cancel();
-                }
-            }
-            let d = done.fetch_add(1, AtomicOrdering::SeqCst) + 1;
-            let message = if a.cancelled_early {
-                format!("Lösung {d} von {n} nicht abgewartet (Mehrheit steht fest) …")
-            } else {
-                format!("Lösung {d} von {n} geschrieben und geprüft …")
-            };
-            run.progress(Phase::Solutions, message, Some((d, n)));
-            a
-        }
-    });
-    let inputs_step = async {
-        if no_input {
-            return Ok(Some(InputsAnswer::default()));
-        }
-        let phase = Instant::now();
-        let r = run
-            .json_step::<InputsAnswer>(
-                prompts::inputs_messages(&req.task_text, &inputs_ctx),
-                prompts::inputs_schema(),
-                INPUTS_TEMPERATURE,
-                INPUTS_MAX_TOKENS,
-            )
-            .await;
-        run.shared().stats.phase_ms.inputs = ms(phase.elapsed());
-        r
-    };
-    let solutions_step = async {
-        let phase = Instant::now();
-        let mut attempts = futures_util::future::join_all(first_round).await;
-        run.shared().stats.phase_ms.solutions = ms(phase.elapsed());
-        let phase = Instant::now();
-        // Repair rounds only for programs that did not compile, only if no
-        // clear majority passed already, and never after an early end.
-        for _ in 0..settings.repair_rounds {
-            let passed = attempts.iter().filter(|a| a.passes).count();
-            if attempts
-                .iter()
-                .any(|a| a.fatal.is_some() || a.cancelled_early)
-                || !repairs_needed(n, passed)
-            {
-                break;
-            }
-            let repairs = attempts
-                .iter_mut()
-                .enumerate()
-                .filter(|(_, a)| a.failure.is_some() && a.session.is_some())
-                .map(|(i, a)| {
-                    let run = &run;
-                    let (examples, example_mode, run_inputs, templates) =
-                        (&examples, &example_mode, &run_inputs, &templates);
-                    async move {
-                        run.progress(
-                            Phase::Solutions,
-                            format!("Lösung {} von {n} wird repariert …", i + 1),
-                            Some((i + 1, n)),
-                        );
-                        let failure = a.failure.clone().unwrap_or_default();
-                        let answer = a.answer.clone().unwrap_or_default();
-                        a.messages = prompts::repair_messages(
-                            std::mem::take(&mut a.messages),
-                            &answer,
-                            &failure,
-                            lang.id,
-                        );
-                        match run.chat(run.solution_request(a.messages.clone())).await {
-                            Ok(r) => {
-                                a.answer = Some(r.content);
-                                run.shared().stats.solutions_repaired += 1;
-                                if let Err(e) = run
-                                    .check_answer(a, examples, example_mode, run_inputs, templates)
-                                    .await
-                                {
-                                    run.record_error(a, e, false);
-                                }
-                            }
-                            Err(e) => {
-                                a.failure = None;
-                                run.record_error(a, e, true);
-                            }
-                        }
-                    }
-                });
-            futures_util::future::join_all(repairs).await;
-        }
-        run.shared().stats.phase_ms.repairs = ms(phase.elapsed());
-        attempts
-    };
-    let (mut attempts, inputs_answer) =
-        futures_util::future::join(solutions_step, inputs_step).await;
-
-    let sessions_of = |attempts: &mut Vec<Attempt<E::Session>>, keep: bool| -> Vec<E::Session> {
-        attempts
-            .iter_mut()
-            .filter(|a| keep || !a.passes)
-            .filter_map(|a| a.session.take())
-            .collect()
-    };
-    if let Some(e) = first_fatal(&mut attempts) {
-        close_all(sessions_of(&mut attempts, true)).await;
-        return Err(e);
-    }
-    if attempts
-        .iter()
-        .all(|a| a.llm_error.is_some() || a.cancelled_early)
-    {
-        close_all(sessions_of(&mut attempts, true)).await;
-        if let Some(e) = attempts.iter_mut().find_map(|a| a.llm_error.take()) {
-            return Err(e);
-        }
-    }
-    let compiled = attempts.iter().filter(|a| a.compiled).count();
-    let cancelled = attempts.iter().filter(|a| a.cancelled_early).count();
-    // "No input" is confirmed if a strict majority of the compiled
-    // solutions prints the same on the empty input and on the probe.
-    let no_input_confirmed = no_input && {
-        let ran: Vec<&[StepOutput]> = attempts
-            .iter()
-            .filter(|a| a.compiled && a.example_outputs.len() == run_inputs.len())
-            .map(|a| a.example_outputs.as_slice())
-            .collect();
-        let independent = ran
-            .iter()
-            .filter(|o| {
-                let (e, p) = (&o[empty_index], &o[probe_index]);
-                valid(e) && valid(p) && mode.matches(&e.stdout, &p.stdout)
-            })
-            .count();
-        independent * 2 > ran.len()
-    };
-    if no_input {
-        // The probe is no test.
-        for a in &mut attempts {
-            a.example_outputs.truncate(check_inputs.len());
-        }
-    }
-    // Containers of failed solutions are no longer needed.
-    close_all(sessions_of(&mut attempts, false)).await;
-    let survivors: Vec<(String, Vec<StepOutput>, E::Session)> = attempts
-        .into_iter()
-        .filter(|a| a.passes)
-        .filter_map(|a| Some((a.code?, a.example_outputs, a.session?)))
-        .collect();
-    {
-        let mut s = run.shared();
-        s.stats.solutions_compiled = compiled;
-        s.stats.solutions_passed = survivors.len();
-        s.stats.solutions_cancelled = cancelled;
-        s.stats.no_input = no_input_confirmed;
-    }
-
-    let finish = |run: Run<'_, L, E, _>,
-                  tests: Vec<GeneratedTest>,
-                  reference: Option<String>,
-                  ev: Evidence| {
-        let shared = run.shared.into_inner().unwrap_or_else(|e| e.into_inner());
-        let mut stats = shared.stats;
-        stats.tokens_per_second = (shared.tps_n > 0).then(|| shared.tps_sum / shared.tps_n as f64);
-        stats.duration_ms = ms(started.elapsed());
-        let mut confidence = decide_confidence(&ev);
-        if !templates.is_empty() && !ev.template_fallback {
-            confidence.reasons.push(TEMPLATE_REASON.into());
-        }
-        // Red: no tests, no reference solution – only the honest message.
-        let red = confidence.level == ConfidenceLevel::Red;
-        GenerateResult {
-            tests: if red { Vec::new() } else { tests },
-            reference_solution: if red { None } else { reference },
-            confidence,
-            suggested_compare_mode: suggested,
-            compare_mode: mode,
-            output_templates: if ev.template_fallback {
-                Vec::new()
-            } else {
-                templates.clone()
-            },
-            input_format: structure.input_format.clone(),
-            input_constraints: structure.input_constraints.clone(),
-            stats,
+    // The progress line (and its remaining time) is refreshed while the
+    // steps run; the ticker ends with the body.
+    let ticker = async {
+        loop {
+            tokio::time::sleep(ETA_TICK).await;
+            run.tick();
         }
     };
-    let mut evidence = Evidence {
-        solutions: n,
-        compiled,
-        survivors: survivors.len(),
-        examples: examples.len(),
-        cancelled,
-        ..Evidence::default()
-    };
-    if survivors.is_empty() {
-        return Ok(finish(run, Vec::new(), None, evidence));
-    }
-
-    // 5. Test inputs (the model writes inputs only). If the task was
-    // wrongly taken for one without input, they are requested now.
-    let inputs_answer = if no_input && !no_input_confirmed {
+    let body = async {
+        // 1. Structure.
         run.progress(
-            Phase::Inputs,
-            "Die Aufgabe liest doch eine Eingabe – Testeingaben werden erzeugt …".into(),
+            Phase::Structure,
+            "Aufgabe wird analysiert (Ein-/Ausgabe, Beispiele) …".into(),
             None,
         );
         let phase = Instant::now();
-        let r = run
-            .json_step::<InputsAnswer>(
-                prompts::inputs_messages(&req.task_text, &inputs_ctx),
-                prompts::inputs_schema(),
-                INPUTS_TEMPERATURE,
-                INPUTS_MAX_TOKENS,
+        let structure: Structure = run
+            .json_step(
+                prompts::structure_messages(&req.task_text),
+                prompts::structure_schema(),
+                STRUCTURE_TEMPERATURE,
+                STRUCTURE_MAX_TOKENS,
             )
-            .await;
-        run.shared().stats.phase_ms.inputs = ms(phase.elapsed());
-        r
-    } else {
-        inputs_answer
-    };
-    let generated = match inputs_answer {
-        Ok(answer) => clean_inputs(&answer.map(|a| a.inputs).unwrap_or_default(), &check_inputs),
-        Err(e) => {
-            close_all(survivors.into_iter().map(|s| s.2)).await;
-            return Err(e);
+            .await?
+            .unwrap_or_default();
+        let (examples, discarded) = verify_examples(&req.task_text, &structure.examples);
+        // Templates of the model plus the ones found without it, joined and
+        // checked the same way.
+        let detected = template::detect_templates(&req.task_text);
+        let report =
+            template::verify_templates_with(&req.task_text, &structure.output_templates, &detected);
+        let declared = template::declared_placeholder_tokens(&req.task_text);
+        let (templates, contradicted) =
+            drop_contradicted_templates(report.templates, &report.from_model, &declared, &examples);
+        // Templates never become examples or tests.
+        let (examples, template_examples) = drop_template_examples(examples, &templates);
+        {
+            let mut s = run.shared();
+            s.stats.examples_found = examples.len();
+            s.stats.examples_discarded = discarded + template_examples;
+            s.stats.templates_found = templates.len();
+            s.stats.templates_discarded = report.discarded + contradicted;
+            s.stats.templates_merged = report.merged;
+            s.stats.phase_ms.structure = ms(phase.elapsed());
         }
-    };
-    run.shared().stats.inputs_generated = generated.len();
+        let suggested = suggested_mode(&structure);
+        let mode = req.compare_mode.or(suggested).unwrap_or_default();
+        // Sheet text cannot show trailing spaces: examples are checked leniently.
+        let example_mode = match mode {
+            CompareMode::Lines { .. } => CompareMode::Lines { trim: true },
+            m => m,
+        };
+        let example_inputs: Vec<String> = examples.iter().map(|e| as_stdin(&e.input)).collect();
+        // Without input the model writes no inputs; this is confirmed by
+        // running the solutions on a probe input (see below).
+        // Fixed values and no input hint in the text: this wins over the
+        // model's `readsInput` (regression „Aufgabe 2.2 Time“, 1.5B model: the
+        // solutions read the given time from stdin and the probe run only
+        // confirmed that). A verified example with an input still means input.
+        let fixed_values = examples
+            .iter()
+            .all(|e| normalize_for_match(&e.input).is_empty())
+            && no_input::task_without_input(&req.task_text);
+        let no_input = fixed_values || input_need(&structure, &examples) == InputNeed::NoInput;
+        let empty_example = example_inputs
+            .iter()
+            .position(|i| normalize_for_match(i).is_empty());
+        // With an output template (or without input) but no example without
+        // input, a test with empty input is forced: the solutions run it right
+        // away, its expectation comes from the majority.
+        let force_empty = (no_input || (!templates.is_empty() && !reads_input(&structure)))
+            && empty_example.is_none();
+        let check_inputs: Vec<String> = example_inputs
+            .iter()
+            .cloned()
+            .chain(force_empty.then(String::new))
+            .collect();
+        let empty_index = empty_example.unwrap_or(example_inputs.len());
+        let probe_index = check_inputs.len();
+        let strict = fixed_values.then_some(NoInputCheck {
+            empty: empty_index,
+            probe: probe_index,
+        });
+        // The probe runs with the check inputs, but is never a test.
+        let run_inputs: Vec<String> = check_inputs
+            .iter()
+            .cloned()
+            .chain(no_input.then(|| PROBE_INPUT.to_string()))
+            .collect();
+        let example_pairs: Vec<(String, String)> = examples
+            .iter()
+            .map(|e| (e.input.clone(), e.output.clone()))
+            .collect();
+        // The inputs prompt sees the verified sheet pairs (never model outputs).
+        let inputs_ctx = prompts::InputsContext {
+            input_format: &structure.input_format,
+            output_format: &structure.output_format,
+            constraints: &structure.input_constraints,
+            examples: &example_pairs,
+            known_inputs: &[],
+        };
 
-    // 6. Majority vote: every surviving solution runs the new inputs in its
-    // container (compiled once; the example outputs are reused).
-    let phase = Instant::now();
-    let s = survivors.len();
-    run.progress(
-        Phase::Majority,
-        format!(
-            "Mehrheitsentscheid: {s} Lösungen laufen auf {} Eingaben …",
-            generated.len()
-        ),
-        Some((0, s)),
-    );
-    let majority_done = AtomicUsize::new(0);
-    let runs = survivors.iter().map(|(_, _, session)| {
-        let (run, generated, majority_done) = (&run, &generated, &majority_done);
-        async move {
-            let r = if generated.is_empty() {
-                Ok(Vec::new())
-            } else {
+        // 2.–4. Solutions, all in one request (llama-server has a slot per
+        // solution): generate while the containers start, then check them
+        // all at once. The test inputs (5.) only need the task, so
+        // they are generated alongside – unless the task reads no input.
+        // Java: the class named by the task sheet (e.g. „Klasse Time“), else Main.
+        let class_name = (lang.id == "java")
+            .then(|| prompts::class_name_from_task(&req.task_text))
+            .flatten();
+        let ctx = SolutionContext {
+            input_format: &structure.input_format,
+            output_format: &structure.output_format,
+            examples: &example_pairs,
+            output_templates: &templates,
+            class_name: class_name.as_deref(),
+            no_input,
+        };
+        let base_messages = prompts::solution_messages(&req.task_text, lang.id, &ctx);
+        let n = settings.solutions;
+        {
+            let mut s = run.shared();
+            s.plan.solution_chars = chars(&base_messages);
+            s.plan.inputs_chars = chars(&prompts::inputs_messages(&req.task_text, &inputs_ctx));
+            s.plan.parallel_inputs = !no_input;
+            s.plan.no_input = no_input;
+        }
+        run.step(Step::Round);
+        run.progress(
+            Phase::Solutions,
+            // One request: the answers arrive together, so there is no
+            // count per solution until then (the remaining time runs on).
+            format!("{n} Lösungen werden gleichzeitig geschrieben (sie kommen zusammen an) …"),
+            Some((0, n)),
+        );
+        let done = AtomicUsize::new(0);
+        // One request for all solutions: llama-server processes the prompt
+        // once and copies it into n slots (separate requests share no
+        // prompt prefix between slots). The answers arrive together, so
+        // there is no early end in this round. The containers start
+        // meanwhile.
+        let first_round = async {
+            let run = &run;
+            let sessions = futures_util::future::join_all((0..n).map(|_| async {
                 run.check()?;
-                tokio::select! {
+                let s = tokio::select! {
                     biased;
                     _ = run.cancel.cancelled() => Err(AiError::Cancelled),
-                    r = session.run(generated) => r,
+                    s = run.exec.open(lang.id) => s,
+                };
+                if matches!(&s, Err(e) if !matches!(e, AiError::Cancelled)) {
+                    // Stops the request for the solutions right away.
+                    run.cancel.cancel();
+                }
+                s
+            }));
+            let (answers, sessions) = futures_util::future::join(
+                run.chat_n(run.solution_request(base_messages.clone()), n),
+                sessions,
+            )
+            .await;
+            let mut attempts: Vec<Attempt<E::Session>> = sessions
+                .into_iter()
+                .map(|session| {
+                    let mut a = Attempt::new(base_messages.clone());
+                    match session {
+                        Ok(s) => a.session = Some(s),
+                        Err(e) => run.record_error(&mut a, e, false),
+                    }
+                    a
+                })
+                .collect();
+            let answers = match answers {
+                Ok(rs) => rs,
+                Err(e) => {
+                    // The model failed for every solution at once. A sandbox
+                    // error (which cancelled the request) is kept.
+                    if let Some(a) = attempts.iter_mut().find(|a| a.fatal.is_none()) {
+                        run.record_error(a, e, true);
+                    }
+                    return attempts;
                 }
             };
-            if r.is_err() {
-                run.cancel.cancel();
-            }
-            let d = majority_done.fetch_add(1, AtomicOrdering::SeqCst) + 1;
             run.progress(
-                Phase::Majority,
-                format!("Mehrheitsentscheid: Lösung {d} von {s} ausgeführt …"),
-                Some((d, s)),
+                Phase::Solutions,
+                format!("{n} Lösungen geschrieben, sie werden geprüft …"),
+                Some((0, n)),
             );
-            r
-        }
-    });
-    let outputs = futures_util::future::join_all(runs).await;
-    let (codes, example_outputs): (Vec<String>, Vec<Vec<StepOutput>>) = {
-        let mut codes = Vec::with_capacity(s);
-        let mut ex = Vec::with_capacity(s);
-        let mut sessions = Vec::with_capacity(s);
-        for (c, e, session) in survivors {
-            codes.push(c);
-            ex.push(e);
-            sessions.push(session);
-        }
-        close_all(sessions).await;
-        (codes, ex)
-    };
-    let mut generated_outputs = Vec::with_capacity(s);
-    let mut error: Option<AiError> = None;
-    for r in outputs {
-        match r {
-            Ok(o) => generated_outputs.push(o),
-            Err(e) => {
-                if error
-                    .as_ref()
-                    .is_none_or(|old| matches!(old, AiError::Cancelled))
-                {
-                    error = Some(e);
+            let (examples, example_mode, run_inputs, templates, done) =
+                (&examples, &example_mode, &run_inputs, &templates, &done);
+            let checks = attempts.iter_mut().zip(answers).map(|(a, r)| async move {
+                a.answer = Some(r.content);
+                if a.fatal.is_none() {
+                    if let Err(e) = run
+                        .check_answer(a, examples, example_mode, run_inputs, templates, strict)
+                        .await
+                    {
+                        run.record_error(a, e, false);
+                    }
                 }
-                generated_outputs.push(Vec::new());
+                let d = done.fetch_add(1, AtomicOrdering::SeqCst) + 1;
+                run.progress(
+                    Phase::Solutions,
+                    format!("Lösung {d} von {n} geprüft …"),
+                    Some((d, n)),
+                );
+            });
+            futures_util::future::join_all(checks).await;
+            attempts
+        };
+        let inputs_step = async {
+            if no_input {
+                return Ok(Some(InputsAnswer::default()));
+            }
+            let phase = Instant::now();
+            let r = run
+                .json_step::<InputsAnswer>(
+                    prompts::inputs_messages(&req.task_text, &inputs_ctx),
+                    prompts::inputs_schema(),
+                    INPUTS_TEMPERATURE,
+                    INPUTS_MAX_TOKENS,
+                )
+                .await;
+            run.shared().stats.phase_ms.inputs = ms(phase.elapsed());
+            r
+        };
+        let solutions_step = async {
+            let phase = Instant::now();
+            let mut attempts = first_round.await;
+            run.shared().stats.phase_ms.solutions = ms(phase.elapsed());
+            let phase = Instant::now();
+            // Repair rounds only for programs that did not compile and only if
+            // no clear majority passed already.
+            for _ in 0..settings.repair_rounds {
+                let passed = attempts.iter().filter(|a| a.passes).count();
+                if attempts.iter().any(|a| a.fatal.is_some()) || !repairs_needed(n, passed) {
+                    break;
+                }
+                let k = attempts
+                    .iter()
+                    .filter(|a| a.failure.is_some() && a.session.is_some())
+                    .count();
+                if k > 0 {
+                    run.step(Step::Repairs(k));
+                }
+                let repairs = attempts
+                    .iter_mut()
+                    .enumerate()
+                    .filter(|(_, a)| a.failure.is_some() && a.session.is_some())
+                    .map(|(i, a)| {
+                        let run = &run;
+                        let (examples, example_mode, run_inputs, templates) =
+                            (&examples, &example_mode, &run_inputs, &templates);
+                        async move {
+                            run.progress(
+                                Phase::Solutions,
+                                format!("Lösung {} von {n} wird repariert …", i + 1),
+                                Some((i + 1, n)),
+                            );
+                            let failure = a.failure.clone().unwrap_or_default();
+                            let answer = a.answer.clone().unwrap_or_default();
+                            a.messages = if a.reads_input {
+                                prompts::no_input_repair_messages(
+                                    std::mem::take(&mut a.messages),
+                                    &answer,
+                                    lang.id,
+                                )
+                            } else {
+                                prompts::repair_messages(
+                                    std::mem::take(&mut a.messages),
+                                    &answer,
+                                    &failure,
+                                    lang.id,
+                                )
+                            };
+                            match run.chat(run.solution_request(a.messages.clone())).await {
+                                Ok(r) => {
+                                    a.answer = Some(r.content);
+                                    run.shared().stats.solutions_repaired += 1;
+                                    if let Err(e) = run
+                                        .check_answer(
+                                            a,
+                                            examples,
+                                            example_mode,
+                                            run_inputs,
+                                            templates,
+                                            strict,
+                                        )
+                                        .await
+                                    {
+                                        run.record_error(a, e, false);
+                                    }
+                                }
+                                Err(e) => {
+                                    a.failure = None;
+                                    run.record_error(a, e, true);
+                                }
+                            }
+                        }
+                    });
+                futures_util::future::join_all(repairs).await;
+            }
+            run.shared().stats.phase_ms.repairs = ms(phase.elapsed());
+            attempts
+        };
+        let (mut attempts, inputs_answer) =
+            futures_util::future::join(solutions_step, inputs_step).await;
+
+        let sessions_of =
+            |attempts: &mut Vec<Attempt<E::Session>>, keep: bool| -> Vec<E::Session> {
+                attempts
+                    .iter_mut()
+                    .filter(|a| keep || !a.passes)
+                    .filter_map(|a| a.session.take())
+                    .collect()
+            };
+        if let Some(e) = first_fatal(&mut attempts) {
+            close_all(sessions_of(&mut attempts, true)).await;
+            return Err(e);
+        }
+        if attempts
+            .iter()
+            .all(|a| a.llm_error.is_some() || a.answer.is_none())
+        {
+            close_all(sessions_of(&mut attempts, true)).await;
+            if let Some(e) = attempts.iter_mut().find_map(|a| a.llm_error.take()) {
+                return Err(e);
             }
         }
-    }
-    if let Some(e) = error {
-        return Err(e);
-    }
-
-    let all_inputs: Vec<String> = check_inputs
-        .iter()
-        .cloned()
-        .chain(generated.iter().cloned())
-        .collect();
-    let results: Vec<Option<Vec<StepOutput>>> = example_outputs
-        .into_iter()
-        .zip(generated_outputs)
-        .map(|(mut e, g)| {
-            e.extend(g);
-            (e.len() == all_inputs.len()).then_some(e)
-        })
-        .collect();
-
-    let voters = s + cancelled;
-    let (sheet, check) = (example_inputs.len(), check_inputs.len());
-    let mut v = vote(
-        &mode,
-        &templates,
-        &results,
-        &all_inputs,
-        sheet,
-        check,
-        voters,
-    );
-    // No output at all fitted the templates: the templates are probably
-    // wrong (not the solutions). Without them, the vote is repeated; it
-    // only counts if every surviving solution agrees on every input.
-    if !templates.is_empty() && v.tests.is_empty() && v.fitting == 0 && v.valid > 0 {
-        let free = vote(&mode, &[], &results, &all_inputs, sheet, check, voters);
-        let unanimous = free.dropped == 0
-            && !free.tests.is_empty()
-            && free
-                .tests
-                .iter()
-                .all(|t| t.agreement * voters as f64 >= s as f64 - 1e-9);
-        if unanimous {
-            v = free;
-            evidence.template_fallback = true;
-        } else {
-            evidence.template_mismatch = true;
+        let compiled = attempts.iter().filter(|a| a.compiled).count();
+        let reading = attempts.iter().filter(|a| a.reads_input).count();
+        // "No input" is confirmed if a strict majority of the compiled
+        // solutions prints the same on the empty input and on the probe.
+        // With fixed values every surviving solution ignored its input already.
+        let no_input_confirmed = no_input
+            && (fixed_values || {
+                let ran: Vec<&[StepOutput]> = attempts
+                    .iter()
+                    .filter(|a| a.compiled && a.example_outputs.len() == run_inputs.len())
+                    .map(|a| a.example_outputs.as_slice())
+                    .collect();
+                let independent = ran
+                    .iter()
+                    .filter(|o| {
+                        let (e, p) = (&o[empty_index], &o[probe_index]);
+                        valid(e) && valid(p) && mode.matches(&e.stdout, &p.stdout)
+                    })
+                    .count();
+                independent * 2 > ran.len()
+            });
+        if no_input {
+            // The probe is no test.
+            for a in &mut attempts {
+                a.example_outputs.truncate(check_inputs.len());
+            }
         }
-    }
-    {
-        let mut st = run.shared();
-        st.stats.tests_dropped = v.dropped;
-        st.stats.inputs_invalid = v.invalid;
-        st.stats.tests_redundant = v.redundant;
-        st.stats.phase_ms.majority = ms(phase.elapsed());
-    }
-    let reference = v
-        .wins
-        .iter()
-        .enumerate()
-        .max_by(|a, b| a.1.cmp(b.1).then(b.0.cmp(&a.0)))
-        .map(|(i, _)| codes[i].clone());
+        // Containers of failed solutions are no longer needed.
+        close_all(sessions_of(&mut attempts, false)).await;
+        let survivors: Vec<(String, Vec<StepOutput>, E::Session)> = attempts
+            .into_iter()
+            .filter(|a| a.passes)
+            .filter_map(|a| Some((a.code?, a.example_outputs, a.session?)))
+            .collect();
+        {
+            let mut s = run.shared();
+            s.stats.solutions_compiled = compiled;
+            s.stats.solutions_passed = survivors.len();
+            s.stats.no_input = no_input_confirmed;
+            s.stats.fixed_values = fixed_values;
+            s.stats.solutions_read_input = reading;
+        }
 
-    // 7. Confidence.
-    evidence.tests = v.tests.len();
-    evidence.dropped = v.dropped;
-    evidence.min_agreement = v.min_agreement;
-    evidence.prompt_merged = v.prompt_merged;
-    evidence.invalid = v.invalid;
-    Ok(finish(run, v.tests, reference, evidence))
+        let finish = |run: &Run<'_, L, E, _>,
+                      tests: Vec<GeneratedTest>,
+                      reference: Option<String>,
+                      ev: Evidence| {
+            let mut shared = run.shared();
+            let mut stats = std::mem::take(&mut shared.stats);
+            stats.tokens_per_second =
+                (shared.tps_n > 0).then(|| shared.tps_sum / shared.tps_n as f64);
+            stats.duration_ms = ms(started.elapsed());
+            stats.measured_speeds = shared.meter.measured(shared.plan.prior);
+            stats.prompt_ms = (eta::covered_seconds(&shared.prompt_spans) * 1000.0).round() as u64;
+            drop(shared);
+            let mut confidence = decide_confidence(&ev);
+            if !templates.is_empty() && !ev.template_fallback {
+                confidence.reasons.push(TEMPLATE_REASON.into());
+            }
+            if fixed_values {
+                confidence.reasons.push(FIXED_VALUES_REASON.into());
+            }
+            // Red: no tests, no reference solution – only the honest message.
+            let red = confidence.level == ConfidenceLevel::Red;
+            GenerateResult {
+                tests: if red { Vec::new() } else { tests },
+                reference_solution: if red { None } else { reference },
+                confidence,
+                suggested_compare_mode: suggested,
+                compare_mode: mode,
+                output_templates: if ev.template_fallback {
+                    Vec::new()
+                } else {
+                    templates.clone()
+                },
+                input_format: structure.input_format.clone(),
+                input_constraints: structure.input_constraints.clone(),
+                stats,
+            }
+        };
+        let mut evidence = Evidence {
+            solutions: n,
+            compiled,
+            survivors: survivors.len(),
+            examples: examples.len(),
+            ..Evidence::default()
+        };
+        if survivors.is_empty() {
+            return Ok(finish(&run, Vec::new(), None, evidence));
+        }
+
+        // 5. Test inputs (the model writes inputs only). If the task was
+        // wrongly taken for one without input, they are requested now.
+        let inputs_answer = if no_input && !no_input_confirmed {
+            run.step(Step::Inputs);
+            run.progress(
+                Phase::Inputs,
+                "Die Aufgabe liest doch eine Eingabe – Testeingaben werden erzeugt …".into(),
+                None,
+            );
+            let phase = Instant::now();
+            let r = run
+                .json_step::<InputsAnswer>(
+                    prompts::inputs_messages(&req.task_text, &inputs_ctx),
+                    prompts::inputs_schema(),
+                    INPUTS_TEMPERATURE,
+                    INPUTS_MAX_TOKENS,
+                )
+                .await;
+            run.shared().stats.phase_ms.inputs = ms(phase.elapsed());
+            r
+        } else {
+            inputs_answer
+        };
+        let generated = match inputs_answer {
+            Ok(answer) => {
+                clean_inputs(&answer.map(|a| a.inputs).unwrap_or_default(), &check_inputs)
+            }
+            Err(e) => {
+                close_all(survivors.into_iter().map(|s| s.2)).await;
+                return Err(e);
+            }
+        };
+        // Inputs outside the limits the task states are dropped. Limits
+        // the sheet's own examples break were misread: not used.
+        let limits = super::limits::parse(&structure.input_constraints, &req.task_text)
+            .filter(|l| example_inputs.iter().all(|e| super::limits::fits(e, l)));
+        let before = generated.len();
+        let generated: Vec<String> = match &limits {
+            Some(l) => generated
+                .into_iter()
+                .filter(|i| super::limits::fits(i, l))
+                .collect(),
+            None => generated,
+        };
+        {
+            let mut st = run.shared();
+            st.stats.inputs_generated = generated.len();
+            st.stats.inputs_out_of_range = before - generated.len();
+        }
+
+        // 6. Majority vote: every surviving solution runs the new inputs in its
+        // container (compiled once; the example outputs are reused).
+        let phase = Instant::now();
+        let s = survivors.len();
+        run.step(Step::Majority);
+        run.progress(
+            Phase::Majority,
+            format!(
+                "Mehrheitsentscheid: {s} Lösungen laufen auf {} Eingaben …",
+                generated.len()
+            ),
+            Some((0, s)),
+        );
+        let majority_done = AtomicUsize::new(0);
+        let runs = survivors.iter().map(|(_, _, session)| {
+            let (run, generated, majority_done) = (&run, &generated, &majority_done);
+            async move {
+                let r = if generated.is_empty() {
+                    Ok(Vec::new())
+                } else {
+                    run.check()?;
+                    tokio::select! {
+                        biased;
+                        _ = run.cancel.cancelled() => Err(AiError::Cancelled),
+                        r = session.run(generated) => r,
+                    }
+                };
+                if r.is_err() {
+                    run.cancel.cancel();
+                }
+                let d = majority_done.fetch_add(1, AtomicOrdering::SeqCst) + 1;
+                run.progress(
+                    Phase::Majority,
+                    format!("Mehrheitsentscheid: Lösung {d} von {s} ausgeführt …"),
+                    Some((d, s)),
+                );
+                r
+            }
+        });
+        let outputs = futures_util::future::join_all(runs).await;
+        let (codes, example_outputs): (Vec<String>, Vec<Vec<StepOutput>>) = {
+            let mut codes = Vec::with_capacity(s);
+            let mut ex = Vec::with_capacity(s);
+            let mut sessions = Vec::with_capacity(s);
+            for (c, e, session) in survivors {
+                codes.push(c);
+                ex.push(e);
+                sessions.push(session);
+            }
+            close_all(sessions).await;
+            (codes, ex)
+        };
+        let mut generated_outputs = Vec::with_capacity(s);
+        let mut error: Option<AiError> = None;
+        for r in outputs {
+            match r {
+                Ok(o) => generated_outputs.push(o),
+                Err(e) => {
+                    if error
+                        .as_ref()
+                        .is_none_or(|old| matches!(old, AiError::Cancelled))
+                    {
+                        error = Some(e);
+                    }
+                    generated_outputs.push(Vec::new());
+                }
+            }
+        }
+        if let Some(e) = error {
+            return Err(e);
+        }
+
+        let all_inputs: Vec<String> = check_inputs
+            .iter()
+            .cloned()
+            .chain(generated.iter().cloned())
+            .collect();
+        let results: Vec<Option<Vec<StepOutput>>> = example_outputs
+            .into_iter()
+            .zip(generated_outputs)
+            .map(|(mut e, g)| {
+                e.extend(g);
+                (e.len() == all_inputs.len()).then_some(e)
+            })
+            .collect();
+
+        let voters = s;
+        let (sheet, check) = (example_inputs.len(), check_inputs.len());
+        let mut v = vote(
+            &mode,
+            &templates,
+            &results,
+            &all_inputs,
+            sheet,
+            check,
+            voters,
+        );
+        // No output at all fitted the templates: the templates are probably
+        // wrong (not the solutions). Without them, the vote is repeated; it
+        // only counts if every surviving solution agrees on every input.
+        if !templates.is_empty() && v.tests.is_empty() && v.fitting == 0 && v.valid > 0 {
+            let free = vote(&mode, &[], &results, &all_inputs, sheet, check, voters);
+            let unanimous = free.dropped == 0
+                && !free.tests.is_empty()
+                && free
+                    .tests
+                    .iter()
+                    .all(|t| t.agreement * voters as f64 >= s as f64 - 1e-9);
+            if unanimous {
+                v = free;
+                evidence.template_fallback = true;
+            } else {
+                evidence.template_mismatch = true;
+            }
+        }
+        // Java: tests that look like an int overflow are dropped (the
+        // solutions agree on the wrong number).
+        let overflow = if lang.id == "java" {
+            let sheet_outputs: Vec<String> = examples.iter().map(|e| e.output.clone()).collect();
+            let before = v.tests.len();
+            v.tests.retain(|t| {
+                t.source != TestSource::Generated
+                    || !overflow_suspect(&t.input, &t.expected, &sheet_outputs)
+            });
+            before - v.tests.len()
+        } else {
+            0
+        };
+        {
+            let mut st = run.shared();
+            st.stats.tests_overflow = overflow;
+            st.stats.tests_dropped = v.dropped;
+            st.stats.inputs_invalid = v.invalid;
+            st.stats.tests_redundant = v.redundant;
+            st.stats.phase_ms.majority = ms(phase.elapsed());
+        }
+        let reference = v
+            .wins
+            .iter()
+            .enumerate()
+            .max_by(|a, b| a.1.cmp(b.1).then(b.0.cmp(&a.0)))
+            .map(|(i, _)| codes[i].clone());
+
+        // 7. Confidence.
+        evidence.tests = v.tests.len();
+        evidence.dropped = v.dropped;
+        evidence.min_agreement = v.min_agreement;
+        evidence.prompt_merged = v.prompt_merged;
+        evidence.invalid = v.invalid;
+        evidence.overflow = overflow;
+        Ok(finish(&run, v.tests, reference, evidence))
+    };
+    tokio::select! {
+        biased;
+        r = body => r,
+        _ = ticker => unreachable!("the ticker never ends"),
+    }
 }
 
 /// The AI gate: test generation and the variation check use the model
@@ -2296,11 +2738,20 @@ pub async fn run(
     )
     .await?;
     let llm = super::llama::LlamaClient::new(endpoint, cancel.clone())?;
+    // Start value of the remaining time: the speeds of the last run of this
+    // model, else conservative defaults.
     let settings = Settings {
         solutions: model.solutions as usize,
         repair_rounds: 1,
+        speeds: Some(super::models::load_speeds(&model.id).unwrap_or_else(eta::default_speeds)),
     };
-    generate(&llm, &exec, &req, settings, cancel, |p| on_progress(p)).await
+    let r = generate(&llm, &exec, &req, settings, cancel, |p| on_progress(p)).await;
+    if let Some(speeds) = r.as_ref().ok().and_then(|r| r.stats.measured_speeds) {
+        if let Err(e) = super::models::save_speeds(&model.id, speeds) {
+            eprintln!("{e}");
+        }
+    }
+    r
 }
 
 #[cfg(test)]
@@ -2314,7 +2765,10 @@ mod tests {
     /// number of earlier calls.
     struct MockLlm<F> {
         answer: F,
+        /// One entry per answer (a request with `n` answers adds `n`).
         calls: Mutex<Vec<ChatRequest>>,
+        /// Answers per request, in order.
+        batches: Mutex<Vec<usize>>,
     }
 
     impl<F: Fn(&ChatRequest, usize) -> Result<String, AiError> + Sync> MockLlm<F> {
@@ -2322,15 +2776,16 @@ mod tests {
             Self {
                 answer,
                 calls: Mutex::new(Vec::new()),
+                batches: Mutex::new(Vec::new()),
             }
         }
         fn calls(&self) -> Vec<ChatRequest> {
             self.calls.lock().unwrap().clone()
         }
-    }
-
-    impl<F: Fn(&ChatRequest, usize) -> Result<String, AiError> + Sync> Llm for MockLlm<F> {
-        async fn chat(&self, req: &ChatRequest) -> Result<ChatResponse, AiError> {
+        fn batches(&self) -> Vec<usize> {
+            self.batches.lock().unwrap().clone()
+        }
+        fn answer(&self, req: &ChatRequest) -> Result<ChatResponse, AiError> {
             let n = {
                 let mut c = self.calls.lock().unwrap();
                 c.push(req.clone());
@@ -2344,6 +2799,20 @@ mod tests {
                 stopping_word: None,
                 ..ChatResponse::default()
             })
+        }
+    }
+
+    impl<F: Fn(&ChatRequest, usize) -> Result<String, AiError> + Sync> Llm for MockLlm<F> {
+        async fn chat(&self, req: &ChatRequest) -> Result<ChatResponse, AiError> {
+            self.batches.lock().unwrap().push(1);
+            self.answer(req)
+        }
+
+        /// Like llama-server with `"n"`: one request, `n` answers, all
+        /// together; one failing answer fails the request.
+        async fn chat_n(&self, req: &ChatRequest, n: usize) -> Result<Vec<ChatResponse>, AiError> {
+            self.batches.lock().unwrap().push(n);
+            (0..n).map(|_| self.answer(req)).collect()
         }
     }
 
@@ -2375,6 +2844,8 @@ mod tests {
         counters: Arc<Mutex<Counters>>,
         /// Sandbox error on the n-th compile (1-based).
         fail_compile: Option<usize>,
+        /// Sandbox error on the n-th container start (1-based).
+        fail_open: Option<usize>,
     }
 
     impl MockExec {
@@ -2382,6 +2853,7 @@ mod tests {
             Self {
                 counters: Arc::new(Mutex::new(Counters::default())),
                 fail_compile: None,
+                fail_open: None,
             }
         }
         fn get(&self) -> std::sync::MutexGuard<'_, Counters> {
@@ -2423,6 +2895,22 @@ mod tests {
             } else {
                 step(&format!("Zahl eingeben: {}\n", n * 2), 0)
             }
+        } else if code.contains("readstime") {
+            // Reads „hour minute second“ (Scanner): crashes without input.
+            if input.trim().is_empty() {
+                step("", 1)
+            } else {
+                step(QAS_WRONG_OUTPUT, 0)
+            }
+        } else if code.contains("readsdefault") {
+            // Reads input if there is some, else uses the given values.
+            if input.trim().is_empty() {
+                step(QAS_OUTPUT, 0)
+            } else {
+                step(QAS_WRONG_OUTPUT, 0)
+            }
+        } else if code.contains("wrongdiff") {
+            step(QAS_WRONG_OUTPUT, 0)
         } else if code.contains("qasfloat") {
             step(QAS_FLOAT_OUTPUT, 0)
         } else if code.contains("qas") {
@@ -2431,6 +2919,15 @@ mod tests {
             step(SECS_OUTPUT, 0)
         } else if code.contains("badfmt") {
             step("54630\n31770\n", 0)
+        } else if code.contains("summe") {
+            // Java int arithmetic: overflows like the regression case.
+            let mut sum: i32 = 0;
+            let mut squares: i32 = 0;
+            for i in 1..=(n as i32) {
+                sum = sum.wrapping_add(i);
+                squares = squares.wrapping_add(i.wrapping_mul(i));
+            }
+            step(&format!("Summe: {sum}\nQuadratsumme: {squares}\n"), 0)
         } else if code.contains("float4") {
             step(&format!("{:.4}\n", n as f64 / 3.0), 0)
         } else if code.contains("float6") {
@@ -2481,7 +2978,16 @@ mod tests {
         type Session = MockSession;
 
         async fn open(&self, _language: &str) -> Result<MockSession, AiError> {
-            self.counters.lock().unwrap().opened += 1;
+            let n = {
+                let mut c = self.counters.lock().unwrap();
+                c.opened += 1;
+                c.opened
+            };
+            if self.fail_open == Some(n) {
+                // A container that failed to start needs no removal.
+                self.counters.lock().unwrap().closed += 1;
+                return Err(AiError::Other("Fehler der Container-Engine: Start".into()));
+            }
             Ok(MockSession {
                 counters: self.counters.clone(),
                 code: Mutex::new(String::new()),
@@ -2549,10 +3055,19 @@ mod tests {
         }
     }
 
+    fn req_with_text(text: &str) -> GenerateRequest {
+        GenerateRequest {
+            task_text: text.into(),
+            language: "python".into(),
+            compare_mode: None,
+        }
+    }
+
     fn settings(n: usize) -> Settings {
         Settings {
             solutions: n,
             repair_rounds: 1,
+            speeds: None,
         }
     }
 
@@ -2566,6 +3081,14 @@ mod tests {
 
     fn generate_with<F: Fn(&ChatRequest, usize) -> Result<String, AiError> + Sync>(
         llm: &MockLlm<F>,
+        r: GenerateRequest,
+        n: usize,
+    ) -> Result<GenerateResult, AiError> {
+        generate_with_llm(llm, r, n)
+    }
+
+    fn generate_with_llm(
+        llm: &(impl Llm + Sync),
         r: GenerateRequest,
         n: usize,
     ) -> Result<GenerateResult, AiError> {
@@ -2718,32 +3241,39 @@ mod tests {
             ..Evidence::default()
         };
         assert_eq!(decide_confidence(&base).level, ConfidenceLevel::Green);
-        // Early end: 2 of 3 agreed, 1 not waited for, no examples.
+        // 2 of 3 agree, no examples: yellow, the disagreement is named.
         let c = decide_confidence(&Evidence {
             solutions: 3,
-            compiled: 2,
-            survivors: 2,
+            compiled: 3,
+            survivors: 3,
             examples: 0,
             tests: 1,
-            cancelled: 1,
             min_agreement: Some(2.0 / 3.0),
             ..base.clone()
         });
         assert_eq!(c.level, ConfidenceLevel::Yellow);
         assert!(c.reasons.iter().any(|r| r.contains("keine Beispiele")));
-        assert!(c.reasons.iter().any(|r| r.contains(
-            "vorzeitig beendet: 2 von 3 Lösungen stimmten auf allen Eingaben überein, 1 \
-             Lösung(en) wurden nicht abgewartet"
-        )));
-        assert!(!c.reasons.iter().any(|r| r.contains("knapp")), "{c:?}");
-        // 4 of 5 agree, 1 cancelled, examples: green with the note.
+        assert!(
+            c.reasons
+                .iter()
+                .any(|r| r.contains("nicht einig (gleiche Ausgabe bei 67 %)")),
+            "{c:?}"
+        );
+        // 4 of 5 agree with examples: a clear majority, but not all agree:
+        // yellow (green needs every solution on every test).
         let c = decide_confidence(&Evidence {
-            cancelled: 1,
             min_agreement: Some(0.8),
             ..base.clone()
         });
-        assert_eq!(c.level, ConfidenceLevel::Green);
-        assert!(c.reasons.iter().any(|r| r.contains("vorzeitig beendet")));
+        assert_eq!(c.level, ConfidenceLevel::Yellow);
+        assert!(c.reasons[0].contains("80 %"), "{:?}", c.reasons);
+        // Tests dropped as overflow: yellow with the reason.
+        let c = decide_confidence(&Evidence {
+            overflow: 2,
+            ..base.clone()
+        });
+        assert_eq!(c.level, ConfidenceLevel::Yellow);
+        assert_eq!(c.reasons[0], overflow_reason(2));
         // Template fallback: yellow; template mismatch without tests: red.
         let c = decide_confidence(&Evidence {
             template_fallback: true,
@@ -2863,7 +3393,8 @@ mod tests {
         assert_eq!(r.tests[4].expected, "2000000\n");
         assert!(r.tests.iter().all(|t| t.agreement == 1.0));
         assert!(r.reference_solution.unwrap().contains("double"));
-        assert_eq!(r.stats.llm_calls, 7);
+        // Structure, the five solutions in one request, the inputs.
+        assert_eq!(r.stats.llm_calls, 3);
         assert_eq!(r.stats.tokens_per_second, Some(20.0));
         // Solution prompts use temperature 0.7 and carry the examples.
         let calls = llm.calls();
@@ -2913,9 +3444,9 @@ mod tests {
             r#"{"inputs": ["3"]}"#,
         ));
         let r = generate_with(&llm, req(None), 3).unwrap();
-        // 1 structure + 3 × (solution + repair) + the input step, which runs
-        // alongside the solutions.
-        assert_eq!(r.stats.llm_calls, 8);
+        // 1 structure + 1 request for the 3 solutions + 3 repairs + the input
+        // step, which runs alongside the solutions.
+        assert_eq!(r.stats.llm_calls, 6);
         assert_eq!(r.stats.solutions_compiled, 0);
         assert_eq!(r.confidence.level, ConfidenceLevel::Red);
         assert!(r.confidence.reasons[0].contains("kompilieren"));
@@ -3133,7 +3664,8 @@ mod tests {
             |_| {},
         ));
         assert!(matches!(r, Err(AiError::Cancelled)));
-        assert_eq!(llm.calls().len(), 2);
+        // The structure and the one request for all five solutions.
+        assert_eq!(llm.batches(), vec![1, 5]);
         assert_eq!(exec.get().opened, 0);
     }
 
@@ -3163,7 +3695,7 @@ mod tests {
             &token,
             |p| {
                 phases.push((p.phase, p.current, p.total));
-                etas.push((p.phase, p.eta_seconds, p.tokens_per_second));
+                etas.push((p.phase, p.eta_seconds, p.eta_low_seconds, p.eta_text));
             },
         ))
         .unwrap();
@@ -3176,20 +3708,115 @@ mod tests {
             phases.contains(&(Phase::Majority, Some(2), Some(2))),
             "{phases:?}"
         );
-        // After the structure step the speed (20 tokens/s) gives an estimate.
-        assert!(etas.contains(&(Phase::Solutions, Some(18), Some(20.0))));
-        assert!(etas.contains(&(Phase::Solutions, Some(0), Some(20.0))));
+        // Every step has a remaining time (from the conservative defaults:
+        // the mock answers too fast to measure), a range low ≤ high.
+        for (phase, eta, low, text) in &etas {
+            let (Some(high), Some(low), Some(text)) = (eta, low, text) else {
+                panic!("{phase:?} without estimate");
+            };
+            assert!(low <= high && *low >= 1, "{phase:?} {low} {high}");
+            assert!(text.starts_with("ca. "), "{text}");
+        }
+        // The estimate shrinks from the start to the majority vote.
+        assert!(etas[0].1 > etas.last().unwrap().1);
     }
 
     #[test]
-    fn eta_from_tokens_per_second() {
-        assert_eq!(eta_seconds(Phase::Solutions, 0, 3, None), None);
-        assert_eq!(eta_seconds(Phase::Solutions, 0, 3, Some(0.0)), None);
-        // 350 expected tokens at 7 tokens/s; parallel solutions count once.
-        assert_eq!(eta_seconds(Phase::Solutions, 0, 3, Some(7.0)), Some(50));
-        assert_eq!(eta_seconds(Phase::Solutions, 3, 3, Some(7.0)), Some(0));
-        assert_eq!(eta_seconds(Phase::Structure, 0, 1, Some(10.0)), Some(55));
-        assert_eq!(eta_seconds(Phase::Majority, 0, 3, Some(7.0)), None);
+    fn alternatives_list_the_minority_outputs() {
+        let mode = CompareMode::default();
+        let (a, b, c, crash) = (step("1\n", 0), step("2\n", 0), step("3\n", 0), step("", 1));
+        let long = step(&"x".repeat(MAX_ALTERNATIVE_CHARS + 5), 0);
+        let outs = [
+            Some(&a),
+            Some(&a),
+            Some(&b),
+            Some(&c),
+            Some(&b),
+            Some(&crash),
+            None,
+        ];
+        let alt = alternatives(&mode, &outs, &[0, 1]);
+        assert_eq!(
+            alt,
+            vec![
+                Alternative {
+                    output: "2\n".into(),
+                    truncated: false,
+                    count: 2
+                },
+                Alternative {
+                    output: "3\n".into(),
+                    truncated: false,
+                    count: 1
+                },
+            ]
+        );
+        // Unanimous: nothing to show.
+        assert!(alternatives(&mode, &[Some(&a), Some(&a)], &[0, 1]).is_empty());
+        let alt = alternatives(&mode, &[Some(&a), Some(&long)], &[0]);
+        assert!(alt[0].truncated);
+        assert_eq!(alt[0].output.chars().count(), MAX_ALTERNATIVE_CHARS);
+        let many: Vec<StepOutput> = (0..6).map(|i| step(&format!("{i}\n"), 0)).collect();
+        let refs: Vec<Option<&StepOutput>> = many.iter().map(Some).collect();
+        assert_eq!(alternatives(&mode, &refs, &[0]).len(), MAX_ALTERNATIVES);
+    }
+
+    fn plan(step: Step) -> Plan {
+        Plan {
+            step,
+            step_started: Instant::now(),
+            chars_per_token: 3.0,
+            structure_chars: 2910.0,
+            solution_chars: 2910.0,
+            inputs_chars: 2910.0,
+            solutions: 3,
+            parallel_inputs: true,
+            no_input: false,
+            solution_tokens: Vec::new(),
+            compiled: true,
+            prior: eta::default_speeds(),
+        }
+    }
+
+    #[test]
+    fn remaining_work_per_step() {
+        // 2910 characters: 970 + 30 prompt tokens per request.
+        let p = plan(Step::Structure);
+        let w = p.work(Step::Structure);
+        assert_eq!((w.prompt_tokens, w.gen_tokens), (1000.0, 250.0));
+        // The round: one request for three solutions (prompt once) and the
+        // inputs together, plus the sandbox check.
+        let r = p.work(Step::Round);
+        assert_eq!(r.prompt_tokens, 2000.0);
+        assert_eq!(r.gen_tokens, 3.0 * 350.0 + 250.0);
+        assert_eq!(r.sandbox_seconds, 10.0);
+        // Without inputs alongside, and with real answer lengths.
+        let mut p = plan(Step::Round);
+        p.parallel_inputs = false;
+        p.solution_tokens = vec![200.0, 400.0];
+        assert_eq!(p.work(Step::Round).gen_tokens, 900.0);
+        // Without input the answers are longer (comments per output line).
+        let mut p = plan(Step::Round);
+        p.parallel_inputs = false;
+        p.no_input = true;
+        assert_eq!(p.work(Step::Round).gen_tokens, 3.0 * 540.0);
+        p.solution_tokens = vec![219.0];
+        assert_eq!(p.work(Step::Round).gen_tokens, 3.0 * 219.0);
+        assert_eq!(p.later(Step::Round).sandbox_seconds, 10.0);
+        assert_eq!(p.later(Step::Majority), eta::Work::default());
+        // Structure: the round and the majority vote are still to come.
+        let p = plan(Step::Structure);
+        let later = p.later(Step::Structure);
+        assert_eq!(later.gen_tokens, 1300.0);
+        assert_eq!(later.sandbox_seconds, 20.0);
+        // 7B defaults (6 / 1.5 tokens/s): 1000/6 + 250/1.5 ≈ 333 s for the
+        // structure, then 2000/6 + 1300/1.5 + 20 ≈ 1220 s.
+        let e = eta::eta_range(p.work(Step::Structure), 0.0, later, p.prior).unwrap();
+        assert!(e.low > 1450 && e.low < 1650, "{e:?}");
+        assert!(e.high as f64 >= e.low as f64 * 1.29);
+        // Repairs carry the longer conversation.
+        let p = plan(Step::Repairs(2));
+        assert!(p.work(Step::Repairs(2)).prompt_tokens > 2.0 * 1000.0);
     }
 
     #[test]
@@ -3258,6 +3885,10 @@ mod tests {
         until midnight.\nSince I started with the task 441 seconds have passed.\n";
     const QAS_FLOAT_OUTPUT: &str = "54630.0 seconds have passed since midnight.\n31770.0 seconds \
         are left until midnight.\nSince I started with the task 441.0 seconds have passed.\n";
+    /// Wrong third line of regression case A (7B model): 15:10:30 minus
+    /// 12:30:00 instead of 15:17:51 minus 15:10:30.
+    const QAS_WRONG_OUTPUT: &str = "54630 seconds have passed since midnight.\n31770 seconds \
+        are left until midnight.\nSince I started with the task 9630 seconds have passed.\n";
     const QAS_LINES: [&str; 3] = [
         "12345678 seconds have passed since midnight.",
         "12345678 seconds are left until midnight.",
@@ -3353,6 +3984,9 @@ mod tests {
         assert_eq!(r.tests[0].expected, QAS_OUTPUT);
         assert!((r.tests[0].agreement - 2.0 / 3.0).abs() < 1e-9);
         assert!(!r.reference_solution.unwrap().contains("qasfloat"));
+        // The output missing the template is still shown as an alternative.
+        assert_eq!(r.tests[0].alternatives.len(), 1);
+        assert_eq!(r.tests[0].alternatives[0].output, QAS_FLOAT_OUTPUT);
         let msg = template::check_output(&r.output_templates, QAS_FLOAT_OUTPUT).unwrap();
         assert!(msg.contains("Ganzzahl ohne Nachkommastellen"), "{msg}");
     }
@@ -3474,7 +4108,7 @@ mod tests {
     }
 
     #[test]
-    fn input_need_and_early_end_rules() {
+    fn input_need_rules() {
         assert_eq!(
             input_need(&Structure::default(), &[]),
             InputNeed::Unknown,
@@ -3496,13 +4130,6 @@ mod tests {
         );
         assert_eq!(input_need(&st("eine Zahl", None), &[]), InputNeed::Reads);
         assert_eq!(input_need(&st("", Some(false)), &[]), InputNeed::NoInput);
-        assert!(can_stop(2, 1, false));
-        assert!(!can_stop(2, 1, true));
-        assert!(can_stop(3, 2, false));
-        assert!(!can_stop(3, 2, true));
-        assert!(can_stop(4, 1, true));
-        assert!(!can_stop(1, 0, false));
-        assert!(!can_stop(2, 2, false));
     }
 
     /// Sheet of the regression case "Aufgabe 2.2 Time": c), d), e) each with
@@ -3674,7 +4301,10 @@ mod tests {
         ))
         .unwrap();
         assert!(!llm.calls().iter().any(is_inputs));
-        assert_eq!(r.stats.llm_calls, 4, "structure + 3 solutions");
+        assert_eq!(
+            r.stats.llm_calls, 2,
+            "structure + 1 request for 3 solutions"
+        );
         assert_eq!(r.tests.len(), 1);
         // Per solution: the empty input and the probe, nothing else.
         assert_eq!(exec.get().runs, 3 * 2);
@@ -3723,7 +4353,9 @@ mod tests {
     }
 
     #[test]
-    fn early_end_without_input_cancels_the_slow_solution() {
+    fn slow_solution_without_input_is_waited_for() {
+        // The answers of the first round arrive together: there is no early
+        // end, the slow fifth solution is part of the vote.
         let structure = template_structure();
         let llm = slow(
             move |r: &ChatRequest, _| {
@@ -3735,7 +4367,7 @@ mod tests {
                     Ok(program("secs"))
                 }
             },
-            vec![1, 1, 2000],
+            vec![1, 1, 1, 1, 150],
         );
         let exec = MockExec::new();
         let started = std::time::Instant::now();
@@ -3743,19 +4375,17 @@ mod tests {
             &llm,
             &exec,
             &template_req(),
-            settings(3),
+            settings(5),
             &CancellationToken::new(),
             |_| {},
         ))
         .unwrap();
-        assert!(started.elapsed() < std::time::Duration::from_millis(1000));
-        assert_eq!(r.stats.solutions_cancelled, 1);
-        assert_eq!(r.stats.solutions_passed, 2);
+        assert!(started.elapsed() >= std::time::Duration::from_millis(150));
+        assert_eq!(r.stats.solutions_passed, 5);
         assert!(!llm.inner.calls().iter().any(is_inputs));
         assert_eq!(r.tests.len(), 1);
-        assert!((r.tests[0].agreement - 2.0 / 3.0).abs() < 1e-9);
-        assert_eq!(r.confidence.level, ConfidenceLevel::Yellow);
-        assert!(r
+        assert!((r.tests[0].agreement - 1.0).abs() < 1e-9);
+        assert!(!r
             .confidence
             .reasons
             .iter()
@@ -3765,8 +4395,348 @@ mod tests {
     }
 
     #[test]
-    fn no_early_end_when_green_is_possible_or_input_is_read() {
-        // With an input (and examples), every solution is waited for.
+    fn first_round_is_one_request_with_n_answers() {
+        // The third solution misses its code block: it is repaired alone.
+        let llm = MockLlm::new({
+            let counter = Mutex::new(0usize);
+            move |r: &ChatRequest, _| {
+                if is_structure(r) {
+                    Ok(structure_json(&[("21", "42")], "lines"))
+                } else if is_inputs(r) {
+                    Ok(r#"{"inputs": ["1", "2"]}"#.into())
+                } else {
+                    let mut c = counter.lock().unwrap();
+                    *c += 1;
+                    Ok(if *c == 3 {
+                        "no code".to_string()
+                    } else {
+                        program("double")
+                    })
+                }
+            }
+        });
+        let mut texts = Vec::new();
+        let r = block_on(generate(
+            &llm,
+            &MockExec::new(),
+            &req(None),
+            Settings {
+                solutions: 3,
+                repair_rounds: 1,
+                speeds: None,
+            },
+            &CancellationToken::new(),
+            |p| texts.push(p.message),
+        ))
+        .unwrap();
+        // Structure, then the solutions (3 at once) and the inputs.
+        let b = llm.batches();
+        assert_eq!(b.iter().filter(|n| **n == 3).count(), 1, "{b:?}");
+        assert!(b.iter().all(|n| *n == 1 || *n == 3), "{b:?}");
+        assert_eq!(r.stats.llm_calls, b.len());
+        // The solution request of the first round is no repair request.
+        let calls = llm.calls();
+        assert_eq!(
+            calls
+                .iter()
+                .filter(|c| !is_structure(c) && !is_inputs(c) && !is_repair(c))
+                .count(),
+            3
+        );
+        // Honest progress: written together, checked one by one.
+        assert!(texts.iter().any(|t| t.contains("3 Lösungen geschrieben")));
+        assert!(texts.iter().any(|t| t.contains("Lösung 3 von 3 geprüft")));
+        assert_eq!(r.stats.solutions_requested, 3);
+    }
+
+    /// Reports prompt timings like llama-server: every answer of a request
+    /// with `n` carries the timings of the one shared prompt.
+    struct TimedLlm<F>(MockLlm<F>);
+
+    impl<F: Fn(&ChatRequest, usize) -> Result<String, AiError> + Sync> Llm for TimedLlm<F> {
+        async fn chat(&self, req: &ChatRequest) -> Result<ChatResponse, AiError> {
+            Ok(self.chat_n(req, 1).await?.remove(0))
+        }
+        async fn chat_n(&self, req: &ChatRequest, n: usize) -> Result<Vec<ChatResponse>, AiError> {
+            let mut rs = self.0.chat_n(req, n).await?;
+            for r in &mut rs {
+                r.prompt_tokens = Some(100);
+                r.prompt_ms = Some(60.0);
+            }
+            Ok(rs)
+        }
+    }
+
+    #[test]
+    fn prompt_statistics_count_shared_and_concurrent_prompts_once() {
+        let llm = TimedLlm(MockLlm::new(scripted(
+            structure_json(&[("21", "42")], "lines"),
+            vec!["double"],
+            r#"{"inputs": ["1"]}"#,
+        )));
+        let r = generate_with_llm(&llm, req(None), 3).unwrap();
+        assert_eq!(llm.0.batches(), vec![1, 3, 1]);
+        // Structure, solutions (prompt once), inputs.
+        assert_eq!(r.stats.prompt_tokens, 300);
+        // The mock answers at once: the three prompt intervals of 60 ms
+        // overlap, so the wall time is far below the sum (5 × 60 ms when
+        // every answer was added up).
+        assert!(
+            (60..150).contains(&r.stats.prompt_ms),
+            "{}",
+            r.stats.prompt_ms
+        );
+    }
+
+    /// Regression case A (release 1.1.0, 7B model, three solutions): two
+    /// fast solutions agree on a wrong third line, the slow third one is
+    /// right. Every solution is waited for now; the majority stays a hint
+    /// (yellow) and the disagreement is reported.
+    #[test]
+    fn time_task_two_of_three_wrong_is_no_early_end() {
+        let structure = qas_structure();
+        let llm = slow(
+            move |r: &ChatRequest, _| {
+                if is_structure(r) {
+                    Ok(structure.clone())
+                } else if is_inputs(r) {
+                    Ok(r#"{"inputs": []}"#.into())
+                } else {
+                    Ok(String::new())
+                }
+            },
+            vec![1, 1, 150],
+        );
+        // The answers by request index: 0 and 1 wrong, 2 right.
+        let llm = Indexed {
+            inner: llm,
+            programs: ["wrongdiff", "wrongdiff", "qas"],
+        };
+        let exec = MockExec::new();
+        let r = block_on(generate(
+            &llm,
+            &exec,
+            &time_req(),
+            settings(3),
+            &CancellationToken::new(),
+            |_| {},
+        ))
+        .unwrap();
+        assert_eq!(r.stats.solutions_passed, 3);
+        assert_eq!(r.tests.len(), 1);
+        assert!((r.tests[0].agreement - 2.0 / 3.0).abs() < 1e-9);
+        assert_eq!(r.confidence.level, ConfidenceLevel::Yellow);
+        assert!(!r
+            .confidence
+            .reasons
+            .iter()
+            .any(|x| x.contains("vorzeitig beendet")));
+        assert!(
+            r.confidence
+                .reasons
+                .iter()
+                .any(|x| x.contains("nicht einig")),
+            "{:?}",
+            r.confidence.reasons
+        );
+        // The right answer of the minority is shown with the test.
+        assert_eq!(r.tests[0].expected, QAS_WRONG_OUTPUT);
+        assert_eq!(
+            r.tests[0].alternatives,
+            vec![Alternative {
+                output: QAS_OUTPUT.into(),
+                truncated: false,
+                count: 1
+            }]
+        );
+    }
+
+    /// Regression „Aufgabe 2.2 – Time“ (KI-Benchmark 1.1.1, 7B model): the
+    /// model read „15 Uhr, 17 Minuten und 51 Sekunden“ as 17:51:00 in every
+    /// solution alike (third line 9630 instead of 441), which no majority
+    /// can correct. Without input the solution prompt now names the values
+    /// found by rules and asks for one comment per output line; the mock
+    /// model gets the time right only with them.
+    #[test]
+    fn time_sheet_gets_fixed_values_in_the_solution_prompt() {
+        let structure = serde_json::json!({
+            "inputFormat": "no input",
+            "readsInput": false,
+            "inputConstraints": "",
+            "outputFormat": "three lines",
+            "examples": [],
+            "outputTemplates": [{"text": QAS_LINES.join("\n"), "placeholders": ["12345678"]}],
+            "compareMode": "lines"
+        })
+        .to_string();
+        let llm = MockLlm::new(move |r: &ChatRequest, _| {
+            if is_structure(r) {
+                Ok(structure.clone())
+            } else if is_inputs(r) {
+                Ok(r#"{"inputs": ["15 10 30"]}"#.into())
+            } else if r.messages[1].content.contains("(clock time 15:17:51)")
+                && r.messages[0].content.contains(prompts::STEPS_RULE)
+            {
+                Ok(java_program("qas"))
+            } else {
+                Ok(java_program("wrongdiff"))
+            }
+        });
+        let req = GenerateRequest {
+            task_text: prompts::TIME_SHEET.into(),
+            language: "java".into(),
+            compare_mode: None,
+        };
+        let r = generate_with(&llm, req, 3).unwrap();
+        let calls = llm.calls();
+        let solution = calls
+            .iter()
+            .find(|c| !is_structure(c) && !is_inputs(c))
+            .unwrap();
+        let user = &solution.messages[1].content;
+        assert!(user.contains(
+            "- \"15 Uhr, 10 Minuten und 30 Sekunden\": hours = 15, minutes = 10, seconds = 30 \
+             (clock time 15:10:30)\n- \"15 Uhr, 17 Minuten und 51 Sekunden\": hours = 15, \
+             minutes = 17, seconds = 51 (clock time 15:17:51)"
+        ));
+        assert!(r.stats.no_input);
+        assert_eq!(r.tests.len(), 1, "{:?}", r.tests);
+        assert_eq!(r.tests[0].input, "");
+        assert_eq!(r.tests[0].expected, QAS_OUTPUT);
+        assert_eq!(r.tests[0].agreement, 1.0);
+        // A task with input keeps the old prompt.
+        let llm = MockLlm::new(scripted(
+            structure_json(&[("21", "42"), ("5", "10")], "lines"),
+            vec!["a"],
+            r#"{"inputs": ["7"]}"#,
+        ));
+        let r = generate_with(&llm, req_with_text("Lies 15 Minuten ein.\n\nBeispiel:\nEingabe:\n  21\nAusgabe:\n  42\n\nEingabe: 5\nAusgabe: 10\n"), 3).unwrap();
+        assert!(!r.stats.no_input);
+        let calls = llm.calls();
+        let solution = calls
+            .iter()
+            .find(|c| !is_structure(c) && !is_inputs(c))
+            .unwrap();
+        assert!(!solution.messages[0].content.contains(prompts::STEPS_RULE));
+        assert!(!solution.messages[1]
+            .content
+            .contains(prompts::FIXED_VALUES_HEADING));
+    }
+
+    /// Regression case B (release 1.1.0, 1.5B model, five solutions): the
+    /// model says the task reads „hour minute second“, the solutions read
+    /// them from stdin. The text gives fixed values and asks for no input:
+    /// no inputs are generated, reading solutions fail and are repaired
+    /// with the no-input hint.
+    #[test]
+    fn time_task_with_fixed_values_reads_no_input() {
+        let structure = serde_json::json!({
+            "inputFormat": "hour minute second",
+            "readsInput": true,
+            "outputFormat": "three lines",
+            "examples": [],
+            "outputTemplates": QAS_LINES
+                .iter()
+                .map(|l| serde_json::json!({"text": l, "placeholders": ["12345678"]}))
+                .collect::<Vec<_>>(),
+            "compareMode": "lines"
+        })
+        .to_string();
+        let first = ["readstime", "readsdefault", "qas", "readstime", "qas"];
+        let counter = Mutex::new(0usize);
+        let llm = MockLlm::new(move |r: &ChatRequest, _| {
+            if is_structure(r) {
+                Ok(structure.clone())
+            } else if is_inputs(r) {
+                Ok(r#"{"inputs": ["15 10 30", "12 0 0"]}"#.into())
+            } else if is_repair(r) {
+                Ok(java_program("qas"))
+            } else {
+                let mut c = counter.lock().unwrap();
+                *c += 1;
+                Ok(java_program(first[(*c - 1) % first.len()]))
+            }
+        });
+        let r = generate_with(&llm, time_req(), 5).unwrap();
+        let calls = llm.calls();
+        assert!(!calls.iter().any(is_inputs), "no inputs for fixed values");
+        assert!(r.stats.fixed_values);
+        assert!(r.stats.no_input);
+        assert_eq!(r.stats.inputs_generated, 0);
+        // The three reading solutions were repaired with the no-input hint.
+        let repairs: Vec<&ChatRequest> = calls.iter().filter(|c| is_repair(c)).collect();
+        assert_eq!(repairs.len(), 3);
+        assert!(repairs
+            .iter()
+            .all(|c| c.messages[3].content.contains(prompts::NO_INPUT_REPAIR)
+                && !c.messages[3].content.contains("does not compile")));
+        assert_eq!(r.stats.solutions_passed, 5);
+        assert_eq!(r.stats.solutions_read_input, 0);
+        assert_eq!(r.tests.len(), 1, "{:?}", r.tests);
+        assert_eq!(r.tests[0].input, "");
+        assert_eq!(r.tests[0].expected, QAS_OUTPUT);
+        assert!(r.tests[0].alternatives.is_empty());
+        assert!(r
+            .confidence
+            .reasons
+            .iter()
+            .any(|x| x == FIXED_VALUES_REASON));
+        // The solution prompt forbids reading input.
+        let sol = calls
+            .iter()
+            .find(|c| !is_structure(c) && !is_inputs(c))
+            .unwrap();
+        assert!(sol.messages[1].content.contains(prompts::NO_INPUT_NOTE));
+        assert!(!sol.messages[1].content.contains("hour minute second"));
+    }
+
+    #[test]
+    fn reading_solutions_fail_without_repair_round() {
+        // Without a repair round a reading solution stays failed: red, no
+        // test from stdin-reading programs.
+        let llm = time_llm(qas_structure(), "readstime");
+        let exec = MockExec::new();
+        let r = block_on(generate(
+            &llm,
+            &exec,
+            &time_req(),
+            Settings {
+                solutions: 3,
+                repair_rounds: 0,
+                speeds: None,
+            },
+            &CancellationToken::new(),
+            |_| {},
+        ))
+        .unwrap();
+        assert_eq!(r.stats.solutions_passed, 0);
+        assert_eq!(r.stats.solutions_read_input, 3);
+        assert_eq!(r.confidence.level, ConfidenceLevel::Red);
+        assert!(r.tests.is_empty());
+        assert!(!llm.calls().iter().any(is_inputs));
+    }
+
+    /// Wraps a [`SlowLlm`]: the i-th solution request gets `programs[i]`.
+    struct Indexed {
+        inner: SlowLlm,
+        programs: [&'static str; 3],
+    }
+
+    impl Llm for Indexed {
+        async fn chat(&self, req: &ChatRequest) -> Result<ChatResponse, AiError> {
+            let solution = !is_structure(req) && !is_inputs(req);
+            let i = *self.inner.solution_calls.lock().unwrap();
+            let mut r = self.inner.chat(req).await?;
+            if solution && !is_repair(req) {
+                r.content = java_program(self.programs[i % self.programs.len()]);
+            }
+            Ok(r)
+        }
+    }
+
+    #[test]
+    fn slow_solution_with_input_is_waited_for() {
+        // With an input (and examples) every solution is waited for, too.
         let structure = structure_json(&[("21", "42")], "lines");
         let llm = slow(
             move |r: &ChatRequest, _| {
@@ -3789,7 +4759,6 @@ mod tests {
             |_| {},
         ))
         .unwrap();
-        assert_eq!(r.stats.solutions_cancelled, 0);
         assert_eq!(r.stats.solutions_passed, 3);
         assert_eq!(r.confidence.level, ConfidenceLevel::Green);
     }
@@ -3864,7 +4833,7 @@ mod tests {
         assert_eq!(r.stats.templates_found, 0);
     }
 
-    // --- Concurrency, sessions, early exit -------------------------------------
+    // --- Concurrency, sessions, cancellation ----------------------------------
 
     type AnswerFn = Box<dyn Fn(&ChatRequest, usize) -> Result<String, AiError> + Sync + Send>;
 
@@ -4000,8 +4969,8 @@ mod tests {
         let r = generate_with(&llm, req(None), 3).unwrap();
         assert_eq!(r.stats.solutions_repaired, 0);
         assert_eq!(r.stats.solutions_passed, 2);
-        // structure + 3 solutions + inputs, no repair request.
-        assert_eq!(r.stats.llm_calls, 5);
+        // structure + 1 request for 3 solutions + inputs, no repair request.
+        assert_eq!(r.stats.llm_calls, 3);
         assert!(!llm.calls().iter().any(is_repair));
         // Without a clear majority the broken one is repaired.
         let llm = MockLlm::new(scripted(
@@ -4014,22 +4983,30 @@ mod tests {
     }
 
     #[test]
-    fn model_error_in_one_of_n_solutions_is_a_failed_solution() {
+    fn model_errors_in_solution_requests() {
+        // A failed repair request counts as a failed solution.
         let structure = structure_json(&[("21", "42")], "lines");
-        let calls = Mutex::new(0usize);
-        let llm = MockLlm::new(move |r: &ChatRequest, _| {
-            if is_structure(r) {
-                return Ok(structure.clone());
-            }
-            if is_inputs(r) {
-                return Ok(r#"{"inputs": ["1"]}"#.into());
-            }
-            let mut c = calls.lock().unwrap();
-            *c += 1;
-            if *c == 2 {
-                Err(AiError::Http("Zeitüberschreitung".into()))
-            } else {
-                Ok(program("double"))
+        let llm = MockLlm::new({
+            let counter = Mutex::new(0usize);
+            move |r: &ChatRequest, _| {
+                if is_structure(r) {
+                    return Ok(structure.clone());
+                }
+                if is_inputs(r) {
+                    return Ok(r#"{"inputs": ["1"]}"#.into());
+                }
+                if is_repair(r) {
+                    return Err(AiError::Http("Zeitüberschreitung".into()));
+                }
+                let mut c = counter.lock().unwrap();
+                *c += 1;
+                // Only one passes: no clear majority, the two others are
+                // repaired (and the repair requests fail).
+                Ok(if *c == 1 {
+                    program("double")
+                } else {
+                    "no code".into()
+                })
             }
         });
         let exec = MockExec::new();
@@ -4042,8 +5019,37 @@ mod tests {
             |_| {},
         ))
         .unwrap();
-        assert_eq!(r.stats.solutions_passed, 2);
-        assert_eq!(r.confidence.level, ConfidenceLevel::Green);
+        assert!(llm.calls().iter().any(is_repair));
+        assert_eq!(r.stats.solutions_repaired, 0);
+        assert_eq!(r.stats.solutions_passed, 1);
+        let c = exec.get();
+        assert_eq!(c.opened, c.closed);
+        // The first round is one request: if it fails, every solution
+        // failed, which is an error (not "red"), and no container is left.
+        let exec = MockExec::new();
+        let e = block_on(generate(
+            &MockLlm::new({
+                let s = structure_json(&[("21", "42")], "lines");
+                move |r: &ChatRequest, n| {
+                    if is_structure(r) {
+                        Ok(s.clone())
+                    } else if is_inputs(r) {
+                        Ok(r#"{"inputs": ["1"]}"#.into())
+                    } else if n == 2 {
+                        Err(AiError::Http("Zeitüberschreitung".into()))
+                    } else {
+                        Ok(program("double"))
+                    }
+                }
+            }),
+            &exec,
+            &req(None),
+            settings(3),
+            &CancellationToken::new(),
+            |_| {},
+        ))
+        .unwrap_err();
+        assert!(e.to_string().contains("Zeitüberschreitung"), "{e}");
         let c = exec.get();
         assert_eq!(c.opened, c.closed);
         // Every solution request failing is an error, not "red".
@@ -4088,6 +5094,43 @@ mod tests {
         // Tasks not started yet stop before opening a container.
         assert!(c.opened >= 2);
         assert_eq!(c.closed, c.opened, "every container is removed");
+    }
+
+    #[test]
+    fn container_error_while_solutions_are_written_is_reported() {
+        // The container error cancels the running request for all
+        // solutions; the error shown is the container error.
+        for failing in 1..=3 {
+            let structure = structure_json(&[("21", "42")], "lines");
+            let llm = slow(
+                move |r: &ChatRequest, _| {
+                    if is_structure(r) {
+                        Ok(structure.clone())
+                    } else if is_inputs(r) {
+                        Ok(r#"{"inputs": ["1"]}"#.into())
+                    } else {
+                        Ok(program("double"))
+                    }
+                },
+                vec![2000, 2000, 2000],
+            );
+            let mut exec = MockExec::new();
+            exec.fail_open = Some(failing);
+            let started = std::time::Instant::now();
+            let e = block_on(generate(
+                &llm,
+                &exec,
+                &req(None),
+                settings(3),
+                &CancellationToken::new(),
+                |_| {},
+            ))
+            .unwrap_err();
+            assert!(e.to_string().contains("Container-Engine: Start"), "{e}");
+            assert!(started.elapsed() < std::time::Duration::from_millis(1500));
+            let c = exec.get();
+            assert_eq!(c.closed, c.opened, "every container is removed");
+        }
     }
 
     #[test]
@@ -4349,5 +5392,104 @@ mod tests {
         assert!(u.contains("Output format: 2n"), "{u}");
         assert!(u.contains("Input limits (every input must respect them): 1 <= n <= 100"));
         assert!(u.contains("Example 1\nInput:\n```\n21\n```\nExpected output:\n```\n42\n```"));
+    }
+
+    #[test]
+    fn inputs_outside_the_stated_limits_are_dropped() {
+        let task = "Lies eine ganze Zahl n (1 <= n <= 100) und gib 2·n aus.\n\nBeispiel:\nEingabe:\n  21\nAusgabe:\n  42\n";
+        let structure = serde_json::json!({
+            "inputFormat": "eine Zahl n",
+            "inputConstraints": "1 <= n <= 100",
+            "outputFormat": "2n",
+            "examples": [{"input": "21", "output": "42"}],
+            "compareMode": "lines"
+        })
+        .to_string();
+        let inputs = r#"{"inputs": ["3", "100", "101", "5000", "0", "-7"]}"#;
+        let llm = MockLlm::new(scripted(structure.clone(), vec!["double"], inputs));
+        let r = generate_with(&llm, req_with_text(task), 3).unwrap();
+        let got: Vec<&str> = r.tests.iter().map(|t| t.input.as_str()).collect();
+        assert_eq!(got, vec!["21\n", "3\n", "100\n"]);
+        assert_eq!(r.stats.inputs_out_of_range, 4);
+        assert_eq!(r.stats.inputs_generated, 2);
+        assert_eq!(r.confidence.level, ConfidenceLevel::Green);
+        // A limit the task text does not state (invented): nothing dropped.
+        let llm = MockLlm::new(scripted(structure, vec!["double"], inputs));
+        let r = generate_with(&llm, req(None), 3).unwrap();
+        assert_eq!(r.stats.inputs_out_of_range, 0);
+        assert!(r.tests.iter().any(|t| t.input == "5000\n"));
+        assert!(r.tests.iter().any(|t| t.input == "101\n"));
+    }
+
+    /// Regression „summe_java“ (KI-Benchmark 1.1.1, seed 3): the model
+    /// wrote the inputs 5000 and 65535, every solution summed the squares
+    /// in an `int` and overflowed alike (100 % agreement), and the result
+    /// was green with wrong expectations.
+    #[test]
+    fn suspected_int_overflow_is_dropped_and_yellow() {
+        let task = "Aufgabe 3.2 - Summen\nLesen Sie eine positive ganze Zahl n ein. Berechnen Sie \
+                    mit einer Schleife die Summe 1 + 2 + ... + n und die Summe der Quadrate \
+                    1*1 + 2*2 + ... + n*n.\nBeispiel\nEingabe:\n4\nAusgabe:\nSumme: 10\nQuadratsumme: 30";
+        let structure = serde_json::json!({
+            "inputFormat": "one line with a positive whole number",
+            "readsInput": true,
+            "inputConstraints": "positive whole number",
+            "outputFormat": "two lines",
+            "examples": [{"input": "4", "output": "Summe: 10\nQuadratsumme: 30"}],
+            "outputTemplates": [],
+            "compareMode": "tokens"
+        })
+        .to_string();
+        let llm = MockLlm::new(move |r: &ChatRequest, _| {
+            if is_structure(r) {
+                Ok(structure.clone())
+            } else if is_inputs(r) {
+                Ok(r#"{"inputs": ["0", "1", "100", "1000", "5000", "65535"]}"#.into())
+            } else {
+                Ok(java_program("summe"))
+            }
+        });
+        let req = GenerateRequest {
+            task_text: task.into(),
+            language: "java".into(),
+            compare_mode: None,
+        };
+        let r = generate_with(&llm, req, 3).unwrap();
+        let got: Vec<&str> = r.tests.iter().map(|t| t.input.as_str()).collect();
+        // 0 is not positive (limit), 5000 and 65535 overflow.
+        assert_eq!(got, vec!["4\n", "1\n", "100\n", "1000\n"]);
+        assert_eq!(
+            r.tests[3].expected,
+            "Summe: 500500\nQuadratsumme: 333833500\n"
+        );
+        assert_eq!(r.stats.inputs_out_of_range, 1);
+        assert_eq!(r.stats.tests_overflow, 2);
+        assert_eq!(r.confidence.level, ConfidenceLevel::Yellow);
+        assert!(r.confidence.reasons.contains(&overflow_reason(2)));
+    }
+
+    #[test]
+    fn overflow_suspects() {
+        let sheet = ["Summe: 10\nQuadratsumme: 30\n".to_string()];
+        assert!(overflow_suspect(
+            "5000\n",
+            "Summe: 12502500\nQuadratsumme: -1270505460\n",
+            &sheet
+        ));
+        assert!(!overflow_suspect(
+            "1000\n",
+            "Summe: 500500\nQuadratsumme: 333833500\n",
+            &sheet
+        ));
+        // Small negative results are normal (e.g. a difference).
+        assert!(!overflow_suspect("3 5\n", "Differenz: -2\n", &sheet));
+        // Negative inputs or negative sheet outputs: negative is expected.
+        assert!(!overflow_suspect("-5000\n", "-1270505460\n", &sheet));
+        assert!(!overflow_suspect(
+            "7\n",
+            "-1270505460\n",
+            &["Ergebnis: -3000000".to_string()]
+        ));
+        assert!(overflow_suspect("", "Ergebnis: -2147483648.\n", &[]));
     }
 }
