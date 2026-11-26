@@ -229,6 +229,15 @@ pub struct Stats {
     /// prompt processing (concurrent requests counted once).
     pub prompt_tokens: u64,
     pub prompt_ms: u64,
+    /// Prompt tokens taken from the server's prompt cache (a prompt shared
+    /// by several answers of one request once). Only measured.
+    pub cached_tokens: u64,
+    /// Completion tokens of every solution answer (first round and
+    /// repairs), in the order they arrived. Only measured.
+    pub solution_tokens: Vec<u64>,
+    /// Solution answers cut off at the token limit (`finish_reason`
+    /// "length"). Only counted; the answers are handled as before.
+    pub solutions_truncated: usize,
     pub tokens_per_second: Option<f64>,
     pub duration_ms: u64,
     /// Duration per step (for measuring where the time goes).
@@ -1656,6 +1665,10 @@ where
                 if let Some(t) = r.completion_tokens.filter(|_| req.prefill.is_some()) {
                     // A solution answer: realistic length for the estimate.
                     s.plan.solution_tokens.push(t as f64);
+                    s.stats.solution_tokens.push(t);
+                }
+                if req.prefill.is_some() && r.finish_reason.as_deref() == Some("length") {
+                    s.stats.solutions_truncated += 1;
                 }
                 if let Some(t) = r.tokens_per_second {
                     s.tps_sum += t;
@@ -1672,6 +1685,9 @@ where
             }
             s.stats.llm_calls += 1;
             s.stats.prompt_tokens += prompt_tokens.unwrap_or(0);
+            // Like the prompt: every answer of one request reports the
+            // shared prompt's cache hit, counted once.
+            s.stats.cached_tokens += rs.iter().filter_map(|r| r.cached_tokens).max().unwrap_or(0);
             if let Some(ms) = combined.and_then(|c| c.prompt_ms).filter(|m| *m > 0.0) {
                 // The prompt is processed right at the start of the request
                 // (the template comes from the cache or takes milliseconds).
@@ -4486,6 +4502,52 @@ mod tests {
             "{}",
             r.stats.prompt_ms
         );
+    }
+
+    /// Reports cache hits, per-answer lengths and cut-off answers like
+    /// llama-server: the second answer of every solution request hits the
+    /// token limit.
+    struct MeteredLlm<F>(MockLlm<F>);
+
+    impl<F: Fn(&ChatRequest, usize) -> Result<String, AiError> + Sync> Llm for MeteredLlm<F> {
+        async fn chat(&self, req: &ChatRequest) -> Result<ChatResponse, AiError> {
+            Ok(self.chat_n(req, 1).await?.remove(0))
+        }
+        async fn chat_n(&self, req: &ChatRequest, n: usize) -> Result<Vec<ChatResponse>, AiError> {
+            let mut rs = self.0.chat_n(req, n).await?;
+            for (i, r) in rs.iter_mut().enumerate() {
+                r.cached_tokens = Some(40);
+                if req.prefill.is_some() {
+                    r.completion_tokens = Some(100 + i as u64);
+                    if i == 1 {
+                        r.finish_reason = Some("length".into());
+                    }
+                }
+            }
+            Ok(rs)
+        }
+    }
+
+    #[test]
+    fn stats_measure_cache_solution_lengths_and_truncation() {
+        let llm = MeteredLlm(MockLlm::new(scripted(
+            structure_json(&[("21", "42")], "lines"),
+            vec!["double"],
+            r#"{"inputs": ["1"]}"#,
+        )));
+        let r = generate_with_llm(&llm, req(None), 3).unwrap();
+        assert_eq!(llm.0.batches(), vec![1, 3, 1]);
+        // Structure, solutions (shared prompt once), inputs.
+        assert_eq!(r.stats.cached_tokens, 120);
+        assert_eq!(r.stats.solution_tokens, vec![100, 101, 102]);
+        assert_eq!(r.stats.solutions_truncated, 1);
+        // Only counted: the cut-off answer is still checked as before.
+        assert_eq!(r.stats.solutions_passed, 3);
+        assert_eq!(r.confidence.level, ConfidenceLevel::Green);
+        let json = serde_json::to_value(&r.stats).unwrap();
+        assert_eq!(json["cachedTokens"], 120);
+        assert_eq!(json["solutionTokens"], serde_json::json!([100, 101, 102]));
+        assert_eq!(json["solutionsTruncated"], 1);
     }
 
     /// Regression case A (release 1.1.0, 7B model, three solutions): two

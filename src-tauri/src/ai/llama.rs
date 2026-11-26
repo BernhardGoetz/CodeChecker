@@ -805,6 +805,9 @@ pub struct ChatResponse {
     /// the prompt cache) and the time that took.
     pub prompt_tokens: Option<u64>,
     pub prompt_ms: Option<f64>,
+    /// Prompt tokens taken from the prompt cache (not processed again);
+    /// `timings.cache_n` of llama-server. Only measured, not used.
+    pub cached_tokens: Option<u64>,
 }
 
 /// A chat model. Implemented by [`LlamaClient`]; mocked in tests.
@@ -911,6 +914,7 @@ struct RawTimings {
     predicted_per_second: Option<f64>,
     prompt_n: Option<u64>,
     prompt_ms: Option<f64>,
+    cache_n: Option<u64>,
 }
 
 pub fn parse_template(raw: &str) -> Result<String, AiError> {
@@ -934,6 +938,7 @@ pub fn parse_completion(raw: &str) -> Result<ChatResponse, AiError> {
         prompt_ms: timings
             .and_then(|t| t.prompt_ms)
             .filter(|v| v.is_finite() && *v >= 0.0),
+        cached_tokens: timings.and_then(|t| t.cache_n),
         stopping_word: (r.stop_type.as_deref() == Some("word") && !r.stopping_word.is_empty())
             .then_some(r.stopping_word),
         // "limit": cut off at n_predict.
@@ -1575,6 +1580,7 @@ mod tests {
         assert_eq!(r.finish_reason.as_deref(), Some("length"));
         assert_eq!(r.tokens_per_second, None);
         assert_eq!((r.prompt_tokens, r.prompt_ms), (None, None));
+        assert_eq!(r.cached_tokens, None);
         assert!(parse_completion("kaputt").is_err());
         // n results: an array; a single result is an object.
         let arr = format!("[{raw},{raw},{raw}]");
@@ -1585,5 +1591,27 @@ mod tests {
         assert!(parse_completions(&arr, 2).is_err(), "count must match");
         assert!(parse_completions(raw, 3).is_err());
         assert!(parse_completions("kaputt", 3).is_err());
+    }
+
+    #[test]
+    fn parse_cached_prompt_tokens() {
+        // Without the field (older servers, no timings): unknown.
+        let r = parse_completion(r#"{"content":"x","stop_type":"eos","timings":{"prompt_n":3}}"#)
+            .unwrap();
+        assert_eq!(r.cached_tokens, None);
+        assert_eq!(r.prompt_tokens, Some(3));
+        // With the field (llama-server b11700: `timings.cache_n`).
+        let raw = r#"{"content":"x","tokens_predicted":5,"stop_type":"limit",
+            "timings":{"cache_n":812,"prompt_n":7,"prompt_ms":20.0,"predicted_per_second":9.0}}"#;
+        let r = parse_completion(raw).unwrap();
+        assert_eq!(r.cached_tokens, Some(812));
+        assert_eq!(r.prompt_tokens, Some(7));
+        assert_eq!(r.finish_reason.as_deref(), Some("length"));
+        // Every answer of a request with `n` carries the shared prompt's value.
+        let rs = parse_completions(&format!("[{raw},{raw}]"), 2).unwrap();
+        assert!(rs.iter().all(|r| r.cached_tokens == Some(812)));
+        // A cold cache reports 0, not "unknown".
+        let r = parse_completion(r#"{"content":"x","timings":{"cache_n":0}}"#).unwrap();
+        assert_eq!(r.cached_tokens, Some(0));
     }
 }
