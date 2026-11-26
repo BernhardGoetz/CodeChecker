@@ -1,0 +1,9 @@
+Code-Prüfer 1.1.2 – kürzere, schnellere und ehrlichere KI-Testfälle.
+
+- Die Musterlösungen der KI sind kürzer und schneller fertig.
+- Das Häkchen „Variationstest“ wird nach jeder Testfall-Erzeugung automatisch passend gesetzt. Du kannst es danach jederzeit selbst umschalten.
+- Verlangt eine Aufgabe nur eine Klasse mit Methoden und kein Hauptprogramm, sagt die App ehrlich, dass automatische Testfälle dafür noch nicht möglich sind. Das kommt mit Version 1.2.0.
+- Ignorieren die KI-Lösungen die Eingabe und geben immer dasselbe aus, gibt es kein Grün mehr.
+- Beispiele aus dem Aufgabentext werden strenger geprüft, und Standardwerte oder „z. B.“-Sätze werden nicht mehr fälschlich als feste Werte oder Ausgabevorlage übernommen.
+
+Alle Änderungen stehen auf der Release-Seite auf GitHub.
