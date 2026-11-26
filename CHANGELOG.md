@@ -35,6 +35,13 @@ Format nach [Keep a Changelog](https://keepachangelog.com/de/1.1.0/), Versionen 
   statt 1024 Tokens lang sein. Wird eine Lösung dabei abgeschnitten, wird sie nicht
   mehr kompiliert, sondern in der Reparaturrunde mit dem Hinweis „zu lang, kürzer
   schreiben“ neu angefordert. Es bleibt bei drei Lösungen je Aufgabe (#46).
+- KI: Alle Schritte der Testfall-Erzeugung (Struktur, Lösungen, Reparatur,
+  Eingaben) beginnen mit demselben Systemprompt und dem Aufgabentext; die Regeln des
+  jeweiligen Schritts folgen erst danach unter „### Instructions“. Die KI-Laufzeit
+  übernimmt den gemeinsamen Anfang aus ihrem Zwischenspeicher, statt den Aufgabentext
+  bei jedem Schritt neu zu verarbeiten. Die Regeln selbst sind unverändert; es bleibt
+  bei drei Lösungen. Die Restzeit-Schätzung zählt nur noch die Prompt-Anteile, die
+  nicht aus dem Zwischenspeicher kommen (#47).
 
 ## [1.1.1] - 2026-11-16
 

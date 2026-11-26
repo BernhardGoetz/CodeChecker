@@ -33,6 +33,7 @@ use code_pruefer_lib::ai::llama::{
     self, ChatRequest, ChatResponse, ChatTemplate, LlamaClient, Llm,
 };
 use code_pruefer_lib::ai::pipeline::{self, GenerateRequest, SandboxExecutor, Settings};
+use code_pruefer_lib::ai::prompts;
 use code_pruefer_lib::ai::AiError;
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -84,14 +85,9 @@ fn load_tasks() -> Vec<Task> {
 /// Kind of a request, recognised like the scripted models of
 /// `ai_integration.rs` do.
 fn request_kind(req: &ChatRequest) -> &'static str {
-    let system = req
-        .messages
-        .first()
-        .map(|m| m.content.as_str())
-        .unwrap_or("");
-    if system.contains("analyse programming exercises") {
+    if prompts::is_step(&req.messages, prompts::STRUCTURE_RULES) {
         "structure"
-    } else if system.contains("write test inputs") {
+    } else if prompts::is_step(&req.messages, prompts::INPUTS_RULES) {
         "inputs"
     } else if req.prefill.is_some() && req.messages.len() > 2 {
         "repair"

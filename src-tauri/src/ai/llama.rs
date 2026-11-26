@@ -806,7 +806,8 @@ pub struct ChatResponse {
     pub prompt_tokens: Option<u64>,
     pub prompt_ms: Option<f64>,
     /// Prompt tokens taken from the prompt cache (not processed again);
-    /// `timings.cache_n` of llama-server. Only measured, not used.
+    /// `timings.cache_n` of llama-server (statistics; the structure step
+    /// adds it to the prompt size it calibrates the estimate with).
     pub cached_tokens: Option<u64>,
 }
 

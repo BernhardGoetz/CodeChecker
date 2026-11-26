@@ -1356,6 +1356,10 @@ struct Plan {
     structure_chars: f64,
     solution_chars: f64,
     inputs_chars: f64,
+    /// Characters of the start every step's prompt shares
+    /// ([`prompts::shared_prefix_chars`]): after the structure step it comes
+    /// from llama-server's prompt cache and costs no prompt processing.
+    shared_chars: f64,
     solutions: usize,
     /// The inputs are requested alongside the solutions.
     parallel_inputs: bool,
@@ -1377,6 +1381,12 @@ fn chars(messages: &[super::llama::ChatMessage]) -> f64 {
 impl Plan {
     fn prompt(&self, chars: f64) -> f64 {
         chars / self.chars_per_token + TEMPLATE_TOKENS
+    }
+
+    /// Prompt tokens of a request that starts with the shared prefix, which
+    /// the server takes from its prompt cache (only the rest is processed).
+    fn uncached_prompt(&self, chars: f64) -> f64 {
+        self.prompt((chars - self.shared_chars).max(0.0))
     }
 
     /// Realistic output of one solution: the mean of the answers so far.
@@ -1401,13 +1411,16 @@ impl Plan {
     }
 
     fn work(&self, step: Step) -> eta::Work {
+        // A request after the structure step finds the shared prefix in
+        // the prompt cache – except the inputs requested alongside the
+        // solutions (see [`Step::Round`]).
         let solution = eta::Work {
-            prompt_tokens: self.prompt(self.solution_chars),
+            prompt_tokens: self.uncached_prompt(self.solution_chars),
             gen_tokens: self.solution_gen(),
             sandbox_seconds: 0.0,
         };
         let inputs = eta::Work {
-            prompt_tokens: self.prompt(self.inputs_chars),
+            prompt_tokens: self.uncached_prompt(self.inputs_chars),
             gen_tokens: INPUTS_EXPECTED_TOKENS,
             sandbox_seconds: 0.0,
         };
@@ -1430,13 +1443,20 @@ impl Plan {
                 }
                 .plus(check);
                 if self.parallel_inputs {
-                    round.plus(inputs)
+                    // llama-server b11700 keeps a prompt in one slot only:
+                    // the solutions take the slot of the structure step, the
+                    // inputs alongside get an empty one and process the
+                    // whole prompt again (measured with b11700).
+                    round.plus(eta::Work {
+                        prompt_tokens: self.prompt(self.inputs_chars),
+                        ..inputs
+                    })
                 } else {
                     round
                 }
             }
             Step::Repairs(k) => eta::Work {
-                prompt_tokens: self.prompt(self.solution_chars + REPAIR_EXTRA_CHARS),
+                prompt_tokens: self.uncached_prompt(self.solution_chars + REPAIR_EXTRA_CHARS),
                 ..solution
             }
             .times(k as f64)
@@ -1695,17 +1715,21 @@ where
                 s.stats.completion_tokens += r.completion_tokens.unwrap_or(0);
             }
             let prompt_tokens = combined.and_then(|c| c.prompt_tokens);
+            // Like the prompt: every answer of one request reports the
+            // shared prompt's cache hit, counted once.
+            let cached_tokens = rs.iter().filter_map(|r| r.cached_tokens).max().unwrap_or(0);
             if s.plan.step == Step::Structure {
-                if let Some(t) = prompt_tokens.filter(|t| *t > 50) {
+                // The whole prompt, also when part of it came from the cache
+                // (the same task again).
+                let total = prompt_tokens.map(|t| t + cached_tokens);
+                if let Some(t) = total.filter(|t| *t > 50) {
                     let cpt = s.plan.structure_chars / t as f64;
                     s.plan.chars_per_token = cpt.clamp(1.5, 4.5);
                 }
             }
             s.stats.llm_calls += 1;
             s.stats.prompt_tokens += prompt_tokens.unwrap_or(0);
-            // Like the prompt: every answer of one request reports the
-            // shared prompt's cache hit, counted once.
-            s.stats.cached_tokens += rs.iter().filter_map(|r| r.cached_tokens).max().unwrap_or(0);
+            s.stats.cached_tokens += cached_tokens;
             if let Some(ms) = combined.and_then(|c| c.prompt_ms).filter(|m| *m > 0.0) {
                 // The prompt is processed right at the start of the request
                 // (the template comes from the cache or takes milliseconds).
@@ -2050,6 +2074,7 @@ pub async fn generate<L: Llm + Sync, E: Executor>(
             plan: {
                 let structure_chars = chars(&prompts::structure_messages(&req.task_text));
                 Plan {
+                    shared_chars: prompts::shared_prefix_chars(&req.task_text) as f64,
                     step: Step::Structure,
                     step_started: Instant::now(),
                     chars_per_token: CHARS_PER_TOKEN,
@@ -3059,10 +3084,10 @@ mod tests {
     }
 
     fn is_structure(r: &ChatRequest) -> bool {
-        r.messages[0].content == prompts::STRUCTURE_SYSTEM
+        prompts::is_step(&r.messages, prompts::STRUCTURE_RULES)
     }
     fn is_inputs(r: &ChatRequest) -> bool {
-        r.messages[0].content == prompts::INPUTS_SYSTEM
+        prompts::is_step(&r.messages, prompts::INPUTS_RULES)
     }
     fn is_repair(r: &ChatRequest) -> bool {
         r.messages.len() > 2 && r.messages[2].role == Role::Assistant
@@ -3815,6 +3840,7 @@ mod tests {
             structure_chars: 2910.0,
             solution_chars: 2910.0,
             inputs_chars: 2910.0,
+            shared_chars: 1410.0,
             solutions: 3,
             parallel_inputs: true,
             no_input: false,
@@ -3830,10 +3856,12 @@ mod tests {
         let p = plan(Step::Structure);
         let w = p.work(Step::Structure);
         assert_eq!((w.prompt_tokens, w.gen_tokens), (1000.0, 250.0));
-        // The round: one request for three solutions (prompt once) and the
-        // inputs together, plus the sandbox check.
+        // The round: one request for three solutions (prompt once, without
+        // the shared prefix from the cache: 1500 characters, 500 + 30
+        // tokens) and the inputs together (whole prompt: no cache in a
+        // second slot), plus the sandbox check.
         let r = p.work(Step::Round);
-        assert_eq!(r.prompt_tokens, 2000.0);
+        assert_eq!(r.prompt_tokens, 530.0 + 1000.0);
         assert_eq!(r.gen_tokens, 3.0 * 350.0 + 250.0);
         assert_eq!(r.sandbox_seconds, 10.0);
         // Without inputs alongside, and with real answer lengths.
@@ -3856,13 +3884,49 @@ mod tests {
         assert_eq!(later.gen_tokens, 1300.0);
         assert_eq!(later.sandbox_seconds, 20.0);
         // 7B defaults (6 / 1.5 tokens/s): 1000/6 + 250/1.5 ≈ 333 s for the
-        // structure, then 2000/6 + 1300/1.5 + 20 ≈ 1220 s.
+        // structure, then 1530/6 + 1300/1.5 + 20 ≈ 1142 s.
         let e = eta::eta_range(p.work(Step::Structure), 0.0, later, p.prior).unwrap();
-        assert!(e.low > 1450 && e.low < 1650, "{e:?}");
+        assert!(e.low > 1400 && e.low < 1550, "{e:?}");
         assert!(e.high as f64 >= e.low as f64 * 1.29);
-        // Repairs carry the longer conversation.
+        // Repairs carry the longer conversation; the shared prefix comes
+        // from the cache: 2 × ((2910 + 2000 − 1410) / 3 + 30) tokens.
         let p = plan(Step::Repairs(2));
-        assert!(p.work(Step::Repairs(2)).prompt_tokens > 2.0 * 1000.0);
+        let w = p.work(Step::Repairs(2));
+        assert!(
+            (w.prompt_tokens - 2.0 * (3500.0 / 3.0 + 30.0)).abs() < 1e-9,
+            "{w:?}"
+        );
+        // Inputs after the solutions: their slot has the prefix.
+        assert_eq!(p.work(Step::Inputs).prompt_tokens, 530.0);
+    }
+
+    #[test]
+    fn remaining_time_counts_only_uncached_prompt_tokens() {
+        let mut p = plan(Step::Round);
+        p.parallel_inputs = false;
+        let cached = p.work(Step::Round).prompt_tokens;
+        p.shared_chars = 0.0;
+        let uncached = p.work(Step::Round).prompt_tokens;
+        // 1410 cached characters: 470 tokens less to process.
+        assert!((uncached - cached - 470.0).abs() < 1e-9);
+        // The structure step pays for the whole prompt (nothing cached yet).
+        let mut q = plan(Step::Structure);
+        let before = q.work(Step::Structure).prompt_tokens;
+        q.shared_chars = 0.0;
+        assert_eq!(q.work(Step::Structure).prompt_tokens, before);
+        // A prefix longer than the prompt never makes it negative.
+        p.shared_chars = 10_000.0;
+        assert_eq!(p.work(Step::Round).prompt_tokens, TEMPLATE_TOKENS);
+        // The real prefix: system prompt and task text are shared.
+        let task = "Lies n ein.";
+        let shared = prompts::shared_prefix_chars(task);
+        assert!(shared > task.len() + prompts::COMMON_SYSTEM.len());
+        for m in [
+            prompts::structure_messages(task),
+            prompts::inputs_messages(task, &prompts::InputsContext::default()),
+        ] {
+            assert!(chars(&m) > shared as f64);
+        }
     }
 
     #[test]
@@ -4755,7 +4819,7 @@ mod tests {
             } else if is_inputs(r) {
                 Ok(r#"{"inputs": ["15 10 30"]}"#.into())
             } else if r.messages[1].content.contains("(clock time 15:17:51)")
-                && r.messages[0].content.contains(prompts::STEPS_RULE)
+                && r.messages[1].content.contains(prompts::STEPS_RULE)
             {
                 Ok(java_program("qas"))
             } else {
@@ -4797,7 +4861,7 @@ mod tests {
             .iter()
             .find(|c| !is_structure(c) && !is_inputs(c))
             .unwrap();
-        assert!(!solution.messages[0].content.contains(prompts::STEPS_RULE));
+        assert!(!solution.messages[1].content.contains(prompts::STEPS_RULE));
         assert!(!solution.messages[1]
             .content
             .contains(prompts::FIXED_VALUES_HEADING));
