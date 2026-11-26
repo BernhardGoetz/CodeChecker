@@ -371,16 +371,21 @@ pub fn solution_messages(
 pub const NO_COMMENTS_RULE: &str = " Write no comments and no explanations, only code. Keep the \
 program short; give intermediate values descriptive variable names instead of commenting them.";
 
-/// Part of the solution system prompt for a task without input: every
-/// printed value in its own variable named after its subtask, computed from
-/// named variables holding the values of the task. Against solutions that
-/// print a variable of another subtask (e.g. the duration instead of the
-/// end time). Until 1.1.1 it also asked for one comment per output line;
-/// [`NO_COMMENTS_RULE`] replaces that, the variable names carry it now.
-pub const STEPS_RULE: &str = " Store every value from the task in its own named variable, \
-copied exactly as written in the task. Compute every printed value in its own variable whose \
-name says which required output line or subtask it answers; do not reuse a variable of another \
-subtask unless the task says so.";
+/// Part of the solution system prompt for a task without input: one short
+/// label comment per required output line (the only exception to
+/// [`NO_COMMENTS_RULE`]), every printed value in its own variable named
+/// after its subtask, computed from named variables holding the values of
+/// the task. Against solutions that print a variable of another subtask
+/// (e.g. the duration instead of the end time). Until 1.1.1 the comment
+/// also listed the values used; without any comment two of three solutions
+/// of „time“ printed the variable of another subtask (KI-Benchmark
+/// 1.1.2-e1), so the label stays.
+pub const STEPS_RULE: &str = " Only exception to the comment rule: directly before computing \
+each required output line, write one short comment with just its subtask label (e.g. `c)`) \
+and what it prints, in at most eight words. Store every value from the task in its own named \
+variable, copied exactly as written in the task. Compute every printed value in its own \
+variable whose name says which required output line or subtask it answers; do not reuse a \
+variable of another subtask unless the task says so.";
 
 /// Heading of [`fixed_values_block`].
 pub const FIXED_VALUES_HEADING: &str = "Fixed values stated in the task text (extracted \
@@ -1076,15 +1081,18 @@ mod tests {
                 };
                 let system = &solution_messages(TIME_SHEET, lang, &ctx)[0].content;
                 assert!(system.contains(NO_COMMENTS_RULE), "{system}");
-                // No prompt asks for comments any more.
-                for duty in ["write one short comment", "comment per"] {
-                    assert!(!system.contains(duty), "{system}");
-                }
+                // The long comment per output line (values used) is gone;
+                // without input only a short subtask label stays.
+                assert!(
+                    !system.contains("the values from the task it uses"),
+                    "{system}"
+                );
+                assert_eq!(system.contains("just its subtask label"), no_input);
                 // Named values stay asked for without input.
                 assert_eq!(system.contains("own named variable"), no_input);
             }
         }
-        assert!(!STEPS_RULE.contains("comment"));
+        assert!(STEPS_RULE.contains("at most eight words"));
         assert!(STEPS_RULE.contains("copied exactly as written in the task"));
         assert!(NO_COMMENTS_RULE.contains("variable names"));
     }

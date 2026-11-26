@@ -1312,11 +1312,13 @@ pub fn decide_confidence(e: &Evidence) -> Confidence {
 /// real answers are known.
 const STRUCTURE_EXPECTED_TOKENS: f64 = 250.0;
 const SOLUTION_EXPECTED_TOKENS: f64 = 350.0;
-/// Without input the solutions also comment every output line with the
-/// values used ([`prompts::STEPS_RULE`]): measured 219 instead of 142 tokens
-/// on average (KI-Benchmark 1.1.1, 7B model), so the prior grows by the same
-/// factor (350 × 219 / 142 ≈ 540).
-const SOLUTION_EXPECTED_TOKENS_NO_INPUT: f64 = 540.0;
+/// Without input the solutions also label every output line and name
+/// every value ([`prompts::STEPS_RULE`]): measured 219 instead of 142 tokens
+/// on average (KI-Benchmark 1.1.1), so the prior grew by the same factor
+/// (350 × 219 / 142 ≈ 540). With the short labels instead of the long
+/// comments these answers were 7 % shorter (KI-Benchmark 1.1.2-e1b: 257
+/// instead of 278 tokens on the same tasks): 540 × 0.93 ≈ 500.
+const SOLUTION_EXPECTED_TOKENS_NO_INPUT: f64 = 500.0;
 const INPUTS_EXPECTED_TOKENS: f64 = 250.0;
 /// Characters per prompt token until the structure step measured it
 /// (German task text, code: rather 3.5; fewer means more tokens).
@@ -3839,11 +3841,11 @@ mod tests {
         p.parallel_inputs = false;
         p.solution_tokens = vec![200.0, 400.0];
         assert_eq!(p.work(Step::Round).gen_tokens, 900.0);
-        // Without input the answers are longer (comments per output line).
+        // Without input the answers are longer (labels and named values).
         let mut p = plan(Step::Round);
         p.parallel_inputs = false;
         p.no_input = true;
-        assert_eq!(p.work(Step::Round).gen_tokens, 3.0 * 540.0);
+        assert_eq!(p.work(Step::Round).gen_tokens, 3.0 * 500.0);
         p.solution_tokens = vec![219.0];
         assert_eq!(p.work(Step::Round).gen_tokens, 3.0 * 219.0);
         assert_eq!(p.later(Step::Round).sandbox_seconds, 10.0);
