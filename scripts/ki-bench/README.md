@@ -8,7 +8,10 @@ Prompts und Pipeline vorher/nachher verglichen werden können.
   `kind` `program`/`api`, `reference`). `reference` ist bei `program` ein
   Python-Programm (stdin → stdout), das die richtigen Ausgaben liefert; bei
   `api` (Klassen/Methoden ohne Konsolen-Ein-/Ausgabe) nur eine Beschreibung,
-  dort gilt Rot/keine Tests als erwartet.
+  dort gilt Rot/keine Tests als erwartet (ab 1.1.2-e3 meldet die Pipeline das
+  ehrlich als Klassen-Aufgabe, Ampel-Spalte „A“). `backwards` ist seit
+  1.1.2-e3 `program` (vorher `api`); frühere Läufe sind für diese Aufgabe nicht
+  direkt vergleichbar.
 - `src-tauri/tests/ki_bench.rs`: der Lauf (`#[ignore]`), schreibt je Lauf
   eine JSON-Zeile nach `src-tauri/target/ki-bench/<label>.jsonl`.
 - `evaluate.py`: prüft die erzeugten Tests gegen die Referenzen.

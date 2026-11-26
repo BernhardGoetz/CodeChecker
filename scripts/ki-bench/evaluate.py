@@ -13,7 +13,9 @@ Einstufung je Lauf:
   rot-leer     Rot (keine Tests)
   fehler       der Lauf brach ab (Fehlermeldung im JSONL)
 Aufgaben mit kind "api" haben keine ausführbare Referenz: Rot gilt dort als
-erwartet ("rot-leer"), Grün/Gelb als "api-ungeprüft".
+erwartet ("rot-leer"), Grün/Gelb als "api-ungeprüft". Ab 1.1.2-e3 meldet die
+Pipeline solche Klassen-Aufgaben ehrlich ("unsupported": "API_TASK", in der
+Ampel-Spalte "A"; zählt als "rot-leer").
 
 Aufruf (nur Standardbibliothek):
   python3 -I scripts/ki-bench/evaluate.py ERGEBNIS.jsonl [...]
@@ -141,7 +143,10 @@ def summarize(runs, tasks, ref, details=False):
         cat, wrong = classify(run, tasks, ref)
         s["runs"] += 1
         s["cat"][cat] += 1
-        s["levels"].append({"green": "G", "yellow": "Y", "red": "R"}.get(run.get("level"), "E"))
+        level = {"green": "G", "yellow": "Y", "red": "R"}.get(run.get("level"), "E")
+        if run.get("unsupported") == "API_TASK":
+            level = "A"
+        s["levels"].append(level)
         if not run.get("error"):
             for p in PHASES:
                 s["phase"][p].append(run.get("phaseMs", {}).get(p, 0) / 1000.0)
@@ -183,7 +188,8 @@ def print_table(label, summary, details=False):
         print("| " + " | ".join(c.ljust(w) for c, w in zip(r, widths)) + " |")
     runs = sum(s["runs"] for s in summary.values())
     print(f"\nSumme über {runs} Läufe: " + ", ".join(f"{c} {total[c]}" for c in CATEGORIES))
-    print("Ampel: G grün, Y gelb, R rot, E Fehler; Zeiten und Tokens: Mittel je Lauf; "
+    print("Ampel: G grün, Y gelb, R rot, A Klassen-Aufgabe (ehrliche Meldung, keine Ampel), "
+          "E Fehler; Zeiten und Tokens: Mittel je Lauf; "
           "abgeschn.: abgeschnittene / alle Lösungsantworten.")
     if details:
         for name, s in summary.items():

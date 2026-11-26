@@ -677,6 +677,39 @@ pub fn no_input_repair_messages(
     conversation
 }
 
+/// Repair of a solution that ignores its input although the task reads
+/// some (regression 1.1.2, „backwards“: every solution printed
+/// `reverseString("Uni")` for every input).
+pub const INPUT_IGNORED_REPAIR: &str = "The program ignores its input: it printed the same \
+output for different inputs. Values in the task text are only examples. Read the input from \
+standard input and compute the output from it as the task describes; never hard-code the \
+example values.";
+
+/// Follow-up after a solution printed the same for different inputs;
+/// `samples`: inputs with the program's output (shown to the model).
+pub fn input_ignored_repair_messages(
+    mut conversation: Vec<ChatMessage>,
+    previous_answer: &str,
+    language: &str,
+    samples: &[(String, String)],
+) -> Vec<ChatMessage> {
+    conversation.push(ChatMessage::assistant(previous_answer));
+    let mut text = INPUT_IGNORED_REPAIR.to_string();
+    for (input, output) in samples {
+        text.push_str(&format!(
+            "\n\nInput:\n```\n{}\n```\nOutput of your program:\n```\n{}\n```",
+            input.trim_end(),
+            output.trim_end()
+        ));
+    }
+    text.push_str(&format!(
+        "\n\nAnswer with the complete corrected program in exactly one ```{} code block.",
+        fence(language)
+    ));
+    conversation.push(ChatMessage::user(text));
+    conversation
+}
+
 // --- Step 5: test inputs ----------------------------------------------------
 
 /// Instructions of the inputs step (until 1.1.1 its system prompt; the
@@ -1102,10 +1135,28 @@ mod tests {
         assert!(!m[1].content.contains("hour minute second"));
         let m = solution_messages("t", "python", &ctx);
         assert!(m[1].content.contains("never call `input()`"));
-        let r = no_input_repair_messages(m, "```python\nx = input()\n```", "python");
+        let r = no_input_repair_messages(m.clone(), "```python\nx = input()\n```", "python");
         assert_eq!(r.len(), 4);
         assert!(r[3].content.contains(NO_INPUT_REPAIR));
         assert!(r[3].content.contains("```python"));
+        // A solution that ignores its input: the samples are shown.
+        let r = input_ignored_repair_messages(
+            m.clone(),
+            "```java\nclass Main {}\n```",
+            "java",
+            &[
+                ("hello\n".into(), "inU\n".into()),
+                ("12345\n".into(), "inU\n".into()),
+            ],
+        );
+        assert_eq!(r.len(), 4);
+        assert_eq!(r[..2], m[..]);
+        assert!(r[3].content.starts_with(INPUT_IGNORED_REPAIR));
+        assert!(r[3]
+            .content
+            .contains("Input:\n```\nhello\n```\nOutput of your program:\n```\ninU\n```"));
+        assert!(r[3].content.contains("12345"));
+        assert!(r[3].content.contains("```java code block"));
         // The general rule is part of every solution prompt.
         let ctx = SolutionContext {
             no_input: false,

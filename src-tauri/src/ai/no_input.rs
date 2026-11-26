@@ -161,6 +161,71 @@ pub fn has_fixed_value_hint(text: &str) -> bool {
             })
             .unwrap_or_default();
         !NUMBERING.contains(&prev.as_str())
+            && !is_score(words.get(i + 1).copied())
+            && !default_or_example_value(&words, i)
+    })
+}
+
+/// Words after a number that make it a score of the exercise („(1 Punkt)“).
+const SCORE_WORDS: &[&str] = &["punkt", "punkte", "pkt", "pkt.", "point", "points", "p."];
+
+fn is_score(next: Option<&str>) -> bool {
+    next.is_some_and(|w| {
+        let w = w
+            .trim_matches(|c: char| !c.is_alphanumeric() && c != '.')
+            .to_lowercase();
+        SCORE_WORDS.contains(&w.as_str())
+    })
+}
+
+/// Starts of words before a number that make it the default or start value
+/// of an attribute or variable („balance …, der standardmäßig auf 0.0
+/// gesetzt ist“, „Startwert 0“), not a fixed value of the task.
+const DEFAULT_STEMS: &[&str] = &[
+    "standard",
+    "default",
+    "startwert",
+    "anfangswert",
+    "initialwert",
+    "voreingestellt",
+    "vorbelegt",
+];
+
+/// Words before a number that make it part of an example sentence („z. B.
+/// “Your current balance is €100.0”“), not a fixed value of the task.
+const EXAMPLE_WORDS: &[&str] = &[
+    "z.b.",
+    "zb.",
+    "bspw.",
+    "beispielsweise",
+    "beispiel",
+    "e.g.",
+    "example",
+];
+
+/// How many words before a number are searched for [`DEFAULT_STEMS`] and
+/// [`EXAMPLE_WORDS`].
+const CONTEXT_WORDS: usize = 6;
+
+/// Whether the number at `words[i]` is a default/start value or part of an
+/// example sentence (see [`DEFAULT_STEMS`], [`EXAMPLE_WORDS`]): such numbers
+/// are no fixed values of the task (regression „Aufgabe 6.2 BankAccount“:
+/// „standardmäßig auf 0.0 gesetzt“ made a class task one with fixed values).
+fn default_or_example_value(words: &[&str], i: usize) -> bool {
+    let from = i.saturating_sub(CONTEXT_WORDS);
+    let before: Vec<String> = words[from..i]
+        .iter()
+        .map(|w| {
+            w.trim_matches(|c: char| !c.is_alphanumeric() && c != '.')
+                .to_lowercase()
+        })
+        .collect();
+    before.iter().enumerate().any(|(k, w)| {
+        DEFAULT_STEMS.iter().any(|s| w.starts_with(s))
+            || EXAMPLE_WORDS.contains(&w.as_str())
+            || (w == "z." && before.get(k + 1).is_some_and(|n| n == "b."))
+            || (w == "e." && before.get(k + 1).is_some_and(|n| n == "g."))
+            || (w == "zum" && before.get(k + 1).is_some_and(|n| n == "beispiel"))
     })
 }
 
@@ -171,7 +236,7 @@ pub fn task_without_input(text: &str) -> bool {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     /// The sheet of regression case „Aufgabe 2.2 Time“ (as in the pipeline
@@ -237,5 +302,45 @@ mod tests {
             "Legen Sie Variablen a = 12 und b = 30 an."
         ));
         assert!(has_fixed_value_hint("Konstante PI mit dem Wert 3.14159."));
+    }
+
+    /// Aufgabe 6.2 BankAccount (OOP, Hausaufgabenblatt 6), as in the
+    /// KI-Benchmark.
+    pub(crate) const BANK_ACCOUNT: &str = "Aufgabe 6.2 (BankAccount (1 Punkt))\n\
+        a) Erstellen Sie die Klasse-BankAccount, die ein einfaches Bankkonto simuliert. Die Klasse besitzt zwei Variablen: String ownerName für den Namen des Kontoinhabers und double balance für den Kontostand, der standardmäßig auf 0.0 gesetzt ist. Jede Instanz der Klasse BankAccount soll ihren eigenen Kontostand haben.\n\
+        b) Implementieren Sie die Getter- und Setter-Methoden getOwnerName, setOwnerName und getBalance für die Instanzvariablen.\n\
+        (Hinweis: Für balance benötigen wir keine Setter-Methode, da der Kontostand entweder erhöht oder verringert, aber nicht gesetzt werden kann.)\n\
+        c) Implementieren Sie folgende Konstruktoren:\n\
+        i. Ein Konstruktor, der ownerName initialisiert, wobei der Standardwert für balance 0.0 sein soll.\n\
+        ii. Ein Konstruktor, der keinen Parameter hat und für ownerName als Standardwert “Unknown” setzt und für balance den Standardwert 0.0 setzt.\n\
+        d) Implementieren Sie die folgenden Methoden:\n\
+        - deposit(double amount): Diese Methode soll es ermöglichen, einen Betrag zur balance hinzuzufügen, wenn der Betrag größer als null ist. Wenn die Einzahlung erfolgreich ist, soll eine formatierte Nachricht zurückgegeben werden, die den aktuellen Kontostand angibt, z.B. “Your current balance is €100.0”.\n\
+        Ist der Betrag nicht positiv, soll die Nachricht, “The amount must be greater than zero.” zurückgegeben werden.\n\
+        - withdraw(double amount): Diese Methode soll es ermöglichen, einen Betrag von balance abzuziehen, wenn ausreichend Mittel vorhanden sind. Wenn das Guthaben nicht ausreicht, soll die Nachricht, “You have insufficient funds.” zurückgegeben werden. Bei erfolgreicher Abhebung soll eine formatierte Nachricht zurückgegeben werden, die den aktuellen Kontostand angibt, z.B. “Your current balance is €100.0”.\n\
+        Laden Sie Ihren Quellcode auf den DevCheck hoch.";
+
+    #[test]
+    fn default_values_of_attributes_are_no_fixed_values() {
+        // Regression 1.1.2: BankAccount counted as a task with fixed values
+        // („Variablen“, „standardmäßig auf 0.0“, „z.B. … €100.0“, „1 Punkt“).
+        assert!(!has_input_hint(BANK_ACCOUNT));
+        assert!(!has_fixed_value_hint(BANK_ACCOUNT));
+        assert!(!task_without_input(BANK_ACCOUNT));
+        for t in [
+            "Die Variable count hat den Standardwert 0.",
+            "Die Variable x ist standardmäßig auf 1.5 gesetzt.",
+            "Die Variable n hat den Startwert 10.",
+            "Die Variable n bekommt den default value 3.",
+            "Variablen anlegen, z. B. „Kontostand 100.0“.",
+            "Variablen anlegen, e.g. total 12.",
+            "Aufgabe (2 Punkte): Legen Sie Variablen an.",
+        ] {
+            assert!(!has_fixed_value_hint(t), "{t}");
+        }
+        // Real fixed values next to a default value still count.
+        assert!(has_fixed_value_hint(
+            "Die Variable a hat den Standardwert 0. Weisen Sie b den Wert 7 zu."
+        ));
+        assert!(task_without_input(TIME_TASK));
     }
 }

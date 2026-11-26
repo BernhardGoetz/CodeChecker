@@ -42,6 +42,34 @@ Format nach [Keep a Changelog](https://keepachangelog.com/de/1.1.0/), Versionen 
   bei jedem Schritt neu zu verarbeiten. Die Regeln selbst sind unverändert; es bleibt
   bei drei Lösungen. Die Restzeit-Schätzung zählt nur noch die Prompt-Anteile, die
   nicht aus dem Zwischenspeicher kommen (#47).
+- KI: Das Häkchen „Auf zufällig richtige Ergebnisse prüfen (Variationstest)“ wird nach
+  jeder Testfall-Erzeugung automatisch passend gesetzt: an bei Aufgaben mit festen
+  Werten oder ohne Eingabe, sonst aus. Ein kurzer Hinweis am Häkchen zeigt, dass die KI
+  es gesetzt hat; es lässt sich danach jederzeit von Hand umschalten. Die von Hand
+  gewählte Voreinstellung bleibt gespeichert.
+- KI: Aufgaben, die nur eine Klasse mit Methoden ohne Hauptprogramm verlangen (z. B.
+  „BankAccount“ mit Konstruktoren, `deposit` und `withdraw`), werden erkannt. Statt
+  ein erfundenes Hauptprogramm als Wahrheit zu nehmen, meldet die App ehrlich, dass
+  automatische Testfälle dafür noch nicht möglich sind (geplant für 1.2.0, #59) – ohne
+  Ampel und ohne KI-Aufruf. Aufgaben, die Methoden *und* ein Programm verlangen (z. B.
+  „Schreiben Sie das Programm Backwards …“), bleiben normale Programmaufgaben.
+
+### Behoben
+
+- KI: Lesen die Musterlösungen die Eingabe nicht und geben für verschiedene Eingaben
+  immer dasselbe aus (z. B. nur `reverseString("Uni")`), gibt es nie mehr Grün. Die
+  betroffenen Lösungen werden einmal mit einem Hinweis repariert; lesen sie danach die
+  Eingabe, ist das Ergebnis höchstens Gelb, sonst Rot mit verständlichem Grund und ohne
+  Testfälle.
+- KI: Beispiele aus dem Aufgabentext zählen nur noch, wenn Eingabe und Ausgabe dort
+  wirklich zusammen als Beispiel stehen. Zahlen, die nur verstreut im Text vorkommen
+  („75 bis 89 Punkte 2, 60 bis 74 Punkte 3“), ergeben kein Beispiel „75 → 3“ mehr;
+  bisher konnte ein so erfundenes Beispiel richtige Lösungen verwerfen.
+- KI: Standard- und Startwerte von Attributen oder Variablen („standardmäßig auf 0.0
+  gesetzt“), Punktangaben („1 Punkt“) und Zahlen in Beispielsätzen („z. B. …“) gelten
+  nicht mehr als feste Werte einer Aufgabe ohne Eingabe.
+- KI: Beispielsätze wie „z. B. “Your current balance is €100.0”“ werden nicht mehr als
+  feste Ausgabevorlage übernommen, wenn das Blatt darin keinen Platzhalter angibt.
 
 ## [1.1.1] - 2026-11-16
 

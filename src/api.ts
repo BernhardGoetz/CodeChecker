@@ -352,6 +352,8 @@ export interface GenerateStats {
   fixedValues?: boolean;
   /** Solutions that read input although the task reads none (after the repair round). */
   solutionsReadInput?: number;
+  /** Solutions that ignore the input although the task reads some (same output for different inputs). */
+  solutionsIgnoringInput?: number;
   llmCalls: number;
   completionTokens: number;
   /** Prompt tokens processed (without the prompt cache) and the time for that. */
@@ -384,6 +386,10 @@ export interface GenerateResult {
   /** Input limits stated by the task (sent to the variation check). */
   inputConstraints?: string;
   stats: GenerateStats;
+  /** Variation check suggested (fixed values or no input); the app sets its switch to this. */
+  variationSuggested?: boolean;
+  /** Task kind the generation cannot check yet ("API_TASK": only a class, no main program). */
+  unsupported?: "API_TASK" | null;
 }
 
 export interface GenerateRequest {

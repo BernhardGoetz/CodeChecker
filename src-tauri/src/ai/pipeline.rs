@@ -226,6 +226,10 @@ pub struct Stats {
     /// Solutions that read input although the task reads none (after the
     /// repair round).
     pub solutions_read_input: usize,
+    /// The opposite: surviving solutions that ignore the input although the
+    /// task reads some (same output for different inputs, see
+    /// [`ignoring_input`]; after the repair).
+    pub solutions_ignoring_input: usize,
     pub llm_calls: usize,
     pub completion_tokens: u64,
     /// Prompt tokens processed (without the prompt cache; a prompt shared
@@ -289,6 +293,59 @@ pub struct GenerateResult {
     /// Input limits from the structure step (for the variation check).
     pub input_constraints: String,
     pub stats: Stats,
+    /// Whether the variation check is suggested for this task: the task
+    /// gives fixed values or reads no input (there a solution that is only
+    /// right for the given values is most likely). The app sets its switch
+    /// to this after every generation; the user can change it.
+    pub variation_suggested: bool,
+    /// The task is of a kind the test generation cannot check yet (no
+    /// tests, no traffic light; the reason is in `confidence.reasons`).
+    pub unsupported: Option<Unsupported>,
+}
+
+/// Kinds of tasks the test generation cannot check yet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum Unsupported {
+    /// Only a class with methods, no main program (see
+    /// [`super::api_task::class_only_task`]); class tests are planned for
+    /// 1.2.0 (issue #59).
+    ApiTask,
+}
+
+/// German message for [`Unsupported::ApiTask`].
+pub const API_TASK_REASON: &str = "Diese Aufgabe verlangt nur eine Klasse bzw. Methoden ohne \
+Hauptprogramm (keine Ein- und Ausgabe über die Konsole). Automatische Testfälle sind dafür noch \
+nicht möglich – geplant für Version 1.2.0. Testfälle mit Eingabe und erwarteter Ausgabe lassen \
+sich nur für Programme mit Hauptprogramm erzeugen.";
+
+/// Result for a class-only task (see [`Unsupported::ApiTask`]): no model
+/// call, no tests, no traffic light.
+pub fn api_task_result(
+    req: &GenerateRequest,
+    settings: &Settings,
+    started: Instant,
+) -> GenerateResult {
+    GenerateResult {
+        tests: Vec::new(),
+        reference_solution: None,
+        confidence: Confidence {
+            level: ConfidenceLevel::Red,
+            reasons: vec![API_TASK_REASON.into()],
+        },
+        suggested_compare_mode: None,
+        compare_mode: req.compare_mode.unwrap_or_default(),
+        output_templates: Vec::new(),
+        input_format: String::new(),
+        input_constraints: String::new(),
+        stats: Stats {
+            solutions_requested: settings.solutions,
+            duration_ms: ms(started.elapsed()),
+            ..Stats::default()
+        },
+        variation_suggested: false,
+        unsupported: Some(Unsupported::ApiTask),
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -812,29 +869,81 @@ fn close_enough(gap: &str) -> bool {
         || (chars <= MAX_PAIR_GAP_CHARS_LINES && gap.matches('\n').count() <= MAX_PAIR_GAP_LINES)
 }
 
+/// Words in the text between an input and its output that mark the output
+/// of an example („Ausgabe:“, "Output", „→“).
+const OUTPUT_MARKERS: &[&str] = &["ausgabe", "output", "erwartet", "expected", "→", "->", "=>"];
+
+fn is_word_char(c: char) -> bool {
+    c.is_alphanumeric() || c == '_'
+}
+
+/// Whether `pat` occurs in `text` at byte offset `p` as a whole token:
+/// where it starts (ends) with a letter or digit, no letter or digit
+/// directly before (after) it, and no decimal part after a number (`3`
+/// is not in `3.5`).
+fn token_at(text: &str, p: usize, pat: &str) -> bool {
+    let end = p + pat.len();
+    let first = pat.chars().next().is_some_and(is_word_char);
+    let last = pat.chars().next_back();
+    let before = text[..p].chars().next_back();
+    let mut after = text[end..].chars();
+    let next = after.next();
+    let decimal = last.is_some_and(|c| c.is_ascii_digit())
+        && matches!(next, Some('.' | ','))
+        && after.next().is_some_and(|c| c.is_ascii_digit());
+    !(first && before.is_some_and(is_word_char))
+        && !(last.is_some_and(is_word_char) && next.is_some_and(is_word_char))
+        && !decimal
+}
+
 /// An example counts only if its output (non-empty) and its input appear
-/// verbatim in the task text (after [`normalize_for_match`]) and belong
-/// together: with a non-empty input, the output must start at or after an
-/// occurrence of the input and close to it (see [`MAX_PAIR_GAP_CHARS`]).
-/// A pair whose input and output only appear far apart is not an example.
+/// verbatim in the task text (after [`normalize_for_match`]) as whole
+/// tokens (`3` is not in `30` or `3.5`) and belong together: with a
+/// non-empty input, the output must start at or after an occurrence of the
+/// input and close to it (see [`MAX_PAIR_GAP_CHARS`]). A pair whose input
+/// and output only appear far apart is not an example. If other numbers
+/// stand between input and output, the pair only counts with an output
+/// marker in between ([`OUTPUT_MARKERS`], e.g. all inputs first and then
+/// „Ausgabe 1: …“): numbers that only appear scattered in the prose („75
+/// bis 89 Punkte 2, 60 bis 74 Punkte 3“) are no example `75 → 3`
+/// (regression 1.1.1, „java-note“: an invented example survived and the
+/// correct solutions were discarded).
 pub fn example_in_text(normalized_text: &str, ex: &Example) -> bool {
     let input = normalize_for_match(&ex.input);
     let output = normalize_for_match(&ex.output);
-    if output.is_empty() || !normalized_text.contains(&output) {
+    if output.is_empty() {
+        return false;
+    }
+    let outputs: Vec<usize> = normalized_text
+        .match_indices(output.as_str())
+        .map(|(q, _)| q)
+        .filter(|&q| token_at(normalized_text, q, &output))
+        .collect();
+    if outputs.is_empty() {
         return false;
     }
     if input.is_empty() {
         return true;
     }
-    normalized_text.match_indices(input.as_str()).any(|(p, _)| {
-        let end = p + input.len();
-        // The nearest occurrence of the output from here on.
-        let Some(q) = normalized_text[p..].find(&output).map(|q| p + q) else {
-            return false;
-        };
-        // An output starting inside the input (overlap) is close.
-        q <= end || close_enough(&normalized_text[end..q])
-    })
+    normalized_text
+        .match_indices(input.as_str())
+        .filter(|&(p, _)| token_at(normalized_text, p, &input))
+        .any(|(p, _)| {
+            let end = p + input.len();
+            // The nearest occurrence of the output from here on.
+            let Some(q) = outputs.iter().copied().find(|&q| q >= p) else {
+                return false;
+            };
+            // An output starting inside the input (overlap) is close.
+            if q <= end {
+                return true;
+            }
+            let gap = &normalized_text[end..q];
+            let lower = gap.to_lowercase();
+            close_enough(gap)
+                && (!gap.chars().any(|c| c.is_ascii_digit())
+                    || OUTPUT_MARKERS.iter().any(|m| lower.contains(m)))
+        })
 }
 
 /// Splits the model's examples into (verbatim, discarded count); at most
@@ -1148,7 +1257,33 @@ pub struct Evidence {
     pub invalid: usize,
     /// Tests dropped as a suspected integer overflow: yellow.
     pub overflow: usize,
+    /// The task reads input, but most surviving solutions printed the same
+    /// for different inputs (they ignore the input, see
+    /// [`ignoring_input`]), also after the repair: never green.
+    pub input_ignored: bool,
+    /// The task text or a sheet example clearly asks for input: with
+    /// [`Evidence::input_ignored`] red, else yellow.
+    pub input_required: bool,
+    /// The solutions ignored the input at first and were repaired: yellow.
+    pub input_repaired: bool,
 }
+
+/// German red reason when the solutions ignore the input.
+pub const INPUT_IGNORED_REASON: &str = "Die Lösungen lesen die Eingabe nicht: Für verschiedene \
+Eingaben gaben sie immer dieselbe Ausgabe aus (z. B. nur das Ergebnis für das Beispiel aus dem \
+Text), auch nach einer Reparatur. Solche Testfälle wären falsch, deshalb werden keine erzeugt. \
+Vermutlich sagt der Aufgabentext nicht genau, was das Programm einlesen und ausgeben soll – \
+Testfälle bitte von Hand anlegen.";
+
+/// German yellow reason when the solutions ignore the input, but the task
+/// text does not clearly ask for input.
+pub const INPUT_IGNORED_NOTE: &str = "Die Lösungen gaben für alle Eingaben dieselbe Ausgabe aus – \
+liest das Programm überhaupt eine Eingabe? Bitte prüfen, ob die Testfälle sinnvoll sind.";
+
+/// German yellow reason when the solutions were repaired to read the input.
+pub const INPUT_REPAIRED_REASON: &str = "Die Lösungen lasen die Eingabe zunächst nicht (gleiche \
+Ausgabe für verschiedene Eingaben) und wurden repariert. Wie das Programm einliest, steht nicht \
+eindeutig im Text – bitte das Ein-/Ausgabeformat der Testfälle prüfen.";
 
 /// German confidence reason for tests dropped as suspected overflow.
 pub fn overflow_reason(n: usize) -> String {
@@ -1239,7 +1374,19 @@ pub fn decide_confidence(e: &Evidence) -> Confidence {
             reasons,
         };
     }
+    if e.input_ignored && e.input_required {
+        return Confidence {
+            level: ConfidenceLevel::Red,
+            reasons: vec![INPUT_IGNORED_REASON.into()],
+        };
+    }
     let mut yellow: Vec<String> = Vec::new();
+    if e.input_ignored {
+        yellow.push(INPUT_IGNORED_NOTE.into());
+    }
+    if e.input_repaired {
+        yellow.push(INPUT_REPAIRED_REASON.into());
+    }
     if e.examples == 0 {
         yellow.push(
             "Im Aufgabentext wurden keine Beispiele (wörtlich) gefunden – die Lösungen konnten \
@@ -1920,6 +2067,72 @@ async fn close_all<S: Session>(sessions: impl IntoIterator<Item = S>) {
     futures_util::future::join_all(sessions.into_iter().map(|s| s.close())).await;
 }
 
+/// A survivor's conversation with the model (messages and last answer).
+type Conversation = (Vec<super::llama::ChatMessage>, String);
+
+/// A solution counts as ignoring its input once it printed the same valid
+/// output for at least this many different non-empty inputs.
+pub const MIN_IGNORED_INPUTS: usize = 3;
+
+/// Per solution (`results[i]`, see [`vote`]): whether its output does not
+/// depend on the input – on at least [`MIN_IGNORED_INPUTS`] different
+/// non-empty inputs every output was valid and the same (`mode`). An
+/// incomplete result (`None`) never counts. Pure.
+pub fn ignoring_input(
+    mode: &CompareMode,
+    results: &[Option<Vec<StepOutput>>],
+    inputs: &[String],
+) -> Vec<bool> {
+    results
+        .iter()
+        .map(|r| {
+            let Some(outs) = r else { return false };
+            let mut seen: Vec<String> = Vec::new();
+            let mut first: Option<&StepOutput> = None;
+            for (input, o) in inputs.iter().zip(outs) {
+                let key = normalize_for_match(input);
+                if key.is_empty() {
+                    continue;
+                }
+                if !valid(o) {
+                    return false;
+                }
+                match first {
+                    None => first = Some(o),
+                    Some(f) if !mode.matches(&f.stdout, &o.stdout) => return false,
+                    Some(_) => {}
+                }
+                if !seen.contains(&key) {
+                    seen.push(key);
+                }
+            }
+            seen.len() >= MIN_IGNORED_INPUTS
+        })
+        .collect()
+}
+
+/// A strict majority of the surviving solutions ignores the input. Pure.
+pub fn most_ignore_input(ignoring: &[bool]) -> bool {
+    ignoring.iter().filter(|x| **x).count() * 2 > ignoring.len()
+}
+
+/// Up to two different non-empty inputs with the program's output, for the
+/// repair prompt of a solution that ignores its input.
+fn ignored_samples(outs: Option<&[StepOutput]>, inputs: &[String]) -> Vec<(String, String)> {
+    let mut samples: Vec<(String, String)> = Vec::new();
+    for (input, o) in inputs.iter().zip(outs.unwrap_or_default()) {
+        let key = normalize_for_match(input);
+        if key.is_empty() || samples.iter().any(|(i, _)| normalize_for_match(i) == key) {
+            continue;
+        }
+        samples.push((input.clone(), o.stdout.clone()));
+        if samples.len() == 2 {
+            break;
+        }
+    }
+    samples
+}
+
 /// Result of [`vote`].
 #[derive(Debug, Clone, Default)]
 pub struct Vote {
@@ -2058,6 +2271,11 @@ pub async fn generate<L: Llm + Sync, E: Executor>(
 ) -> Result<GenerateResult, AiError> {
     let started = Instant::now();
     let lang = req.validate()?;
+    // Only a class without a main program: nothing to run on stdin, an
+    // invented main would become the "truth" (issue #59).
+    if super::api_task::class_only_task(&req.task_text) {
+        return Ok(api_task_result(req, &settings, started));
+    }
     let run = Run {
         llm,
         exec,
@@ -2460,10 +2678,16 @@ pub async fn generate<L: Llm + Sync, E: Executor>(
         }
         // Containers of failed solutions are no longer needed.
         close_all(sessions_of(&mut attempts, false)).await;
-        let survivors: Vec<(String, Vec<StepOutput>, E::Session)> = attempts
+        // Per survivor: code, outputs on the check inputs, sandbox and the
+        // conversation (for a repair after the vote, see `ignoring_input`).
+        #[allow(clippy::type_complexity)]
+        let survivors: Vec<(String, Vec<StepOutput>, E::Session, Conversation)> = attempts
             .into_iter()
             .filter(|a| a.passes)
-            .filter_map(|a| Some((a.code?, a.example_outputs, a.session?)))
+            .filter_map(|a| {
+                let conv = (a.messages, a.answer.unwrap_or_default());
+                Some((a.code?, a.example_outputs, a.session?, conv))
+            })
             .collect();
         {
             let mut s = run.shared();
@@ -2495,6 +2719,7 @@ pub async fn generate<L: Llm + Sync, E: Executor>(
             }
             // Red: no tests, no reference solution – only the honest message.
             let red = confidence.level == ConfidenceLevel::Red;
+            let variation_suggested = fixed_values || stats.no_input;
             GenerateResult {
                 tests: if red { Vec::new() } else { tests },
                 reference_solution: if red { None } else { reference },
@@ -2509,6 +2734,8 @@ pub async fn generate<L: Llm + Sync, E: Executor>(
                 input_format: structure.input_format.clone(),
                 input_constraints: structure.input_constraints.clone(),
                 stats,
+                variation_suggested,
+                unsupported: None,
             }
         };
         let mut evidence = Evidence {
@@ -2586,7 +2813,7 @@ pub async fn generate<L: Llm + Sync, E: Executor>(
             Some((0, s)),
         );
         let majority_done = AtomicUsize::new(0);
-        let runs = survivors.iter().map(|(_, _, session)| {
+        let runs = survivors.iter().map(|(_, _, session, _)| {
             let (run, generated, majority_done) = (&run, &generated, &majority_done);
             async move {
                 let r = if generated.is_empty() {
@@ -2612,18 +2839,18 @@ pub async fn generate<L: Llm + Sync, E: Executor>(
             }
         });
         let outputs = futures_util::future::join_all(runs).await;
-        let (codes, example_outputs): (Vec<String>, Vec<Vec<StepOutput>>) = {
-            let mut codes = Vec::with_capacity(s);
-            let mut ex = Vec::with_capacity(s);
-            let mut sessions = Vec::with_capacity(s);
-            for (c, e, session) in survivors {
-                codes.push(c);
-                ex.push(e);
-                sessions.push(session);
-            }
-            close_all(sessions).await;
-            (codes, ex)
-        };
+        // The sandboxes stay open for a repair of solutions that ignore the
+        // input; they are closed before every return below.
+        let mut codes = Vec::with_capacity(s);
+        let mut example_outputs = Vec::with_capacity(s);
+        let mut sessions = Vec::with_capacity(s);
+        let mut convs = Vec::with_capacity(s);
+        for (c, e, session, conv) in survivors {
+            codes.push(c);
+            example_outputs.push(e);
+            sessions.push(session);
+            convs.push(conv);
+        }
         let mut generated_outputs = Vec::with_capacity(s);
         let mut error: Option<AiError> = None;
         for r in outputs {
@@ -2641,6 +2868,7 @@ pub async fn generate<L: Llm + Sync, E: Executor>(
             }
         }
         if let Some(e) = error {
+            close_all(sessions).await;
             return Err(e);
         }
 
@@ -2649,7 +2877,7 @@ pub async fn generate<L: Llm + Sync, E: Executor>(
             .cloned()
             .chain(generated.iter().cloned())
             .collect();
-        let results: Vec<Option<Vec<StepOutput>>> = example_outputs
+        let mut results: Vec<Option<Vec<StepOutput>>> = example_outputs
             .into_iter()
             .zip(generated_outputs)
             .map(|(mut e, g)| {
@@ -2657,6 +2885,113 @@ pub async fn generate<L: Llm + Sync, E: Executor>(
                 (e.len() == all_inputs.len()).then_some(e)
             })
             .collect();
+
+        // 6b. The task reads input, but most solutions print the same for
+        // every input (regression 1.1.2, „backwards“: every solution printed
+        // `reverseString("Uni")`, every test expected „inU“ – green). Those
+        // solutions get one repair; whatever ignores the input afterwards is
+        // never green (see `decide_confidence`).
+        let reads = !no_input_confirmed;
+        let input_required = no_input::has_input_hint(&req.task_text)
+            || examples
+                .iter()
+                .any(|e| !normalize_for_match(&e.input).is_empty());
+        let mut ignoring = if reads {
+            ignoring_input(&mode, &results, &all_inputs)
+        } else {
+            vec![false; s]
+        };
+        let mut input_repaired = false;
+        if most_ignore_input(&ignoring) {
+            let todo: Vec<usize> = (0..s).filter(|&i| ignoring[i]).collect();
+            run.step(Step::Repairs(todo.len()));
+            run.progress(
+                Phase::Solutions,
+                format!(
+                    "Die Lösungen lesen die Eingabe nicht – {} Lösung(en) werden repariert …",
+                    todo.len()
+                ),
+                None,
+            );
+            let phase = Instant::now();
+            let repairs = todo.iter().map(|&i| {
+                let (run, sessions, convs, results, all_inputs) =
+                    (&run, &sessions, &convs, &results, &all_inputs);
+                let (examples, example_mode, templates) = (&examples, &example_mode, &templates);
+                async move {
+                    let (messages, answer) = &convs[i];
+                    let samples = ignored_samples(results[i].as_deref(), all_inputs);
+                    let messages = prompts::input_ignored_repair_messages(
+                        messages.clone(),
+                        answer,
+                        lang.id,
+                        &samples,
+                    );
+                    let r = match run.chat(run.solution_request(messages)).await {
+                        Ok(r) => r,
+                        Err(AiError::Cancelled) => return Err(AiError::Cancelled),
+                        // The model failed for this repair: the old solution stays.
+                        Err(_) => return Ok(None),
+                    };
+                    run.shared().stats.solutions_repaired += 1;
+                    if r.finish_reason.as_deref() == Some("length") {
+                        return Ok(None);
+                    }
+                    let Some(code) = prompts::extract_code(&r.content, lang.id)
+                        .filter(|c| languages::precheck(lang, c).is_none())
+                    else {
+                        return Ok(None);
+                    };
+                    run.check()?;
+                    if !sessions[i].compile(&code).await?.ok {
+                        return Ok(None);
+                    }
+                    run.check()?;
+                    let outs = sessions[i].run(all_inputs).await?;
+                    let passes = outs.len() == all_inputs.len()
+                        && examples.iter().zip(&outs).all(|(ex, o)| {
+                            valid(o)
+                                && fits_templates(templates, o)
+                                && example_mode.matches(&ex.output, &o.stdout)
+                        });
+                    Ok(passes.then_some((code, outs)))
+                }
+            });
+            let repaired = futures_util::future::join_all(repairs).await;
+            let mut fatal: Option<AiError> = None;
+            for (&i, r) in todo.iter().zip(repaired) {
+                match r {
+                    Ok(Some((code, outs))) => {
+                        codes[i] = code;
+                        results[i] = Some(outs);
+                    }
+                    // A failed repair keeps the old solution (it still
+                    // ignores the input and counts as such).
+                    Ok(None) => {}
+                    Err(e) => {
+                        if fatal
+                            .as_ref()
+                            .is_none_or(|old| matches!(old, AiError::Cancelled))
+                        {
+                            fatal = Some(e);
+                        }
+                    }
+                }
+            }
+            if let Some(e) = fatal {
+                close_all(sessions).await;
+                return Err(e);
+            }
+            ignoring = ignoring_input(&mode, &results, &all_inputs);
+            input_repaired = !most_ignore_input(&ignoring);
+            run.shared().stats.phase_ms.repairs += ms(phase.elapsed());
+            run.step(Step::Majority);
+        }
+        close_all(sessions).await;
+        evidence.input_ignored = reads && most_ignore_input(&ignoring);
+        evidence.input_required = input_required;
+        evidence.input_repaired = input_repaired;
+        run.shared().stats.solutions_ignoring_input = ignoring.iter().filter(|x| **x).count();
 
         let voters = s;
         let (sheet, check) = (example_inputs.len(), check_inputs.len());
@@ -2946,6 +3281,9 @@ mod tests {
             .unwrap_or(0);
         if code.contains("crash") {
             step("", 1)
+        } else if code.contains("constant") {
+            // Prints the result of the sheet example for every input.
+            step("42\n", 0)
         } else if code.contains("double") {
             step(&format!("{}\n", n * 2), 0)
         } else if code.contains("triple") {
@@ -3240,6 +3578,59 @@ mod tests {
         assert!(example_in_text(&normalize_for_match(&far), &ex("", "34")));
     }
 
+    /// KI-Benchmark task „java-note“: no example, but the numbers of the
+    /// grade limits scattered in one sentence.
+    const NOTE_TASK: &str = "Note aus Punktzahl\n\nLies eine ganze Punktzahl zwischen 0 und \
+        100 und gib die Note als Zahl aus: 90 bis 100 Punkte ergeben 1, 75 bis 89 Punkte 2, 60 \
+        bis 74 Punkte 3, 50 bis 59 Punkte 4 und 0 bis 49 Punkte 5.";
+
+    #[test]
+    fn scattered_numbers_are_no_examples() {
+        let ex = |i: &str, o: &str| Example {
+            input: i.into(),
+            output: o.into(),
+        };
+        // Regression 1.1.1 (baseline): the structure step invented these
+        // five; „75 → 3“ survived because both numbers occur close together.
+        let invented = [
+            ex("95", "1"),
+            ex("85", "2"),
+            ex("75", "3"),
+            ex("65", "4"),
+            ex("55", "5"),
+        ];
+        let (kept, discarded) = verify_examples(NOTE_TASK, &invented);
+        assert!(kept.is_empty(), "{kept:?}");
+        assert_eq!(discarded, 5);
+        // Other numbers of the sentence do not pair up either.
+        for (i, o) in [
+            ("75", "2"),
+            ("60", "4"),
+            ("90", "5"),
+            ("0", "5"),
+            ("100", "2"),
+        ] {
+            let (kept, _) = verify_examples(NOTE_TASK, &[ex(i, o)]);
+            assert!(kept.is_empty(), "{i} -> {o}");
+        }
+        // Numbers only count as whole tokens: „3“ is not in „30“ or „3.5“.
+        let text = normalize_for_match("Eingabe: 7 ergibt 30");
+        assert!(!example_in_text(&text, &ex("7", "3")));
+        let text = normalize_for_match("Eingabe: 7 ergibt 3.5");
+        assert!(!example_in_text(&text, &ex("7", "3")));
+        assert!(example_in_text(&text, &ex("7", "3.5")));
+        // A real example in the same text still counts …
+        let text = format!("{NOTE_TASK}\n\nBeispiel:\nEingabe: 75\nAusgabe: 2\n");
+        let (kept, _) = verify_examples(&text, &[ex("75", "2"), ex("75", "3")]);
+        assert_eq!(kept, vec![ex("75", "2")]);
+        // … also with numbers in between and an output marker, or an arrow.
+        let text = normalize_for_match("Eingabe 1: 75\nEingabe 2: 95\nAusgabe 1: 2\nAusgabe 2: 1");
+        assert!(example_in_text(&text, &ex("95", "1")));
+        let text = normalize_for_match("75 → 2, 95 → 1");
+        assert!(example_in_text(&text, &ex("95", "1")));
+        assert!(example_in_text(&text, &ex("75", "2")));
+    }
+
     #[test]
     fn json_parsing_is_tolerant_but_not_inventive() {
         let s: Structure = parse_json(&structure_json(&[("1", "2")], "tokens")).unwrap();
@@ -3430,6 +3821,229 @@ mod tests {
     // --- Flow with mocks -------------------------------------------------------
 
     #[test]
+    fn ignoring_input_needs_three_different_inputs_with_the_same_output() {
+        let mode = CompareMode::default();
+        let ins = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let outs = |v: &[&str]| Some(v.iter().map(|o| step(o, 0)).collect::<Vec<_>>());
+        let inputs = ins(&["21\n", "", "1\n", "2\n"]);
+        let results = vec![
+            // Constant: ignores the input (the empty input does not count).
+            outs(&["42\n", "7\n", "42\n", "42\n"]),
+            // Depends on the input.
+            outs(&["42\n", "0\n", "2\n", "4\n"]),
+            // Incomplete.
+            None,
+        ];
+        assert_eq!(
+            ignoring_input(&mode, &results, &inputs),
+            vec![true, false, false]
+        );
+        assert!(!most_ignore_input(&[true, false, false]));
+        assert!(most_ignore_input(&[true, true, false]));
+        assert!(most_ignore_input(&[true]));
+        // Only two different inputs (a duplicate does not count): too few.
+        let inputs = ins(&["21\n", "1\n", "1\n"]);
+        let results = vec![outs(&["42\n", "42\n", "42\n"])];
+        assert_eq!(ignoring_input(&mode, &results, &inputs), vec![false]);
+        // A crash is no constant output.
+        let inputs = ins(&["21\n", "1\n", "2\n"]);
+        let results = vec![Some(vec![step("42\n", 0), step("42\n", 0), step("", 1)])];
+        assert_eq!(ignoring_input(&mode, &results, &inputs), vec![false]);
+        assert_eq!(
+            ignored_samples(results[0].as_deref(), &inputs),
+            vec![
+                ("21\n".into(), "42\n".into()),
+                ("1\n".into(), "42\n".into())
+            ]
+        );
+    }
+
+    #[test]
+    fn ignored_input_is_never_green() {
+        let base = Evidence {
+            solutions: 3,
+            compiled: 3,
+            survivors: 3,
+            examples: 1,
+            tests: 4,
+            min_agreement: Some(1.0),
+            ..Evidence::default()
+        };
+        assert_eq!(decide_confidence(&base).level, ConfidenceLevel::Green);
+        let c = decide_confidence(&Evidence {
+            input_ignored: true,
+            input_required: true,
+            ..base.clone()
+        });
+        assert_eq!(c.level, ConfidenceLevel::Red);
+        assert_eq!(c.reasons, vec![INPUT_IGNORED_REASON.to_string()]);
+        let c = decide_confidence(&Evidence {
+            input_ignored: true,
+            ..base.clone()
+        });
+        assert_eq!(c.level, ConfidenceLevel::Yellow);
+        assert_eq!(c.reasons[0], INPUT_IGNORED_NOTE);
+        let c = decide_confidence(&Evidence {
+            input_repaired: true,
+            ..base
+        });
+        assert_eq!(c.level, ConfidenceLevel::Yellow);
+        assert_eq!(c.reasons[0], INPUT_REPAIRED_REASON);
+    }
+
+    fn input_ignored_repairs(r: &[ChatRequest]) -> usize {
+        r.iter()
+            .filter(|c| {
+                is_repair(c)
+                    && c.messages
+                        .last()
+                        .is_some_and(|m| m.content.starts_with(prompts::INPUT_IGNORED_REPAIR))
+            })
+            .count()
+    }
+
+    #[test]
+    fn solutions_ignoring_the_input_give_red_not_green() {
+        // Regression 1.1.2 („backwards“): the solutions print the result of
+        // the sheet example for every input; every test expected it – green.
+        let llm = MockLlm::new(scripted(
+            structure_json(&[("21", "42")], "lines"),
+            vec!["constant"],
+            r#"{"inputs": ["1", "2", "3"]}"#,
+        ));
+        let exec = MockExec::new();
+        let token = CancellationToken::new();
+        let r = block_on(generate(
+            &llm,
+            &exec,
+            &req(None),
+            settings(3),
+            &token,
+            |_| {},
+        ))
+        .unwrap();
+        assert_eq!(
+            r.confidence.level,
+            ConfidenceLevel::Red,
+            "{:?}",
+            r.confidence
+        );
+        assert_eq!(r.confidence.reasons, vec![INPUT_IGNORED_REASON.to_string()]);
+        assert!(r.tests.is_empty());
+        assert!(r.reference_solution.is_none());
+        assert_eq!(r.stats.solutions_ignoring_input, 3);
+        // One repair per solution, with the inputs and the same output shown.
+        let calls = llm.calls();
+        assert_eq!(input_ignored_repairs(&calls), 3);
+        let repair = calls.iter().find(|c| is_repair(c)).unwrap();
+        assert!(repair.messages[3].content.contains("```\n21\n```"));
+        assert!(repair.messages[3].content.contains("```\n42\n```"));
+        assert_eq!(r.stats.solutions_repaired, 3);
+        let c = exec.get();
+        assert_eq!(c.opened, c.closed);
+        assert!(!r.variation_suggested);
+    }
+
+    #[test]
+    fn solutions_ignoring_the_input_are_repaired() {
+        let llm = MockLlm::new(scripted(
+            structure_json(&[("21", "42")], "lines"),
+            vec![
+                "constant", "constant", "constant", "double", "double", "double",
+            ],
+            r#"{"inputs": ["1", "2", "3"]}"#,
+        ));
+        let exec = MockExec::new();
+        let token = CancellationToken::new();
+        let r = block_on(generate(
+            &llm,
+            &exec,
+            &req(None),
+            settings(3),
+            &token,
+            |_| {},
+        ))
+        .unwrap();
+        assert_eq!(
+            r.confidence.level,
+            ConfidenceLevel::Yellow,
+            "{:?}",
+            r.confidence
+        );
+        assert!(r
+            .confidence
+            .reasons
+            .contains(&INPUT_REPAIRED_REASON.to_string()));
+        let expected: Vec<&str> = r.tests.iter().map(|t| t.expected.as_str()).collect();
+        assert_eq!(expected, vec!["42\n", "2\n", "4\n", "6\n"]);
+        assert!(r.reference_solution.unwrap().contains("double"));
+        assert_eq!(r.stats.solutions_ignoring_input, 0);
+        assert_eq!(input_ignored_repairs(&llm.calls()), 3);
+        let c = exec.get();
+        assert_eq!(c.opened, c.closed);
+    }
+
+    #[test]
+    fn constant_output_without_input_hint_is_only_yellow() {
+        // No input hint in the text and no sheet example with input: the
+        // model said the task reads input, but maybe it does not.
+        let structure = serde_json::json!({
+            "inputFormat": "eine Zahl",
+            "outputFormat": "",
+            "readsInput": true,
+            "examples": [],
+        })
+        .to_string();
+        let llm = MockLlm::new(scripted(
+            structure,
+            vec!["constant"],
+            r#"{"inputs": ["1", "2", "3"]}"#,
+        ));
+        let r = generate_with(
+            &llm,
+            req_with_text("Berechne die Antwort und gib sie aus."),
+            3,
+        )
+        .unwrap();
+        assert_eq!(
+            r.confidence.level,
+            ConfidenceLevel::Yellow,
+            "{:?}",
+            r.confidence
+        );
+        assert_eq!(r.confidence.reasons[0], INPUT_IGNORED_NOTE);
+        assert_eq!(r.stats.solutions_ignoring_input, 3);
+    }
+
+    #[test]
+    fn class_only_task_is_reported_without_model() {
+        let llm = MockLlm::new(|_: &ChatRequest, _| -> Result<String, AiError> {
+            panic!("no model call for a class-only task")
+        });
+        let r = generate_with(
+            &llm,
+            GenerateRequest {
+                task_text: no_input::tests::BANK_ACCOUNT.into(),
+                language: "java".into(),
+                compare_mode: None,
+            },
+            3,
+        )
+        .unwrap();
+        assert_eq!(r.unsupported, Some(Unsupported::ApiTask));
+        assert_eq!(r.confidence.level, ConfidenceLevel::Red);
+        assert_eq!(r.confidence.reasons, vec![API_TASK_REASON.to_string()]);
+        assert!(r.tests.is_empty());
+        assert!(r.reference_solution.is_none());
+        assert!(!r.variation_suggested);
+        assert_eq!(r.stats.solutions_requested, 3);
+        assert!(llm.calls().is_empty());
+        let v = serde_json::to_value(&r).unwrap();
+        assert_eq!(v["unsupported"], "API_TASK");
+        assert_eq!(v["variationSuggested"], false);
+    }
+
+    #[test]
     fn green_with_examples_and_clear_majority() {
         let llm = MockLlm::new(scripted(
             structure_json(&[("21", "42"), ("5", "10"), ("7", "14")], "lines"),
@@ -3464,6 +4078,8 @@ mod tests {
         assert_eq!(r.tests[4].expected, "2000000\n");
         assert!(r.tests.iter().all(|t| t.agreement == 1.0));
         assert!(r.reference_solution.unwrap().contains("double"));
+        // A task with input: no variation check suggested.
+        assert!(!r.variation_suggested);
         // Structure, the five solutions in one request, the inputs.
         assert_eq!(r.stats.llm_calls, 3);
         assert_eq!(r.stats.tokens_per_second, Some(20.0));
@@ -4419,6 +5035,8 @@ mod tests {
         // Per solution: the empty input and the probe, nothing else.
         assert_eq!(exec.get().runs, 3 * 2);
         assert!(r.stats.no_input);
+        // Without input the variation check is suggested.
+        assert!(r.variation_suggested);
     }
 
     #[test]
@@ -4905,6 +5523,7 @@ mod tests {
         let calls = llm.calls();
         assert!(!calls.iter().any(is_inputs), "no inputs for fixed values");
         assert!(r.stats.fixed_values);
+        assert!(r.variation_suggested);
         assert!(r.stats.no_input);
         assert_eq!(r.stats.inputs_generated, 0);
         // The three reading solutions were repaired with the no-input hint.

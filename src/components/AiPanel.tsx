@@ -227,7 +227,19 @@ export function AiPanel({
       )}
       {cancelled && <p className="muted small">Abgebrochen.</p>}
       {error && <div className="banner error small">{error}</div>}
-      {result && (
+      {result?.unsupported === "API_TASK" && (
+        <div className="ai-result">
+          <div className="note small" role="status">
+            <strong>Klassen-Aufgabe erkannt – keine Testfälle.</strong>
+            <ul className="reasons">
+              {result.confidence.reasons.map((r) => (
+                <li key={r}>{r}</li>
+              ))}
+            </ul>
+          </div>
+        </div>
+      )}
+      {result && !result.unsupported && (
         <div className="ai-result">
           <div className="row">
             <span className={`status conf-${result.confidence.level}`}>
@@ -251,6 +263,8 @@ export function AiPanel({
             {result.stats.fixedValues && " (feste Werte laut Aufgabentext)"}
             {(result.stats.solutionsReadInput ?? 0) > 0 &&
               ` · ${result.stats.solutionsReadInput} Lösung(en) lasen trotzdem eine Eingabe (verworfen)`}
+            {(result.stats.solutionsIgnoringInput ?? 0) > 0 &&
+              ` · ${result.stats.solutionsIgnoringInput} Lösung(en) ignorierten die Eingabe`}
             {(result.stats.inputsInvalid ?? 0) > 0 &&
               ` · ${result.stats.inputsInvalid} ungültige KI-Eingabe(n) nicht übernommen`}
             {(result.stats.testsRedundant ?? 0) > 0 &&

@@ -316,6 +316,8 @@ async fn ki_bench() {
                         res.confidence.reasons
                     );
                     line["level"] = serde_json::to_value(res.confidence.level).unwrap();
+                    line["unsupported"] = serde_json::to_value(res.unsupported).unwrap();
+                    line["variationSuggested"] = json!(res.variation_suggested);
                     line["reasons"] = json!(res.confidence.reasons);
                     line["testCount"] = json!(res.tests.len());
                     line["tests"] = json!(res

@@ -133,6 +133,9 @@ export default function App() {
   const reference = activeAi?.reference ?? null;
   // Variation check after „Prüfen“: switch, result, progress line (null = not running).
   const [variationEnabled, setVariationEnabled] = useState(() => readStored(VARIATION_KEY) !== "off");
+  // Set by the last AI generation (variationSuggested) instead of by hand:
+  // shown as a hint at the switch until the user changes it.
+  const [variationByAi, setVariationByAi] = useState(false);
   const [variation, setVariation] = useState<VariationResult | null>(null);
   const [variationBusy, setVariationBusy] = useState<string | null>(null);
   // Run counters: results of outdated runs (a newer „Prüfen“) and of
@@ -371,6 +374,10 @@ export default function App() {
   testsRef.current = tests;
   const onAiResult = (r: GenerateResult, taskText: string) => {
     setAiNote(null);
+    // After every generation the switch follows the suggestion (fixed values
+    // or no input: on; otherwise off). The stored value stays the manual
+    // preference (it is only written when the user changes the switch).
+    applyVariationSuggestion(r.variationSuggested ?? false);
     setAiData({
       taskText,
       templates: r.outputTemplates ?? [],
@@ -410,14 +417,24 @@ export default function App() {
     setVariationBusy(null);
   };
 
-  const onVariationToggle = (on: boolean) => {
+  const switchVariation = (on: boolean) => {
     setVariationEnabled(on);
-    writeStored(VARIATION_KEY, on ? "on" : "off");
     if (!on) {
       // Back to the plain report: no wrongLogic marks any more.
       stopVariation();
       setVariation(null);
     }
+  };
+
+  const onVariationToggle = (on: boolean) => {
+    switchVariation(on);
+    setVariationByAi(false);
+    writeStored(VARIATION_KEY, on ? "on" : "off");
+  };
+
+  const applyVariationSuggestion = (on: boolean) => {
+    switchVariation(on);
+    setVariationByAi(true);
   };
 
   // Variation check after a run (separate from run_tests: the report is
@@ -628,6 +645,18 @@ export default function App() {
                   onChange={(e) => onVariationToggle(e.target.checked)}
                 />
                 Auf zufällig richtige Ergebnisse prüfen (Variationstest)
+                {variationByAi && (
+                  <span
+                    className="muted variation-hint"
+                    title={
+                      variationEnabled
+                        ? "Die Aufgabe hat feste Werte bzw. liest keine Eingabe – dort fallen zufällig richtige Lösungen am ehesten auf. Das Häkchen lässt sich jederzeit ändern."
+                        : "Die Aufgabe liest Eingaben (oder ist eine reine Klassen-Aufgabe) – der Variationstest bringt dort wenig. Das Häkchen lässt sich jederzeit setzen."
+                    }
+                  >
+                    (von der KI {variationEnabled ? "gesetzt" : "abgewählt"})
+                  </span>
+                )}
               </label>
               <button className="primary" onClick={() => void onRun()} disabled={!canRun}>
                 {running ? "Prüfe …" : "Prüfen"}
