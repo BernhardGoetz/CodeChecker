@@ -1,0 +1,7 @@
+{
+  "name": "py-summe",
+  "language": "python",
+  "text": "Summe zweier Zahlen\n\nLies zwei ganze Zahlen a und b (in einer Zeile, durch ein Leerzeichen getrennt) und gib ihre Summe aus.",
+  "kind": "program",
+  "reference": "import sys\na, b = map(int, sys.stdin.read().split()[:2])\nprint(a + b)\n"
+}

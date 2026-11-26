@@ -16,6 +16,13 @@ Format nach [Keep a Changelog](https://keepachangelog.com/de/1.1.0/), Versionen 
   die Kontaktseite „Wie du uns erreichst“. Die Seiten entstehen aus den vorhandenen
   Markdown-Dateien (`npm run build:site`) und laden keine externen Ressourcen. Die App
   selbst ist unverändert.
+- KI-Benchmark für die Entwicklung (`scripts/ki-bench/`, `src-tauri/tests/ki_bench.rs`):
+  feste Aufgaben mit Referenzprogrammen, Läufe der echten Testfall-Erzeugung mit
+  Modell, llama-server und Sandbox, Auswertung und Vorher/Nachher-Vergleich
+  (`evaluate.py`), dazu die Messung des Stands 1.1.1. Die Statistik einer
+  Testfall-Erzeugung zählt zusätzlich die Prompt-Tokens aus dem Cache, die Länge
+  jeder Lösung und die am Token-Limit abgeschnittenen Lösungen. Das Verhalten der
+  App ändert sich nicht.
 
 ## [1.1.1] - 2026-11-16
 

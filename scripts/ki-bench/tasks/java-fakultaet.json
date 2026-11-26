@@ -1,0 +1,7 @@
+{
+  "name": "java-fakultaet",
+  "language": "java",
+  "text": "Fakultät\n\nLies eine ganze Zahl n (0 <= n <= 20) und gib n! aus. Verwende für das Ergebnis den Datentyp long.",
+  "kind": "program",
+  "reference": "import math, sys\nprint(math.factorial(int(sys.stdin.read().split()[0])))\n"
+}

@@ -1,0 +1,7 @@
+{
+  "name": "py-fizzbuzz",
+  "language": "python",
+  "text": "FizzBuzz\n\nLies eine ganze Zahl n (1 <= n <= 100). Gib für jede Zahl i von 1 bis n eine Zeile aus: „FizzBuzz“, wenn i durch 3 und 5 teilbar ist, „Fizz“, wenn i nur durch 3 teilbar ist, „Buzz“, wenn i nur durch 5 teilbar ist, sonst die Zahl i selbst.",
+  "kind": "program",
+  "reference": "import sys\nn = int(sys.stdin.read().split()[0])\nfor i in range(1, n + 1):\n    if i % 15 == 0:\n        print(\"FizzBuzz\")\n    elif i % 3 == 0:\n        print(\"Fizz\")\n    elif i % 5 == 0:\n        print(\"Buzz\")\n    else:\n        print(i)\n"
+}

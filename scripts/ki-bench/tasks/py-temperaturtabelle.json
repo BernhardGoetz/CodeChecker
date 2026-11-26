@@ -1,0 +1,7 @@
+{
+  "name": "py-temperaturtabelle",
+  "language": "python",
+  "text": "Temperaturtabelle\n\nGib eine Umrechnungstabelle von Grad Celsius in Grad Fahrenheit aus, von -10 bis 50 Grad Celsius in Schritten von 15 Grad. Es gibt keine Eingabe. Fahrenheit = Celsius * 9 / 5 + 32. Jede Zeile hat das Format:\n-10.0 C = 14.0 F",
+  "kind": "program",
+  "reference": "for c in range(-10, 51, 15):\n    print(f\"{c:.1f} C = {c * 9 / 5 + 32:.1f} F\")\n"
+}

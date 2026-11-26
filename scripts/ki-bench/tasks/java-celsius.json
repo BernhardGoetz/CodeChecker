@@ -1,0 +1,7 @@
+{
+  "name": "java-celsius",
+  "language": "java",
+  "text": "Celsius in Fahrenheit\n\nRechne die Temperaturen 0, 25 und 100 Grad Celsius in Grad Fahrenheit um (Fahrenheit = Celsius * 9 / 5 + 32) und gib für jede Temperatur eine Zeile im folgenden Format aus:\n0.0 Grad Celsius sind 32.0 Grad Fahrenheit.\nDas Programm liest keine Eingabe.",
+  "kind": "program",
+  "reference": "for c in (0, 25, 100):\n    print(f\"{c:.1f} Grad Celsius sind {c * 9 / 5 + 32:.1f} Grad Fahrenheit.\")\n"
+}

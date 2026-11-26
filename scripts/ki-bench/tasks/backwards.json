@@ -1,0 +1,7 @@
+{
+  "name": "backwards",
+  "language": "java",
+  "text": "Aufgabe 6.3 (Backwards)\nSchreiben Sie das Programm Backwards. Dieses Programm enthält die Methode public static String reverseString(String str), die einen String als Eingabeparameter erhält. Die Methode soll die darin enthaltene Buchstabenfolge umkehren und in einen String speichern, der der Rückgabewert der Methode ist. Der Aufruf von reverseString(“Uni”) würde z.B. “inU” zurückliefern.\nLaden Sie Ihren Quellcode auf den DevCheck hoch.",
+  "kind": "api",
+  "reference": "Keine Konsolen-Ein-/Ausgabe: public static String reverseString(String str) liefert str in umgekehrter Zeichenfolge, z. B. reverseString(\"Uni\") == \"inU\". In E0 erwartet: Rot bzw. keine Tests."
+}
