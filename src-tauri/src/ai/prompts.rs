@@ -300,7 +300,7 @@ pub fn solution_messages(
         "You are an expert programmer. Solve the programming exercise with a complete, \
          correct program. {} Print exactly the required output and nothing else (no \
          prompts, no explanations, no extra spaces). Answer with exactly one ```{} code \
-         block containing the whole program.{}",
+         block containing the whole program.{NO_COMMENTS_RULE}{}",
         language_rules(language, ctx.class_name, ctx.no_input),
         fence(language),
         // Only without input: with input it made the solutions worse
@@ -365,14 +365,22 @@ pub fn solution_messages(
     vec![ChatMessage::system(system), ChatMessage::user(user)]
 }
 
-/// Part of the solution system prompt for a task without input: one
-/// comment per output line with the values used, every printed value in its
-/// own variable. Against solutions that print a variable of another subtask
-/// (e.g. the duration instead of the end time).
-pub const STEPS_RULE: &str = " Before printing, write one short comment per required output \
-line naming the subtask it answers and the values from the task it uses, copied exactly as \
-written in the task. Compute every printed value in its own named variable from named input \
-variables; do not reuse a variable of another subtask unless the task says so.";
+/// Part of every solution system prompt: code only, no comments and no
+/// explanations (they made the answers long, up to the token limit; issue
+/// #46). Named variables stay welcome: they carry the meaning instead.
+pub const NO_COMMENTS_RULE: &str = " Write no comments and no explanations, only code. Keep the \
+program short; give intermediate values descriptive variable names instead of commenting them.";
+
+/// Part of the solution system prompt for a task without input: every
+/// printed value in its own variable named after its subtask, computed from
+/// named variables holding the values of the task. Against solutions that
+/// print a variable of another subtask (e.g. the duration instead of the
+/// end time). Until 1.1.1 it also asked for one comment per output line;
+/// [`NO_COMMENTS_RULE`] replaces that, the variable names carry it now.
+pub const STEPS_RULE: &str = " Store every value from the task in its own named variable, \
+copied exactly as written in the task. Compute every printed value in its own variable whose \
+name says which required output line or subtask it answers; do not reuse a variable of another \
+subtask unless the task says so.";
 
 /// Heading of [`fixed_values_block`].
 pub const FIXED_VALUES_HEADING: &str = "Fixed values stated in the task text (extracted \
@@ -545,6 +553,26 @@ pub fn repair_messages(
         "The program does not compile:\n```\n{}\n```\nFix the error. Answer with the complete \
          corrected program in exactly one ```{} code block.",
         errors.trim_end(),
+        fence(language)
+    )));
+    conversation
+}
+
+/// Repair hint for a solution answer cut off at the token limit (German
+/// meaning: „Die Antwort war zu lang; schreibe das Programm kürzer“).
+pub const TRUNCATED_REPAIR: &str = "The answer was too long and was cut off before the program \
+was complete. Write the program shorter: no comments, no explanations, no unused code.";
+
+/// Follow-up after a solution answer was cut off at the token limit: the
+/// cut-off answer plus [`TRUNCATED_REPAIR`] (it was not compiled).
+pub fn truncated_repair_messages(
+    mut conversation: Vec<ChatMessage>,
+    previous_answer: &str,
+    language: &str,
+) -> Vec<ChatMessage> {
+    conversation.push(ChatMessage::assistant(previous_answer));
+    conversation.push(ChatMessage::user(format!(
+        "{TRUNCATED_REPAIR} Answer with the complete program in exactly one ```{} code block.",
         fence(language)
     )));
     conversation
@@ -1032,6 +1060,50 @@ mod tests {
         let m = solution_messages("Gib die Zahlen von 1 bis 40 aus.", "python", &ctx);
         assert!(!m[1].content.contains(FIXED_VALUES_HEADING));
         assert!(m[0].content.contains(STEPS_RULE));
+    }
+
+    #[test]
+    fn solutions_get_no_comments_rule_instead_of_comment_duty() {
+        for no_input in [false, true] {
+            for lang in ["python", "java"] {
+                let ctx = SolutionContext {
+                    input_format: "eine Zahl",
+                    output_format: "",
+                    examples: &[],
+                    output_templates: &[],
+                    class_name: None,
+                    no_input,
+                };
+                let system = &solution_messages(TIME_SHEET, lang, &ctx)[0].content;
+                assert!(system.contains(NO_COMMENTS_RULE), "{system}");
+                // No prompt asks for comments any more.
+                for duty in ["write one short comment", "comment per"] {
+                    assert!(!system.contains(duty), "{system}");
+                }
+                // Named values stay asked for without input.
+                assert_eq!(system.contains("own named variable"), no_input);
+            }
+        }
+        assert!(!STEPS_RULE.contains("comment"));
+        assert!(STEPS_RULE.contains("copied exactly as written in the task"));
+        assert!(NO_COMMENTS_RULE.contains("variable names"));
+    }
+
+    #[test]
+    fn truncated_repair_asks_for_a_shorter_complete_program() {
+        let base = vec![ChatMessage::system("s"), ChatMessage::user("u")];
+        let r = truncated_repair_messages(
+            base,
+            "```java
+public class Main {",
+            "java",
+        );
+        assert_eq!(r.len(), 4);
+        assert_eq!(r[2].content, "```java\npublic class Main {");
+        assert!(r[3].content.starts_with(TRUNCATED_REPAIR));
+        assert!(r[3].content.contains("too long"));
+        assert!(r[3].content.contains("shorter"));
+        assert!(r[3].content.ends_with("exactly one ```java code block."));
     }
 
     #[test]

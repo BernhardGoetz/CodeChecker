@@ -24,6 +24,16 @@ Format nach [Keep a Changelog](https://keepachangelog.com/de/1.1.0/), Versionen 
   jeder Lösung und die am Token-Limit abgeschnittenen Lösungen. Das Verhalten der
   App ändert sich nicht.
 
+### Geändert
+
+- KI: Die Musterlösungen werden kürzer. Die KI schreibt keine Kommentare und
+  Erklärungen mehr in den Code, sondern benennt Zwischenwerte mit sprechenden
+  Variablennamen; bei Aufgaben ohne Eingabe steht jeder Wert aus der Aufgabe und jede
+  Ausgabezeile weiterhin in einer eigenen Variablen. Eine Lösung darf höchstens 640
+  statt 1024 Tokens lang sein. Wird eine Lösung dabei abgeschnitten, wird sie nicht
+  mehr kompiliert, sondern in der Reparaturrunde mit dem Hinweis „zu lang, kürzer
+  schreiben“ neu angefordert. Es bleibt bei drei Lösungen je Aufgabe (#46).
+
 ## [1.1.1] - 2026-11-16
 
 ### Entfernt

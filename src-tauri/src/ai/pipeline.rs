@@ -55,8 +55,12 @@ const STRUCTURE_TEMPERATURE: f32 = 0.0;
 const INPUTS_TEMPERATURE: f32 = 0.4;
 const RETRY_TEMPERATURE: f32 = 0.3;
 const STRUCTURE_MAX_TOKENS: u32 = 1024;
-/// The answer ends at the closing code fence, so this only bounds runaways.
-const SOLUTION_MAX_TOKENS: u32 = 1024;
+/// The answer ends at the closing code fence, so this bounds runaways and
+/// overlong answers: the longest solution of the KI-Benchmark 1.1.1 had
+/// 611 tokens (with comments, which [`prompts::NO_COMMENTS_RULE`] now
+/// forbids), the median 81. A cut-off answer is not compiled but repaired
+/// with [`prompts::TRUNCATED_REPAIR`].
+pub const SOLUTION_MAX_TOKENS: u32 = 640;
 const INPUTS_MAX_TOKENS: u32 = 1024;
 
 #[derive(Debug, Clone, Deserialize)]
@@ -236,7 +240,8 @@ pub struct Stats {
     /// repairs), in the order they arrived. Only measured.
     pub solution_tokens: Vec<u64>,
     /// Solution answers cut off at the token limit (`finish_reason`
-    /// "length"). Only counted; the answers are handled as before.
+    /// "length", first round and repairs). They are not compiled but
+    /// repaired with [`prompts::TRUNCATED_REPAIR`].
     pub solutions_truncated: usize,
     pub tokens_per_second: Option<f64>,
     pub duration_ms: u64,
@@ -1531,6 +1536,9 @@ struct Attempt<S> {
     /// out or printed something else on the probe): reason for a repair
     /// round with [`prompts::NO_INPUT_REPAIR`].
     reads_input: bool,
+    /// The answer was cut off at the token limit: not compiled, reason for
+    /// a repair round with [`prompts::TRUNCATED_REPAIR`].
+    truncated: bool,
 }
 
 impl<S> Attempt<S> {
@@ -1547,7 +1555,15 @@ impl<S> Attempt<S> {
             llm_error: None,
             fatal: None,
             reads_input: false,
+            truncated: false,
         }
+    }
+
+    /// Takes a solution answer; one cut off at the token limit is marked
+    /// (see [`Attempt::truncated`]).
+    fn set_answer(&mut self, r: ChatResponse) {
+        self.truncated = r.finish_reason.as_deref() == Some("length");
+        self.answer = Some(r.content);
     }
 }
 
@@ -1753,6 +1769,12 @@ where
         a.failure = None;
         a.passes = false;
         a.reads_input = false;
+        if a.truncated {
+            // An incomplete program: compiling it only wastes time, the
+            // repair asks for a shorter one.
+            a.failure = Some(prompts::TRUNCATED_REPAIR.into());
+            return Ok(());
+        }
         let code = match prompts::extract_code(&answer, self.lang.id) {
             None => {
                 a.failure = Some("No code block found in the answer.".into());
@@ -2238,7 +2260,7 @@ pub async fn generate<L: Llm + Sync, E: Executor>(
             let (examples, example_mode, run_inputs, templates, done) =
                 (&examples, &example_mode, &run_inputs, &templates, &done);
             let checks = attempts.iter_mut().zip(answers).map(|(a, r)| async move {
-                a.answer = Some(r.content);
+                a.set_answer(r);
                 if a.fatal.is_none() {
                     if let Err(e) = run
                         .check_answer(a, examples, example_mode, run_inputs, templates, strict)
@@ -2308,7 +2330,13 @@ pub async fn generate<L: Llm + Sync, E: Executor>(
                             );
                             let failure = a.failure.clone().unwrap_or_default();
                             let answer = a.answer.clone().unwrap_or_default();
-                            a.messages = if a.reads_input {
+                            a.messages = if a.truncated {
+                                prompts::truncated_repair_messages(
+                                    std::mem::take(&mut a.messages),
+                                    &answer,
+                                    lang.id,
+                                )
+                            } else if a.reads_input {
                                 prompts::no_input_repair_messages(
                                     std::mem::take(&mut a.messages),
                                     &answer,
@@ -2324,7 +2352,7 @@ pub async fn generate<L: Llm + Sync, E: Executor>(
                             };
                             match run.chat(run.solution_request(a.messages.clone())).await {
                                 Ok(r) => {
-                                    a.answer = Some(r.content);
+                                    a.set_answer(r);
                                     run.shared().stats.solutions_repaired += 1;
                                     if let Err(e) = run
                                         .check_answer(
@@ -4541,13 +4569,101 @@ mod tests {
         assert_eq!(r.stats.cached_tokens, 120);
         assert_eq!(r.stats.solution_tokens, vec![100, 101, 102]);
         assert_eq!(r.stats.solutions_truncated, 1);
-        // Only counted: the cut-off answer is still checked as before.
-        assert_eq!(r.stats.solutions_passed, 3);
-        assert_eq!(r.confidence.level, ConfidenceLevel::Green);
+        // The cut-off answer fails without a compile; two of three passed,
+        // so no repair.
+        assert_eq!(r.stats.solutions_passed, 2);
+        assert_eq!(r.stats.solutions_repaired, 0);
         let json = serde_json::to_value(&r.stats).unwrap();
         assert_eq!(json["cachedTokens"], 120);
         assert_eq!(json["solutionTokens"], serde_json::json!([100, 101, 102]));
         assert_eq!(json["solutionsTruncated"], 1);
+    }
+
+    /// Cuts the solution answers `cut` of the first round off at the token
+    /// limit, and every repair answer too if `cut_repairs`.
+    struct CuttingLlm<F> {
+        inner: MockLlm<F>,
+        cut: Vec<usize>,
+        cut_repairs: bool,
+    }
+
+    impl<F: Fn(&ChatRequest, usize) -> Result<String, AiError> + Sync> Llm for CuttingLlm<F> {
+        async fn chat(&self, req: &ChatRequest) -> Result<ChatResponse, AiError> {
+            Ok(self.chat_n(req, 1).await?.remove(0))
+        }
+        async fn chat_n(&self, req: &ChatRequest, n: usize) -> Result<Vec<ChatResponse>, AiError> {
+            let mut rs = self.inner.chat_n(req, n).await?;
+            if req.prefill.is_some() {
+                for (i, r) in rs.iter_mut().enumerate() {
+                    let cut = if is_repair(req) {
+                        self.cut_repairs
+                    } else {
+                        self.cut.contains(&i)
+                    };
+                    if cut {
+                        r.finish_reason = Some("length".into());
+                        // Cut off: no closing fence.
+                        r.content = r.content.trim_end_matches("```").to_string();
+                    }
+                }
+            }
+            Ok(rs)
+        }
+    }
+
+    /// Result, containers opened, compiles, model requests.
+    fn cutting_run(cut_repairs: bool) -> (GenerateResult, usize, usize, Vec<ChatRequest>) {
+        let llm = CuttingLlm {
+            inner: MockLlm::new(scripted(
+                structure_json(&[("21", "42")], "lines"),
+                vec!["double"],
+                r#"{"inputs": ["1"]}"#,
+            )),
+            cut: vec![1, 2],
+            cut_repairs,
+        };
+        let exec = MockExec::new();
+        let r = block_on(generate(
+            &llm,
+            &exec,
+            &req(None),
+            settings(3),
+            &CancellationToken::new(),
+            |_| {},
+        ))
+        .unwrap();
+        let c = exec.get();
+        (r, c.opened, c.compiles, llm.inner.calls())
+    }
+
+    /// Issue #46: an answer cut off at the token limit is not compiled but
+    /// repaired with the hint to write shorter; three solutions stay.
+    #[test]
+    fn truncated_solutions_are_repaired_without_compiling() {
+        let (r, opened, compiles, calls) = cutting_run(false);
+        assert_eq!(opened, 3, "still three solutions");
+        // One compile in the first round (the two cut-off answers are
+        // skipped), two after the repairs.
+        assert_eq!(compiles, 3);
+        let repairs: Vec<&ChatRequest> = calls.iter().filter(|c| is_repair(c)).collect();
+        assert_eq!(repairs.len(), 2);
+        for rq in &repairs {
+            assert!(rq.messages[3]
+                .content
+                .starts_with(prompts::TRUNCATED_REPAIR));
+            assert!(!rq.messages[3].content.contains("does not compile"));
+            assert_eq!(rq.max_tokens, SOLUTION_MAX_TOKENS);
+        }
+        assert_eq!(r.stats.solutions_truncated, 2);
+        assert_eq!(r.stats.solutions_repaired, 2);
+        assert_eq!(r.stats.solutions_passed, 3);
+        assert_eq!(r.confidence.level, ConfidenceLevel::Green);
+        // Cut off again: counted again, still not compiled.
+        let (r, _, compiles, _) = cutting_run(true);
+        assert_eq!(compiles, 1);
+        assert_eq!(r.stats.solutions_truncated, 4);
+        assert_eq!(r.stats.solutions_repaired, 2);
+        assert_eq!(r.stats.solutions_passed, 1);
     }
 
     /// Regression case A (release 1.1.0, 7B model, three solutions): two
@@ -4617,7 +4733,7 @@ mod tests {
     /// model read „15 Uhr, 17 Minuten und 51 Sekunden“ as 17:51:00 in every
     /// solution alike (third line 9630 instead of 441), which no majority
     /// can correct. Without input the solution prompt now names the values
-    /// found by rules and asks for one comment per output line; the mock
+    /// found by rules and asks for one named variable per output line; the mock
     /// model gets the time right only with them.
     #[test]
     fn time_sheet_gets_fixed_values_in_the_solution_prompt() {
@@ -4992,7 +5108,8 @@ mod tests {
             .unwrap();
         assert_eq!(sol.prefill.as_deref(), Some("```python\n"));
         assert_eq!(sol.stop, vec!["\n```".to_string()]);
-        assert_eq!(sol.max_tokens, 1024);
+        assert_eq!(sol.max_tokens, SOLUTION_MAX_TOKENS);
+        assert_eq!(SOLUTION_MAX_TOKENS, 640);
     }
 
     #[test]
