@@ -24,6 +24,7 @@ use code_pruefer_lib::ai::llama::{
 use code_pruefer_lib::ai::pipeline::{
     self, ConfidenceLevel, GenerateRequest, SandboxExecutor, Settings,
 };
+use code_pruefer_lib::ai::prompts;
 use code_pruefer_lib::ai::AiError;
 use tokio_util::sync::CancellationToken;
 
@@ -456,10 +457,9 @@ struct ScriptedLlm {
 
 impl Llm for ScriptedLlm {
     async fn chat(&self, req: &ChatRequest) -> Result<llama::ChatResponse, AiError> {
-        let system = &req.messages[0].content;
-        let content = if system.contains("analyse programming exercises") {
+        let content = if prompts::is_step(&req.messages, prompts::STRUCTURE_RULES) {
             self.structure.to_string()
-        } else if system.contains("write test inputs") {
+        } else if prompts::is_step(&req.messages, prompts::INPUTS_RULES) {
             self.inputs.to_string()
         } else if req.messages.len() > 2 {
             // Repair round.
@@ -630,10 +630,8 @@ struct RestartingLlm {
 
 impl Llm for RestartingLlm {
     async fn chat(&self, req: &ChatRequest) -> Result<llama::ChatResponse, AiError> {
-        let solution = !req.messages[0]
-            .content
-            .contains("analyse programming exercises")
-            && !req.messages[0].content.contains("write test inputs");
+        let solution = !prompts::is_step(&req.messages, prompts::STRUCTURE_RULES)
+            && !prompts::is_step(&req.messages, prompts::INPUTS_RULES);
         if solution {
             let n = {
                 let mut c = self.solution_calls.lock().unwrap();

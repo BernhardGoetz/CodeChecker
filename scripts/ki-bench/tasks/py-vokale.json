@@ -1,0 +1,7 @@
+{
+  "name": "py-vokale",
+  "language": "python",
+  "text": "Vokale zählen\n\nLies eine Zeile Text und gib aus, wie viele Vokale sie enthält. Als Vokale zählen nur a, e, i, o und u, Groß- und Kleinschreibung ist egal.",
+  "kind": "program",
+  "reference": "import sys\nline = sys.stdin.readline().rstrip(\"\\n\")\nprint(sum(1 for c in line.lower() if c in \"aeiou\"))\n"
+}

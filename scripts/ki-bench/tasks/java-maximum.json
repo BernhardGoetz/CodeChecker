@@ -1,0 +1,7 @@
+{
+  "name": "java-maximum",
+  "language": "java",
+  "text": "Maximum dreier Zahlen\n\nLies drei ganze Zahlen (durch Leerzeichen getrennt) und gib die größte der drei Zahlen aus.",
+  "kind": "program",
+  "reference": "import sys\nprint(max(map(int, sys.stdin.read().split()[:3])))\n"
+}

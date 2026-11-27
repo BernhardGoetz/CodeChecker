@@ -442,6 +442,13 @@ fn subsume(mut placed: Vec<Placed>) -> Vec<Placed> {
 fn accept_templates(text: &str, raw: &[OutputTemplate]) -> (Vec<OutputTemplate>, usize) {
     let mut kept: Vec<OutputTemplate> = Vec::new();
     let mut discarded = 0;
+    let declared: Vec<String> = {
+        let lines: Vec<&str> = text.split('\n').collect();
+        declared_placeholders(&lines)
+            .into_iter()
+            .map(|d| d.token)
+            .collect()
+    };
     for t in raw {
         let body = normalize_for_match(&t.text);
         let mut tokens: Vec<String> = Vec::new();
@@ -457,7 +464,8 @@ fn accept_templates(text: &str, raw: &[OutputTemplate]) -> (Vec<OutputTemplate>,
             && tokens.len() <= MAX_PLACEHOLDERS
             && tokens.iter().all(|p| {
                 !p.is_empty() && !p.chars().any(char::is_whitespace) && contains_token(&body, p)
-            });
+            })
+            && !example_sentence(text, &body, &tokens, &declared);
         if !ok {
             discarded += 1;
             continue;
@@ -470,6 +478,51 @@ fn accept_templates(text: &str, raw: &[OutputTemplate]) -> (Vec<OutputTemplate>,
         }
     }
     (kept, discarded)
+}
+
+/// Phrases that introduce an example value in prose („z. B. “Your current
+/// balance is €100.0”“).
+const EXAMPLE_INTROS: &[&str] = &[
+    "z. b.",
+    "z.b.",
+    "zb.",
+    "e.g.",
+    "e. g.",
+    "zum beispiel",
+    "for example",
+    "beispielsweise",
+    "bspw.",
+];
+
+/// Characters between an example intro and the example (quotes, colon).
+const EXAMPLE_GAP: &[char] = &[
+    ' ', ':', '"', '\'', '`', '„', '“', '”', '‚', '‘', '’', '»', '«', '(',
+];
+
+/// Whether `body` is only an example sentence of the task text: every
+/// occurrence directly follows an example intro ([`EXAMPLE_INTROS`]) and no
+/// placeholder is declared (by the sheet, see [`declared_placeholders`], or
+/// by its form, see [`syntactic_placeholders`]). Such a sentence („z.B.
+/// “Your current balance is €100.0”“) shows one possible output with real
+/// values; the model's "placeholder" `100.0` is a guess (regression
+/// „Aufgabe 6.2 BankAccount“).
+fn example_sentence(text: &str, body: &str, tokens: &[String], declared: &[String]) -> bool {
+    let explicit = tokens.iter().any(|t| declared.contains(t))
+        || body
+            .split('\n')
+            .any(|l| tokens.iter().any(|t| syntactic_placeholders(l).contains(t)));
+    if explicit {
+        return false;
+    }
+    let mut seen = false;
+    for (p, _) in text.match_indices(body) {
+        seen = true;
+        let before = text[..p].trim_end_matches(EXAMPLE_GAP).to_lowercase();
+        if !EXAMPLE_INTROS.iter().any(|i| before.ends_with(i)) {
+            return false;
+        }
+    }
+    seen
 }
 
 /// Lines for the comparison: LF, trimmed, whitespace runs as one space,
@@ -1713,6 +1766,34 @@ mod tests {
             .map(|w| t(w, &[w]))
             .collect();
         assert_eq!(verify_templates(SHEET, &many).0.len(), MAX_TEMPLATES);
+    }
+
+    #[test]
+    fn example_sentences_are_no_templates() {
+        // Regression 1.1.2 („Aufgabe 6.2 BankAccount“): the model took the
+        // example sentence as a template with the placeholder `100.0`.
+        let text = "Wenn die Einzahlung erfolgreich ist, soll eine formatierte Nachricht \
+            zurückgegeben werden, die den aktuellen Kontostand angibt, z.B. “Your current \
+            balance is €100.0”.\nBei erfolgreicher Abhebung ebenso, z. B. „Your current \
+            balance is €100.0“.";
+        let raw = [t("Your current balance is €100.0", &["100.0"])];
+        assert_eq!(verify_templates(text, &raw), (vec![], 1));
+        for intro in ["e.g.", "zum Beispiel", "for example:", "beispielsweise"] {
+            let text = format!("Gib den Kontostand aus, {intro} Kontostand: 100.0");
+            let raw = [t("Kontostand: 100.0", &["100.0"])];
+            assert_eq!(verify_templates(&text, &raw).0, vec![], "{intro}");
+        }
+        // A declared or syntactic placeholder keeps the template.
+        let text = "Gib den Kontostand aus, z.B. „Kontostand: 100.0“ (100.0 ist ein Platzhalter).";
+        let raw = [t("Kontostand: 100.0", &["100.0"])];
+        assert_eq!(verify_templates(text, &raw).0.len(), 1);
+        let text = "Gib den Kontostand aus, z. B. Kontostand: <betrag>";
+        let raw = [t("Kontostand: <betrag>", &["<betrag>"])];
+        assert_eq!(verify_templates(text, &raw).0.len(), 1);
+        // Also shown outside an example sentence: still a template.
+        let text = "Ausgabe:\nKontostand: 100.0\nz. B. Kontostand: 100.0";
+        let raw = [t("Kontostand: 100.0", &["100.0"])];
+        assert_eq!(verify_templates(text, &raw).0.len(), 1);
     }
 
     #[test]

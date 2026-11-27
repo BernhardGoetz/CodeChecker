@@ -127,12 +127,18 @@ export default function App() {
     reference: { code: string; language: string } | null;
     inputFormat: string;
     inputConstraints: string;
+    /** Method task: the tests' input/output is an assumption (shown with failed checks). */
+    ioAssumptionNote: string | null;
   } | null>(null);
   const activeAi = aiData !== null && aiData.taskText === task ? aiData : null;
   const outputTemplates = activeAi?.templates ?? [];
   const reference = activeAi?.reference ?? null;
+  const ioAssumptionNote = activeAi?.ioAssumptionNote ?? null;
   // Variation check after „Prüfen“: switch, result, progress line (null = not running).
   const [variationEnabled, setVariationEnabled] = useState(() => readStored(VARIATION_KEY) !== "off");
+  // Set by the last AI generation (variationSuggested) instead of by hand:
+  // shown as a hint at the switch until the user changes it.
+  const [variationByAi, setVariationByAi] = useState(false);
   const [variation, setVariation] = useState<VariationResult | null>(null);
   const [variationBusy, setVariationBusy] = useState<string | null>(null);
   // Run counters: results of outdated runs (a newer „Prüfen“) and of
@@ -371,12 +377,17 @@ export default function App() {
   testsRef.current = tests;
   const onAiResult = (r: GenerateResult, taskText: string) => {
     setAiNote(null);
+    // After every generation the switch follows the suggestion (fixed values
+    // or no input: on; otherwise off). The stored value stays the manual
+    // preference (it is only written when the user changes the switch).
+    applyVariationSuggestion(r.variationSuggested ?? false);
     setAiData({
       taskText,
       templates: r.outputTemplates ?? [],
       reference: r.referenceSolution ? { code: r.referenceSolution, language: languageId } : null,
       inputFormat: r.inputFormat ?? "",
       inputConstraints: r.inputConstraints ?? "",
+      ioAssumptionNote: r.ioAssumptionNote ?? null,
     });
     if (r.tests.length === 0) return;
     const prev = testsRef.current;
@@ -410,14 +421,24 @@ export default function App() {
     setVariationBusy(null);
   };
 
-  const onVariationToggle = (on: boolean) => {
+  const switchVariation = (on: boolean) => {
     setVariationEnabled(on);
-    writeStored(VARIATION_KEY, on ? "on" : "off");
     if (!on) {
       // Back to the plain report: no wrongLogic marks any more.
       stopVariation();
       setVariation(null);
     }
+  };
+
+  const onVariationToggle = (on: boolean) => {
+    switchVariation(on);
+    setVariationByAi(false);
+    writeStored(VARIATION_KEY, on ? "on" : "off");
+  };
+
+  const applyVariationSuggestion = (on: boolean) => {
+    switchVariation(on);
+    setVariationByAi(true);
   };
 
   // Variation check after a run (separate from run_tests: the report is
@@ -628,6 +649,18 @@ export default function App() {
                   onChange={(e) => onVariationToggle(e.target.checked)}
                 />
                 Auf zufällig richtige Ergebnisse prüfen (Variationstest)
+                {variationByAi && (
+                  <span
+                    className="muted variation-hint"
+                    title={
+                      variationEnabled
+                        ? "Die Aufgabe hat feste Werte bzw. liest keine Eingabe – dort fallen zufällig richtige Lösungen am ehesten auf. Das Häkchen lässt sich jederzeit ändern."
+                        : "Die Aufgabe liest Eingaben (oder ist eine Klassen- bzw. Methoden-Aufgabe) – der Variationstest bringt dort wenig. Das Häkchen lässt sich jederzeit setzen."
+                    }
+                  >
+                    (von der KI {variationEnabled ? "gesetzt" : "abgewählt"})
+                  </span>
+                )}
               </label>
               <button className="primary" onClick={() => void onRun()} disabled={!canRun}>
                 {running ? "Prüfe …" : "Prüfen"}
@@ -694,6 +727,15 @@ export default function App() {
             </h2>
             {running && <p className="note busy">{progressText(progress)}</p>}
             {error && <div className="banner error">{error}</div>}
+            {shownReport &&
+              !running &&
+              ioAssumptionNote &&
+              tests.some((t) => t.origin === "ai") &&
+              shownReport.passed < shownReport.total && (
+                <p className="note warn small" role="note">
+                  <strong>Hinweis zu den KI-Testfällen:</strong> {ioAssumptionNote}
+                </p>
+              )}
             {shownReport && !running && (
               <ResultsPanel
                 report={shownReport}
