@@ -1798,7 +1798,7 @@ mod tests {
         assert!(r.note.unwrap().contains("unterschiedliche Ausgaben"));
         // Case A: inputs with changing reference output are not compared.
         let model = llm(|r: &ChatRequest| {
-            if r.messages[0].content == prompts::INPUTS_SYSTEM {
+            if prompts::is_step(&r.messages, prompts::INPUTS_RULES) {
                 Ok(r#"{"inputs": ["3"]}"#.into())
             } else {
                 Err(AiError::Http("x".into()))
@@ -1842,7 +1842,7 @@ mod tests {
     #[test]
     fn inputs_case_compares_with_the_reference() {
         let model = llm(|r: &ChatRequest| {
-            if r.messages[0].content != prompts::INPUTS_SYSTEM {
+            if !prompts::is_step(&r.messages, prompts::INPUTS_RULES) {
                 return Err(AiError::Http("keine Erklärung".into()));
             }
             assert!(r.messages[1].content.contains("Input format: eine Zahl n"));

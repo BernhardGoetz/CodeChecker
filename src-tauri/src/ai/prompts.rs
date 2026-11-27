@@ -1,6 +1,12 @@
 //! Prompts and JSON schemas for the test generation pipeline, and robust
-//! extraction of code from model answers. System prompts are English (more
+//! extraction of code from model answers. Prompts are English (more
 //! reliable with Qwen2.5-Coder); the task text is passed on unchanged.
+//!
+//! Every step of the test generation starts with the same system prompt
+//! ([`COMMON_SYSTEM`]) and the task text ([`shared_prefix`]); the step's
+//! rules follow under [`INSTRUCTIONS_HEADING`] ([`task_messages`]). So
+//! llama-server takes the shared start from its prompt cache instead of
+//! processing the task text again for every step (issue #47).
 
 use serde_json::{json, Value};
 
@@ -190,10 +196,73 @@ fn task_block(task_text: &str) -> String {
     format!("Task (verbatim from the exercise sheet):\n<<<\n{task_text}\n>>>")
 }
 
+// --- Shared prompt prefix ---------------------------------------------------
+
+/// System prompt of every step of the test generation (structure,
+/// solutions, repairs, inputs): byte-identical, so llama-server can take
+/// the system prompt and the task text from its prompt cache instead of
+/// processing them again for every step (issue #47). What a step has to
+/// do follows the task text under [`INSTRUCTIONS_HEADING`].
+pub const COMMON_SYSTEM: &str = "You are an expert programmer and work on programming \
+exercises whose programs read from standard input and write to standard output. The user \
+message starts with the task text, followed by the instructions for the current step under \
+\"### Instructions\". Follow these instructions exactly.";
+
+/// Heading between the shared task text and the instructions of a step.
+pub const INSTRUCTIONS_HEADING: &str = "### Instructions";
+
+/// Start of every step's prompt, identical in all steps: [`COMMON_SYSTEM`]
+/// and the user message up to and including [`INSTRUCTIONS_HEADING`].
+/// Only what follows differs between the steps. Public for the
+/// remaining-time estimate (this part comes from the prompt cache).
+pub fn shared_prefix(task_text: &str) -> String {
+    format!("{}\n\n{INSTRUCTIONS_HEADING}\n", task_block(task_text))
+}
+
+/// Separator before a line of a step's context: an empty line after the
+/// rules (`rules`: length of the instructions up to the end of the rules),
+/// else a line break (format lines stay together).
+fn context_separator(user: &str, rules: usize) -> &'static str {
+    if user.len() == rules {
+        "\n\n"
+    } else {
+        "\n"
+    }
+}
+
+/// Messages of a step: [`COMMON_SYSTEM`], then one user message with the
+/// [`shared_prefix`] (task text, heading) and the step's `instructions`
+/// (rules, then what the step knows besides the task text).
+pub fn task_messages(task_text: &str, instructions: &str) -> Vec<ChatMessage> {
+    vec![
+        ChatMessage::system(COMMON_SYSTEM),
+        ChatMessage::user(format!("{}{instructions}", shared_prefix(task_text))),
+    ]
+}
+
+/// The instructions of a step's messages contain `rules` (e.g.
+/// [`STRUCTURE_RULES`], [`INPUTS_RULES`]): which step a request belongs to
+/// (tests, benchmark).
+pub fn is_step(messages: &[ChatMessage], rules: &str) -> bool {
+    messages.first().is_some_and(|m| m.content == COMMON_SYSTEM)
+        && messages.get(1).is_some_and(|m| {
+            m.content
+                .split_once(INSTRUCTIONS_HEADING)
+                .is_some_and(|(_, instructions)| instructions.contains(rules))
+        })
+}
+
+/// Characters of the shared start of every step's prompt ([`COMMON_SYSTEM`]
+/// and [`shared_prefix`]), for the remaining-time estimate.
+pub fn shared_prefix_chars(task_text: &str) -> usize {
+    COMMON_SYSTEM.chars().count() + shared_prefix(task_text).chars().count()
+}
+
 // --- Step 1: structure ------------------------------------------------------
 
-pub const STRUCTURE_SYSTEM: &str = "You analyse programming exercises whose programs read \
-from standard input and write to standard output. Extract:\n\
+/// Instructions of the structure step (until 1.1.1 its system prompt; the
+/// rules are unchanged).
+pub const STRUCTURE_RULES: &str = "Analyse the programming exercise above. Extract:\n\
 - inputFormat: how the input looks (one or two sentences; \"no input\" if the program \
 reads nothing),\n\
 - readsInput: true if the program reads standard input, false if it reads nothing,\n\
@@ -270,10 +339,7 @@ pub fn structure_schema() -> Value {
 }
 
 pub fn structure_messages(task_text: &str) -> Vec<ChatMessage> {
-    vec![
-        ChatMessage::system(STRUCTURE_SYSTEM),
-        ChatMessage::user(task_block(task_text)),
-    ]
+    task_messages(task_text, STRUCTURE_RULES)
 }
 
 // --- Step 2: solutions ------------------------------------------------------
@@ -296,18 +362,19 @@ pub fn solution_messages(
     language: &str,
     ctx: &SolutionContext,
 ) -> Vec<ChatMessage> {
-    let system = format!(
-        "You are an expert programmer. Solve the programming exercise with a complete, \
-         correct program. {} Print exactly the required output and nothing else (no \
-         prompts, no explanations, no extra spaces). Answer with exactly one ```{} code \
-         block containing the whole program.{}",
+    // Until 1.1.1 the system prompt; the rules are unchanged.
+    let mut user = format!(
+        "Solve the programming exercise with a complete, correct program. {} Print exactly \
+         the required output and nothing else (no prompts, no explanations, no extra spaces). \
+         Answer with exactly one ```{} code block containing the whole \
+         program.{NO_COMMENTS_RULE}{}",
         language_rules(language, ctx.class_name, ctx.no_input),
         fence(language),
         // Only without input: with input it made the solutions worse
         // (KI-Benchmark 1.1.1, „parken“).
         if ctx.no_input { STEPS_RULE } else { "" }
     );
-    let mut user = task_block(task_text);
+    let rules = user.len();
     if ctx.no_input {
         user.push_str(&format!("\n\n{NO_INPUT_NOTE}"));
         let fixed = fixed_values_block(task_text);
@@ -318,7 +385,8 @@ pub fn solution_messages(
         user.push_str(&format!("\n\nInput format: {}", ctx.input_format.trim()));
     }
     if !ctx.output_format.trim().is_empty() {
-        user.push_str(&format!("\nOutput format: {}", ctx.output_format.trim()));
+        let sep = context_separator(&user, rules);
+        user.push_str(&format!("{sep}Output format: {}", ctx.output_format.trim()));
     }
     for (i, (input, output)) in ctx.examples.iter().enumerate() {
         user.push_str(&format!(
@@ -362,17 +430,30 @@ pub fn solution_messages(
             }
         }
     }
-    vec![ChatMessage::system(system), ChatMessage::user(user)]
+    task_messages(task_text, &user)
 }
 
-/// Part of the solution system prompt for a task without input: one
-/// comment per output line with the values used, every printed value in its
-/// own variable. Against solutions that print a variable of another subtask
-/// (e.g. the duration instead of the end time).
-pub const STEPS_RULE: &str = " Before printing, write one short comment per required output \
-line naming the subtask it answers and the values from the task it uses, copied exactly as \
-written in the task. Compute every printed value in its own named variable from named input \
-variables; do not reuse a variable of another subtask unless the task says so.";
+/// Part of every solution prompt: code only, no comments and no
+/// explanations (they made the answers long, up to the token limit; issue
+/// #46). Named variables stay welcome: they carry the meaning instead.
+pub const NO_COMMENTS_RULE: &str = " Write no comments and no explanations, only code. Keep the \
+program short; give intermediate values descriptive variable names instead of commenting them.";
+
+/// Part of the solution system prompt for a task without input: one short
+/// label comment per required output line (the only exception to
+/// [`NO_COMMENTS_RULE`]), every printed value in its own variable named
+/// after its subtask, computed from named variables holding the values of
+/// the task. Against solutions that print a variable of another subtask
+/// (e.g. the duration instead of the end time). Until 1.1.1 the comment
+/// also listed the values used; without any comment two of three solutions
+/// of „time“ printed the variable of another subtask (KI-Benchmark
+/// 1.1.2-e1), so the label stays.
+pub const STEPS_RULE: &str = " Only exception to the comment rule: directly before computing \
+each required output line, write one short comment with just its subtask label (e.g. `c)`) \
+and what it prints, in at most eight words. Store every value from the task in its own named \
+variable, copied exactly as written in the task. Compute every printed value in its own \
+variable whose name says which required output line or subtask it answers; do not reuse a \
+variable of another subtask unless the task says so.";
 
 /// Heading of [`fixed_values_block`].
 pub const FIXED_VALUES_HEADING: &str = "Fixed values stated in the task text (extracted \
@@ -550,6 +631,26 @@ pub fn repair_messages(
     conversation
 }
 
+/// Repair hint for a solution answer cut off at the token limit (German
+/// meaning: „Die Antwort war zu lang; schreibe das Programm kürzer“).
+pub const TRUNCATED_REPAIR: &str = "The answer was too long and was cut off before the program \
+was complete. Write the program shorter: no comments, no explanations, no unused code.";
+
+/// Follow-up after a solution answer was cut off at the token limit: the
+/// cut-off answer plus [`TRUNCATED_REPAIR`] (it was not compiled).
+pub fn truncated_repair_messages(
+    mut conversation: Vec<ChatMessage>,
+    previous_answer: &str,
+    language: &str,
+) -> Vec<ChatMessage> {
+    conversation.push(ChatMessage::assistant(previous_answer));
+    conversation.push(ChatMessage::user(format!(
+        "{TRUNCATED_REPAIR} Answer with the complete program in exactly one ```{} code block.",
+        fence(language)
+    )));
+    conversation
+}
+
 /// Part of the solution prompt for a task without input.
 pub const NO_INPUT_NOTE: &str = "This program reads no input. Use the values given in the task \
 as constants in the code; do not read anything from standard input.";
@@ -576,10 +677,45 @@ pub fn no_input_repair_messages(
     conversation
 }
 
+/// Repair of a solution that ignores its input although the task reads
+/// some (regression 1.1.2, „backwards“: every solution printed
+/// `reverseString("Uni")` for every input).
+pub const INPUT_IGNORED_REPAIR: &str = "The program ignores its input: it printed the same \
+output for different inputs. Values in the task text are only examples. Read the input from \
+standard input and compute the output from it as the task describes; never hard-code the \
+example values.";
+
+/// Follow-up after a solution printed the same for different inputs;
+/// `samples`: inputs with the program's output (shown to the model).
+pub fn input_ignored_repair_messages(
+    mut conversation: Vec<ChatMessage>,
+    previous_answer: &str,
+    language: &str,
+    samples: &[(String, String)],
+) -> Vec<ChatMessage> {
+    conversation.push(ChatMessage::assistant(previous_answer));
+    let mut text = INPUT_IGNORED_REPAIR.to_string();
+    for (input, output) in samples {
+        text.push_str(&format!(
+            "\n\nInput:\n```\n{}\n```\nOutput of your program:\n```\n{}\n```",
+            input.trim_end(),
+            output.trim_end()
+        ));
+    }
+    text.push_str(&format!(
+        "\n\nAnswer with the complete corrected program in exactly one ```{} code block.",
+        fence(language)
+    ));
+    conversation.push(ChatMessage::user(text));
+    conversation
+}
+
 // --- Step 5: test inputs ----------------------------------------------------
 
-pub const INPUTS_SYSTEM: &str = "You write test inputs for programs that solve a \
-programming exercise. Produce up to 10 different inputs that are valid according to the \
+/// Instructions of the inputs step (until 1.1.1 its system prompt; the
+/// rules are unchanged).
+pub const INPUTS_RULES: &str = "Write test inputs for programs that solve the programming \
+exercise above. Produce up to 10 different inputs that are valid according to the \
 task and its input format: typical cases and edge cases (smallest and largest allowed \
 values, boundaries, special cases mentioned in the task). Every input must respect the \
 input limits; edge cases only inside the limits. Never write inputs the task does not \
@@ -617,16 +753,19 @@ pub struct InputsContext<'a> {
 }
 
 pub fn inputs_messages(task_text: &str, ctx: &InputsContext) -> Vec<ChatMessage> {
-    let mut user = task_block(task_text);
+    let mut user = INPUTS_RULES.to_string();
+    let rules = user.len();
     if !ctx.input_format.trim().is_empty() {
         user.push_str(&format!("\n\nInput format: {}", ctx.input_format.trim()));
     }
     if !ctx.output_format.trim().is_empty() {
-        user.push_str(&format!("\nOutput format: {}", ctx.output_format.trim()));
+        let sep = context_separator(&user, rules);
+        user.push_str(&format!("{sep}Output format: {}", ctx.output_format.trim()));
     }
     if !ctx.constraints.trim().is_empty() {
+        let sep = context_separator(&user, rules);
         user.push_str(&format!(
-            "\nInput limits (every input must respect them): {}",
+            "{sep}Input limits (every input must respect them): {}",
             ctx.constraints.trim()
         ));
     }
@@ -650,7 +789,7 @@ pub fn inputs_messages(task_text: &str, ctx: &InputsContext) -> Vec<ChatMessage>
             user.push_str(&format!("\n```\n{}\n```", e.trim_end()));
         }
     }
-    vec![ChatMessage::system(INPUTS_SYSTEM), ChatMessage::user(user)]
+    task_messages(task_text, &user)
 }
 
 // --- Code extraction --------------------------------------------------------
@@ -741,6 +880,7 @@ Since I started with the task 12345678 seconds have passed.";
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ai::llama::Role;
 
     #[test]
     fn extracts_tagged_block() {
@@ -784,6 +924,104 @@ mod tests {
         );
     }
 
+    /// Issue #47: every step starts with the same system prompt and the same
+    /// task text, byte for byte (llama-server takes this part from its
+    /// prompt cache); only the instructions after the heading differ.
+    #[test]
+    fn all_steps_share_the_same_prefix() {
+        let task = TIME_SHEET;
+        let prefix = shared_prefix(task);
+        assert!(prefix.starts_with("Task (verbatim from the exercise sheet):\n<<<\n"));
+        assert!(prefix.ends_with(&format!(">>>\n\n{INSTRUCTIONS_HEADING}\n")));
+        let examples = [("3\n".to_string(), "6\n".to_string())];
+        let mut steps: Vec<(&str, Vec<ChatMessage>)> =
+            vec![("structure", structure_messages(task))];
+        for lang in ["python", "java"] {
+            for no_input in [false, true] {
+                let ctx = SolutionContext {
+                    input_format: "zwei Zahlen",
+                    output_format: "eine Zahl",
+                    examples: &examples,
+                    output_templates: &[],
+                    class_name: Some("Time"),
+                    no_input,
+                };
+                let m = solution_messages(task, lang, &ctx);
+                steps.push((
+                    "repair",
+                    repair_messages(m.clone(), "```\nx\n```", "err", lang),
+                ));
+                steps.push((
+                    "truncated",
+                    truncated_repair_messages(m.clone(), "```\nx", lang),
+                ));
+                steps.push((
+                    "no input",
+                    no_input_repair_messages(m.clone(), "```\nx\n```", lang),
+                ));
+                steps.push(("solution", m));
+            }
+        }
+        steps.push((
+            "inputs",
+            inputs_messages(
+                task,
+                &InputsContext {
+                    input_format: "n",
+                    output_format: "2n",
+                    constraints: "1 <= n",
+                    examples: &examples,
+                    known_inputs: &["4".into()],
+                },
+            ),
+        ));
+        steps.push(("inputs", inputs_messages(task, &InputsContext::default())));
+        for (name, m) in &steps {
+            assert_eq!(m[0].role, Role::System, "{name}");
+            assert_eq!(m[0].content, COMMON_SYSTEM, "{name}");
+            assert_eq!(m[1].role, Role::User, "{name}");
+            assert!(m[1].content.starts_with(&prefix), "{name}");
+            // The task text appears once, in the prefix.
+            assert_eq!(m[1].content.matches(task).count(), 1, "{name}");
+            assert_eq!(
+                shared_prefix_chars(task),
+                COMMON_SYSTEM.chars().count() + prefix.chars().count()
+            );
+        }
+        // The step's rules follow right after the heading.
+        assert!(is_step(&structure_messages(task), STRUCTURE_RULES));
+        assert!(!is_step(&structure_messages(task), INPUTS_RULES));
+        assert!(is_step(
+            &inputs_messages(task, &InputsContext::default()),
+            INPUTS_RULES
+        ));
+        // A task text quoting the rules does not make a step.
+        let quoting = solution_messages(
+            INPUTS_RULES,
+            "python",
+            &SolutionContext {
+                input_format: "",
+                output_format: "",
+                examples: &[],
+                output_templates: &[],
+                class_name: None,
+                no_input: false,
+            },
+        );
+        assert!(!is_step(&quoting, INPUTS_RULES));
+        // Before the prefix there is nothing step-specific in the system
+        // prompt.
+        for rule in [
+            STRUCTURE_RULES,
+            INPUTS_RULES,
+            NO_COMMENTS_RULE,
+            STEPS_RULE,
+            FIXED_VALUES_RULE,
+        ] {
+            assert!(!COMMON_SYSTEM.contains(rule.trim()));
+        }
+    }
+
     #[test]
     fn prompts_contain_task_and_rules() {
         let ctx = SolutionContext {
@@ -795,16 +1033,16 @@ mod tests {
             no_input: false,
         };
         let m = solution_messages("Verdopple n.", "java", &ctx);
-        assert!(m[0].content.contains("public class Main"));
-        assert!(m[0].content.contains("```java"));
-        assert!(m[0]
+        assert!(m[1].content.contains("public class Main"));
+        assert!(m[1].content.contains("```java"));
+        assert!(m[1]
             .content
             .contains("Never print a prompt before reading input"));
-        assert!(!m[0].content.contains("Never pass a prompt string"));
+        assert!(!m[1].content.contains("Never pass a prompt string"));
         assert!(m[1].content.contains("Verdopple n."));
         assert!(m[1].content.contains("Example 1\nInput:\n```\n3\n```"));
         let m = solution_messages("x", "python", &ctx);
-        assert!(m[0].content.contains("Never pass a prompt string"));
+        assert!(m[1].content.contains("Never pass a prompt string"));
         let r = repair_messages(m, "```python\nprint(\n```", "SyntaxError: x", "python");
         assert_eq!(r.len(), 4);
         assert!(r[3].content.contains("SyntaxError: x"));
@@ -826,7 +1064,7 @@ mod tests {
             structure_schema()["properties"]["outputTemplates"]["maxItems"],
             MAX_TEMPLATES
         );
-        assert!(STRUCTURE_SYSTEM.contains("Never put an output template"));
+        assert!(STRUCTURE_RULES.contains("Never put an output template"));
         let templates = [OutputTemplate {
             text: "12345678 seconds have passed.".into(),
             placeholders: vec!["12345678".into()],
@@ -848,7 +1086,7 @@ mod tests {
             "Placeholder `12345678` stands for an integer: print it as a whole number without \
              decimal places."
         ));
-        assert!(STRUCTURE_SYSTEM.contains("never split it into one template per line"));
+        assert!(STRUCTURE_RULES.contains("never split it into one template per line"));
         assert!(!m[1].content.contains("several output format templates"));
         assert_eq!(
             structure_schema()["properties"]["inputFormat"]["maxLength"],
@@ -889,26 +1127,44 @@ mod tests {
             no_input: true,
         };
         let m = solution_messages("Aufgabe 2.2 Time", "java", &ctx);
-        assert!(m[0].content.contains("never use `java.util.Scanner`"));
-        assert!(!m[0].content.contains("Read the input with"));
-        assert!(m[0].content.contains(FIXED_VALUES_RULE));
+        assert!(m[1].content.contains("never use `java.util.Scanner`"));
+        assert!(!m[1].content.contains("Read the input with"));
+        assert!(m[1].content.contains(FIXED_VALUES_RULE));
         assert!(m[1].content.contains(NO_INPUT_NOTE));
         // A wrong input format of the model is not passed on.
         assert!(!m[1].content.contains("hour minute second"));
         let m = solution_messages("t", "python", &ctx);
-        assert!(m[0].content.contains("never call `input()`"));
-        let r = no_input_repair_messages(m, "```python\nx = input()\n```", "python");
+        assert!(m[1].content.contains("never call `input()`"));
+        let r = no_input_repair_messages(m.clone(), "```python\nx = input()\n```", "python");
         assert_eq!(r.len(), 4);
         assert!(r[3].content.contains(NO_INPUT_REPAIR));
         assert!(r[3].content.contains("```python"));
+        // A solution that ignores its input: the samples are shown.
+        let r = input_ignored_repair_messages(
+            m.clone(),
+            "```java\nclass Main {}\n```",
+            "java",
+            &[
+                ("hello\n".into(), "inU\n".into()),
+                ("12345\n".into(), "inU\n".into()),
+            ],
+        );
+        assert_eq!(r.len(), 4);
+        assert_eq!(r[..2], m[..]);
+        assert!(r[3].content.starts_with(INPUT_IGNORED_REPAIR));
+        assert!(r[3]
+            .content
+            .contains("Input:\n```\nhello\n```\nOutput of your program:\n```\ninU\n```"));
+        assert!(r[3].content.contains("12345"));
+        assert!(r[3].content.contains("```java code block"));
         // The general rule is part of every solution prompt.
         let ctx = SolutionContext {
             no_input: false,
             ..ctx
         };
         let m = solution_messages("t", "python", &ctx);
-        assert!(m[0].content.contains(FIXED_VALUES_RULE));
-        assert!(m[0]
+        assert!(m[1].content.contains(FIXED_VALUES_RULE));
+        assert!(m[1]
             .content
             .contains("Read the input from standard input (`input()`"));
     }
@@ -1010,7 +1266,9 @@ mod tests {
             no_input: true,
         };
         let m = solution_messages(TIME_SHEET, "java", &ctx);
-        assert!(m[0].content.ends_with(STEPS_RULE));
+        assert!(m[1]
+            .content
+            .contains(&format!("{STEPS_RULE}\n\n{NO_INPUT_NOTE}")));
         let u = &m[1].content;
         let note = u.find(NO_INPUT_NOTE).unwrap();
         let fixed = u.find(FIXED_VALUES_HEADING).unwrap();
@@ -1022,7 +1280,7 @@ mod tests {
             ..ctx
         };
         let m = solution_messages(TIME_SHEET, "java", &ctx);
-        assert!(!m[0].content.contains(STEPS_RULE));
+        assert!(!m[1].content.contains(STEPS_RULE));
         assert!(!m[1].content.contains(FIXED_VALUES_HEADING));
         // Without input but nothing to extract: no empty heading.
         let ctx = SolutionContext {
@@ -1031,7 +1289,54 @@ mod tests {
         };
         let m = solution_messages("Gib die Zahlen von 1 bis 40 aus.", "python", &ctx);
         assert!(!m[1].content.contains(FIXED_VALUES_HEADING));
-        assert!(m[0].content.contains(STEPS_RULE));
+        assert!(m[1].content.contains(STEPS_RULE));
+    }
+
+    #[test]
+    fn solutions_get_no_comments_rule_instead_of_comment_duty() {
+        for no_input in [false, true] {
+            for lang in ["python", "java"] {
+                let ctx = SolutionContext {
+                    input_format: "eine Zahl",
+                    output_format: "",
+                    examples: &[],
+                    output_templates: &[],
+                    class_name: None,
+                    no_input,
+                };
+                let system = &solution_messages(TIME_SHEET, lang, &ctx)[1].content;
+                assert!(system.contains(NO_COMMENTS_RULE), "{system}");
+                // The long comment per output line (values used) is gone;
+                // without input only a short subtask label stays.
+                assert!(
+                    !system.contains("the values from the task it uses"),
+                    "{system}"
+                );
+                assert_eq!(system.contains("just its subtask label"), no_input);
+                // Named values stay asked for without input.
+                assert_eq!(system.contains("own named variable"), no_input);
+            }
+        }
+        assert!(STEPS_RULE.contains("at most eight words"));
+        assert!(STEPS_RULE.contains("copied exactly as written in the task"));
+        assert!(NO_COMMENTS_RULE.contains("variable names"));
+    }
+
+    #[test]
+    fn truncated_repair_asks_for_a_shorter_complete_program() {
+        let base = vec![ChatMessage::system("s"), ChatMessage::user("u")];
+        let r = truncated_repair_messages(
+            base,
+            "```java
+public class Main {",
+            "java",
+        );
+        assert_eq!(r.len(), 4);
+        assert_eq!(r[2].content, "```java\npublic class Main {");
+        assert!(r[3].content.starts_with(TRUNCATED_REPAIR));
+        assert!(r[3].content.contains("too long"));
+        assert!(r[3].content.contains("shorter"));
+        assert!(r[3].content.ends_with("exactly one ```java code block."));
     }
 
     #[test]
@@ -1045,15 +1350,15 @@ mod tests {
             no_input: false,
         };
         let m = solution_messages("Klasse Time", "java", &ctx);
-        assert!(m[0].content.contains("`public class Time`"));
-        assert!(m[0].content.contains("Time.java"));
-        assert!(!m[0].content.contains("class Main"));
-        assert!(m[0]
+        assert!(m[1].content.contains("`public class Time`"));
+        assert!(m[1].content.contains("Time.java"));
+        assert!(!m[1].content.contains("class Main"));
+        assert!(m[1]
             .content
             .contains("Never print a prompt before reading input"));
         // Python ignores it.
         let m = solution_messages("x", "python", &ctx);
-        assert!(!m[0].content.contains("Time"));
+        assert!(!m[1].content.contains("Time"));
     }
 
     #[test]
@@ -1116,7 +1421,8 @@ mod tests {
                 known_inputs: &[],
             },
         );
-        assert_eq!(m[0].content, INPUTS_SYSTEM);
+        assert_eq!(m[0].content, COMMON_SYSTEM);
+        assert!(m[1].content.contains(INPUTS_RULES));
         let u = &m[1].content;
         assert!(u.contains("Verdopple n."));
         assert!(u.contains("Input format: Eine Zahl n"));
@@ -1127,9 +1433,9 @@ mod tests {
         assert!(u.contains(&format!("Example {MAX_EXAMPLES}\n")));
         assert!(!u.contains(&format!("Example {}\n", MAX_EXAMPLES + 1)));
         assert!(!u.contains("Known inputs"));
-        assert!(INPUTS_SYSTEM.contains("respect the input limits"));
-        assert!(INPUTS_SYSTEM.contains("Never write inputs the task does not require"));
-        assert!(STRUCTURE_SYSTEM.contains("inputConstraints"));
+        assert!(INPUTS_RULES.contains("respect the input limits"));
+        assert!(INPUTS_RULES.contains("Never write inputs the task does not require"));
+        assert!(STRUCTURE_RULES.contains("inputConstraints"));
         let schema = structure_schema();
         assert_eq!(
             schema["properties"]["inputConstraints"]["maxLength"],

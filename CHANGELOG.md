@@ -7,6 +7,81 @@ Format nach [Keep a Changelog](https://keepachangelog.com/de/1.1.0/), Versionen 
 
 ## [Unveröffentlicht]
 
+## [1.1.2] - 2026-11-26
+
+### Hinzugefügt
+
+- Website für den Code-Prüfer (GitHub Pages, https://bernhardgoetz.github.io/CodeChecker/):
+  Startseite mit Download-Knöpfen für Windows und macOS, „So funktioniert es“,
+  Screenshots, Voraussetzungen, Datenschutz in Kürze und häufige Fragen, dazu die
+  Anleitung und die übrigen Dokumente als Unterseiten, eine englische Kurzseite und
+  die Kontaktseite „Wie du uns erreichst“. Die Seiten entstehen aus den vorhandenen
+  Markdown-Dateien (`npm run build:site`) und laden keine externen Ressourcen. Die App
+  selbst ist dadurch unverändert.
+- KI-Benchmark im Repository (für die Entwicklung, `scripts/ki-bench/`,
+  `src-tauri/tests/ki_bench.rs`): feste Aufgaben mit Referenzprogrammen, mit denen sich
+  die echte Testfall-Erzeugung messen und Vorher/Nachher vergleichen lässt
+  (`evaluate.py`). Jede Änderung an der KI in dieser Version wurde damit gemessen. Die
+  Statistik einer Testfall-Erzeugung zählt zusätzlich die Prompt-Tokens aus dem
+  Zwischenspeicher, die Länge jeder Lösung und abgeschnittene Lösungen. Für dich als
+  Nutzer ändert sich dadurch nichts.
+
+### Geändert
+
+- KI: Die Musterlösungen sind kürzer und schneller fertig. Die KI schreibt keine
+  Kommentare und Erklärungen mehr in den Code, sondern benennt Zwischenwerte mit
+  sprechenden Variablennamen. Bei Aufgaben ohne Eingabe bleibt vor jeder Ausgabezeile
+  ein kurzer Kommentar mit der Teilaufgabe (z. B. „c)“), weil die Lösungen ohne ihn
+  öfter mit dem Wert einer anderen Teilaufgabe rechneten. Eine Lösung darf höchstens
+  640 statt 1024 Tokens lang sein; ist sie länger, wird sie mit dem Hinweis „kürzer
+  schreiben“ neu angefordert. Es bleibt bei drei Lösungen je Aufgabe (#46).
+- KI: Alle Schritte der Testfall-Erzeugung beginnen mit demselben Prompt-Anfang
+  (Systemprompt und Aufgabentext); die Regeln des jeweiligen Schritts folgen danach.
+  So muss die KI-Laufzeit den Aufgabentext nicht bei jedem Schritt neu lesen, sondern
+  nimmt ihn aus ihrem Zwischenspeicher. Die Regeln selbst sind unverändert. Die
+  Restzeit-Schätzung zählt nur noch den Teil des Prompts, der wirklich neu verarbeitet
+  wird (#47).
+- KI: Das Häkchen „Auf zufällig richtige Ergebnisse prüfen (Variationstest)“ wird nach
+  jeder Testfall-Erzeugung automatisch passend gesetzt: an bei Aufgaben mit festen
+  Werten oder ohne Eingabe, sonst aus. Ein kurzer Hinweis am Häkchen zeigt, dass die KI
+  es gesetzt hat; du kannst es danach jederzeit von Hand umschalten. Deine von Hand
+  gewählte Voreinstellung bleibt gespeichert.
+- KI: Aufgaben, die nur eine Klasse mit Methoden und kein Hauptprogramm verlangen
+  (z. B. „BankAccount“ mit Konstruktoren, `deposit` und `withdraw`), werden erkannt.
+  Statt sich ein Hauptprogramm auszudenken und dessen Ausgabe als richtig zu nehmen,
+  sagt die App ehrlich, dass automatische Testfälle dafür noch nicht möglich sind –
+  ohne Ampel und ohne KI-Aufruf. Ein passendes Testprogramm für solche Aufgaben ist für
+  1.2.0 geplant (#59). Aufgaben, die Methoden *und* ein Programm verlangen (z. B.
+  „Schreiben Sie das Programm Backwards …“), bleiben normale Programmaufgaben.
+- KI: Methoden-Aufgaben mit Programm, die aber keine Eingabe über die Konsole und keine
+  Ausgabe verlangen (z. B. „Schreiben Sie das Programm Backwards. Dieses Programm
+  enthält die Methode `reverseString` …“), bekommen höchstens Gelb, nie Grün. Die
+  Testfälle müssen dort eine Ein- und Ausgabe annehmen (etwa „eine Zeile einlesen,
+  umgedreht ausgeben“), die der Text nicht verlangt. Ein Hinweis nennt die Methode und
+  sagt, was die Testfälle annehmen; schlägt beim Prüfen ein Testfall fehl, steht der
+  Hinweis auch beim Ergebnis. Rot gibt es dort nur noch aus Gründen, die nichts mit
+  dieser Annahme zu tun haben (z. B. keine Lösung bestand die Beispiele); dann gibt es
+  keine Testfälle. Der Variationstest wird für solche Aufgaben nicht vorgeschlagen.
+  Verlangt der Text Ein- oder Ausgabe ausdrücklich, bleibt alles wie bisher.
+
+### Behoben
+
+- KI: Lesen die Musterlösungen die Eingabe gar nicht und geben für verschiedene
+  Eingaben immer dasselbe aus (z. B. nur `reverseString("Uni")`), gibt es nie mehr Grün.
+  Die betroffenen Lösungen werden einmal mit einem Hinweis repariert; lesen sie danach
+  die Eingabe, ist das Ergebnis höchstens Gelb, sonst Rot mit verständlichem Grund und
+  ohne Testfälle.
+- KI: Beispiele aus dem Aufgabentext werden strenger geprüft. Sie zählen nur noch, wenn
+  Eingabe und Ausgabe dort wirklich zusammen als Beispiel stehen. Zahlen, die nur
+  verstreut im Text vorkommen („75 bis 89 Punkte 2, 60 bis 74 Punkte 3“), ergeben kein
+  Beispiel „75 → 3“ mehr; bisher konnte so ein erfundenes Beispiel richtige Lösungen
+  verwerfen.
+- KI: Standard- und Startwerte von Attributen oder Variablen („standardmäßig auf 0.0
+  gesetzt“), Punktangaben („1 Punkt“) und Zahlen in Beispielsätzen („z. B. …“) gelten
+  nicht mehr als feste Werte einer Aufgabe ohne Eingabe.
+- KI: Beispielsätze wie „z. B. “Your current balance is €100.0”“ werden nicht mehr als
+  feste Ausgabevorlage übernommen, wenn das Blatt darin keinen Platzhalter angibt.
+
 ## [1.1.1] - 2026-11-16
 
 ### Entfernt
@@ -284,7 +359,8 @@ Erste stabile Version.
   und Notarisierung sind noch nicht eingerichtet); SmartScreen und Gatekeeper warnen beim
   ersten Start.
 
-[Unveröffentlicht]: https://github.com/BernhardGoetz/CodeChecker/compare/v1.1.1...HEAD
+[Unveröffentlicht]: https://github.com/BernhardGoetz/CodeChecker/compare/v1.1.2...HEAD
+[1.1.2]: https://github.com/BernhardGoetz/CodeChecker/compare/v1.1.1...v1.1.2
 [1.1.1]: https://github.com/BernhardGoetz/CodeChecker/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/BernhardGoetz/CodeChecker/compare/v1.0.3...v1.1.0
 [1.0.3]: https://github.com/BernhardGoetz/CodeChecker/compare/v1.0.2...v1.0.3

@@ -1,0 +1,8 @@
+{
+  "name": "backwards",
+  "language": "java",
+  "text": "Aufgabe 6.3 (Backwards)\nSchreiben Sie das Programm Backwards. Dieses Programm enthält die Methode public static String reverseString(String str), die einen String als Eingabeparameter erhält. Die Methode soll die darin enthaltene Buchstabenfolge umkehren und in einen String speichern, der der Rückgabewert der Methode ist. Der Aufruf von reverseString(“Uni”) würde z.B. “inU” zurückliefern.\nLaden Sie Ihren Quellcode auf den DevCheck hoch.",
+  "kind": "method_demo",
+  "reference": "import sys\nline = sys.stdin.readline().rstrip(\"\\r\\n\")\nprint(line[::-1])\n",
+  "note": "Bis 1.1.2-e2 kind \"api\", in 1.1.2-e3 \"program\", ab 1.1.2-e3b \"method_demo\": „Schreiben Sie das Programm Backwards“, verlangt wird aber vor allem die Methode reverseString; ob und wie das Programm einliest, sagt der Text nicht. Erwartet: höchstens Gelb mit Hinweis (\"ioAssumptionNote\"); Grün ist falsch. Die Referenz (eine Zeile lesen, umgekehrt ausgeben) dient nur der Dokumentation. Ergebnisse vor 1.1.2-e3b sind für diese Aufgabe nicht direkt vergleichbar."
+}

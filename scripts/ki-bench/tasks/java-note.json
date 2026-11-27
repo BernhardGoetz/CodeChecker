@@ -1,0 +1,7 @@
+{
+  "name": "java-note",
+  "language": "java",
+  "text": "Note aus Punktzahl\n\nLies eine ganze Punktzahl zwischen 0 und 100 und gib die Note als Zahl aus: 90 bis 100 Punkte ergeben 1, 75 bis 89 Punkte 2, 60 bis 74 Punkte 3, 50 bis 59 Punkte 4 und 0 bis 49 Punkte 5.",
+  "kind": "program",
+  "reference": "import sys\np = int(sys.stdin.read().split()[0])\nprint(1 if p >= 90 else 2 if p >= 75 else 3 if p >= 60 else 4 if p >= 50 else 5)\n"
+}

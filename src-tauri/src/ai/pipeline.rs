@@ -55,8 +55,12 @@ const STRUCTURE_TEMPERATURE: f32 = 0.0;
 const INPUTS_TEMPERATURE: f32 = 0.4;
 const RETRY_TEMPERATURE: f32 = 0.3;
 const STRUCTURE_MAX_TOKENS: u32 = 1024;
-/// The answer ends at the closing code fence, so this only bounds runaways.
-const SOLUTION_MAX_TOKENS: u32 = 1024;
+/// The answer ends at the closing code fence, so this bounds runaways and
+/// overlong answers: the longest solution of the KI-Benchmark 1.1.1 had
+/// 611 tokens (with comments, which [`prompts::NO_COMMENTS_RULE`] now
+/// forbids), the median 81. A cut-off answer is not compiled but repaired
+/// with [`prompts::TRUNCATED_REPAIR`].
+pub const SOLUTION_MAX_TOKENS: u32 = 640;
 const INPUTS_MAX_TOKENS: u32 = 1024;
 
 #[derive(Debug, Clone, Deserialize)]
@@ -222,6 +226,10 @@ pub struct Stats {
     /// Solutions that read input although the task reads none (after the
     /// repair round).
     pub solutions_read_input: usize,
+    /// The opposite: surviving solutions that ignore the input although the
+    /// task reads some (same output for different inputs, see
+    /// [`ignoring_input`]; after the repair).
+    pub solutions_ignoring_input: usize,
     pub llm_calls: usize,
     pub completion_tokens: u64,
     /// Prompt tokens processed (without the prompt cache; a prompt shared
@@ -229,6 +237,16 @@ pub struct Stats {
     /// prompt processing (concurrent requests counted once).
     pub prompt_tokens: u64,
     pub prompt_ms: u64,
+    /// Prompt tokens taken from the server's prompt cache (a prompt shared
+    /// by several answers of one request once). Only measured.
+    pub cached_tokens: u64,
+    /// Completion tokens of every solution answer (first round and
+    /// repairs), in the order they arrived. Only measured.
+    pub solution_tokens: Vec<u64>,
+    /// Solution answers cut off at the token limit (`finish_reason`
+    /// "length", first round and repairs). They are not compiled but
+    /// repaired with [`prompts::TRUNCATED_REPAIR`].
+    pub solutions_truncated: usize,
     pub tokens_per_second: Option<f64>,
     pub duration_ms: u64,
     /// Duration per step (for measuring where the time goes).
@@ -275,6 +293,112 @@ pub struct GenerateResult {
     /// Input limits from the structure step (for the variation check).
     pub input_constraints: String,
     pub stats: Stats,
+    /// Whether the variation check is suggested for this task: the task
+    /// gives fixed values or reads no input (there a solution that is only
+    /// right for the given values is most likely). The app sets its switch
+    /// to this after every generation; the user can change it.
+    pub variation_suggested: bool,
+    /// The task is of a kind the test generation cannot check yet (no
+    /// tests, no traffic light; the reason is in `confidence.reasons`).
+    pub unsupported: Option<Unsupported>,
+    /// Method task with a demo program (see
+    /// [`super::api_task::method_demo_task`]): the text asks for a method,
+    /// not for console input/output, so the tests' input/output is an
+    /// assumption. German note (also first in `confidence.reasons`), shown
+    /// again when a check against these tests fails.
+    pub io_assumption_note: Option<String>,
+}
+
+/// Kinds of tasks the test generation cannot check yet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum Unsupported {
+    /// Only a class with methods, no main program (see
+    /// [`super::api_task::class_only_task`]); class tests are planned for
+    /// 1.2.0 (issue #59).
+    ApiTask,
+}
+
+/// German message for [`Unsupported::ApiTask`].
+pub const API_TASK_REASON: &str = "Diese Aufgabe verlangt nur eine Klasse bzw. Methoden ohne \
+Hauptprogramm (keine Ein- und Ausgabe über die Konsole). Automatische Testfälle sind dafür noch \
+nicht möglich – geplant für Version 1.2.0. Testfälle mit Eingabe und erwarteter Ausgabe lassen \
+sich nur für Programme mit Hauptprogramm erzeugen.";
+
+/// Result for a class-only task (see [`Unsupported::ApiTask`]): no model
+/// call, no tests, no traffic light.
+pub fn api_task_result(
+    req: &GenerateRequest,
+    settings: &Settings,
+    started: Instant,
+) -> GenerateResult {
+    GenerateResult {
+        tests: Vec::new(),
+        reference_solution: None,
+        confidence: Confidence {
+            level: ConfidenceLevel::Red,
+            reasons: vec![API_TASK_REASON.into()],
+        },
+        suggested_compare_mode: None,
+        compare_mode: req.compare_mode.unwrap_or_default(),
+        output_templates: Vec::new(),
+        input_format: String::new(),
+        input_constraints: String::new(),
+        stats: Stats {
+            solutions_requested: settings.solutions,
+            duration_ms: ms(started.elapsed()),
+            ..Stats::default()
+        },
+        variation_suggested: false,
+        unsupported: Some(Unsupported::ApiTask),
+        io_assumption_note: None,
+    }
+}
+
+/// German note for a method task with a demo program (see
+/// [`GenerateResult::io_assumption_note`]). `method`: the method's name if
+/// known; `tests`: whether tests were generated, `reads_input`: whether
+/// they assume the program reads input.
+pub fn method_demo_note(method: Option<&str>, tests: bool, reads_input: bool) -> String {
+    let what = match method {
+        Some(m) => format!("die Methode {m}"),
+        None => "eine Methode".to_string(),
+    };
+    let mut note = format!(
+        "Die Aufgabe verlangt vor allem {what}; ob das Programm etwas über die Konsole einlesen \
+         oder ausgeben soll, steht nicht im Text."
+    );
+    if tests {
+        note.push_str(if reads_input {
+            " Die Testfälle nehmen an, dass das Programm eine Zeile einliest und das Ergebnis \
+             ausgibt – bitte selbst prüfen. Eine richtige Lösung, deren main nur ein festes \
+             Beispiel ausgibt, besteht diese Testfälle nicht."
+        } else {
+            " Die Testfälle nehmen an, dass das Programm ohne Eingabe genau diese Ausgabe macht – \
+             bitte selbst prüfen. Eine richtige Lösung mit einem anderen Beispiel in main \
+             besteht diese Testfälle nicht."
+        });
+    }
+    note
+}
+
+/// Caps the confidence of a method task with a demo program at yellow and
+/// puts `note` first. Green becomes yellow (the tests rest on an assumed
+/// input/output); red stays red: it only comes from the pipeline itself (no
+/// solution passed, no majority, no output fitting the templates – there
+/// are no tests then, so no student solution can fail them), never from the
+/// input/output assumption, because such a task never counts as requiring
+/// input (see `input_required` in [`generate`]).
+pub fn cap_for_method_demo(confidence: &mut Confidence, note: &str) {
+    if confidence.level == ConfidenceLevel::Green {
+        confidence.level = ConfidenceLevel::Yellow;
+        confidence.reasons.push(
+            "Die erwarteten Ausgaben sind nur ein Hinweis – bitte prüfen, bevor danach bewertet \
+             wird."
+                .into(),
+        );
+    }
+    confidence.reasons.insert(0, note.to_string());
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -798,29 +922,81 @@ fn close_enough(gap: &str) -> bool {
         || (chars <= MAX_PAIR_GAP_CHARS_LINES && gap.matches('\n').count() <= MAX_PAIR_GAP_LINES)
 }
 
+/// Words in the text between an input and its output that mark the output
+/// of an example („Ausgabe:“, "Output", „→“).
+const OUTPUT_MARKERS: &[&str] = &["ausgabe", "output", "erwartet", "expected", "→", "->", "=>"];
+
+fn is_word_char(c: char) -> bool {
+    c.is_alphanumeric() || c == '_'
+}
+
+/// Whether `pat` occurs in `text` at byte offset `p` as a whole token:
+/// where it starts (ends) with a letter or digit, no letter or digit
+/// directly before (after) it, and no decimal part after a number (`3`
+/// is not in `3.5`).
+fn token_at(text: &str, p: usize, pat: &str) -> bool {
+    let end = p + pat.len();
+    let first = pat.chars().next().is_some_and(is_word_char);
+    let last = pat.chars().next_back();
+    let before = text[..p].chars().next_back();
+    let mut after = text[end..].chars();
+    let next = after.next();
+    let decimal = last.is_some_and(|c| c.is_ascii_digit())
+        && matches!(next, Some('.' | ','))
+        && after.next().is_some_and(|c| c.is_ascii_digit());
+    !(first && before.is_some_and(is_word_char))
+        && !(last.is_some_and(is_word_char) && next.is_some_and(is_word_char))
+        && !decimal
+}
+
 /// An example counts only if its output (non-empty) and its input appear
-/// verbatim in the task text (after [`normalize_for_match`]) and belong
-/// together: with a non-empty input, the output must start at or after an
-/// occurrence of the input and close to it (see [`MAX_PAIR_GAP_CHARS`]).
-/// A pair whose input and output only appear far apart is not an example.
+/// verbatim in the task text (after [`normalize_for_match`]) as whole
+/// tokens (`3` is not in `30` or `3.5`) and belong together: with a
+/// non-empty input, the output must start at or after an occurrence of the
+/// input and close to it (see [`MAX_PAIR_GAP_CHARS`]). A pair whose input
+/// and output only appear far apart is not an example. If other numbers
+/// stand between input and output, the pair only counts with an output
+/// marker in between ([`OUTPUT_MARKERS`], e.g. all inputs first and then
+/// „Ausgabe 1: …“): numbers that only appear scattered in the prose („75
+/// bis 89 Punkte 2, 60 bis 74 Punkte 3“) are no example `75 → 3`
+/// (regression 1.1.1, „java-note“: an invented example survived and the
+/// correct solutions were discarded).
 pub fn example_in_text(normalized_text: &str, ex: &Example) -> bool {
     let input = normalize_for_match(&ex.input);
     let output = normalize_for_match(&ex.output);
-    if output.is_empty() || !normalized_text.contains(&output) {
+    if output.is_empty() {
+        return false;
+    }
+    let outputs: Vec<usize> = normalized_text
+        .match_indices(output.as_str())
+        .map(|(q, _)| q)
+        .filter(|&q| token_at(normalized_text, q, &output))
+        .collect();
+    if outputs.is_empty() {
         return false;
     }
     if input.is_empty() {
         return true;
     }
-    normalized_text.match_indices(input.as_str()).any(|(p, _)| {
-        let end = p + input.len();
-        // The nearest occurrence of the output from here on.
-        let Some(q) = normalized_text[p..].find(&output).map(|q| p + q) else {
-            return false;
-        };
-        // An output starting inside the input (overlap) is close.
-        q <= end || close_enough(&normalized_text[end..q])
-    })
+    normalized_text
+        .match_indices(input.as_str())
+        .filter(|&(p, _)| token_at(normalized_text, p, &input))
+        .any(|(p, _)| {
+            let end = p + input.len();
+            // The nearest occurrence of the output from here on.
+            let Some(q) = outputs.iter().copied().find(|&q| q >= p) else {
+                return false;
+            };
+            // An output starting inside the input (overlap) is close.
+            if q <= end {
+                return true;
+            }
+            let gap = &normalized_text[end..q];
+            let lower = gap.to_lowercase();
+            close_enough(gap)
+                && (!gap.chars().any(|c| c.is_ascii_digit())
+                    || OUTPUT_MARKERS.iter().any(|m| lower.contains(m)))
+        })
 }
 
 /// Splits the model's examples into (verbatim, discarded count); at most
@@ -1134,7 +1310,33 @@ pub struct Evidence {
     pub invalid: usize,
     /// Tests dropped as a suspected integer overflow: yellow.
     pub overflow: usize,
+    /// The task reads input, but most surviving solutions printed the same
+    /// for different inputs (they ignore the input, see
+    /// [`ignoring_input`]), also after the repair: never green.
+    pub input_ignored: bool,
+    /// The task text or a sheet example clearly asks for input: with
+    /// [`Evidence::input_ignored`] red, else yellow.
+    pub input_required: bool,
+    /// The solutions ignored the input at first and were repaired: yellow.
+    pub input_repaired: bool,
 }
+
+/// German red reason when the solutions ignore the input.
+pub const INPUT_IGNORED_REASON: &str = "Die Lösungen lesen die Eingabe nicht: Für verschiedene \
+Eingaben gaben sie immer dieselbe Ausgabe aus (z. B. nur das Ergebnis für das Beispiel aus dem \
+Text), auch nach einer Reparatur. Solche Testfälle wären falsch, deshalb werden keine erzeugt. \
+Vermutlich sagt der Aufgabentext nicht genau, was das Programm einlesen und ausgeben soll – \
+Testfälle bitte von Hand anlegen.";
+
+/// German yellow reason when the solutions ignore the input, but the task
+/// text does not clearly ask for input.
+pub const INPUT_IGNORED_NOTE: &str = "Die Lösungen gaben für alle Eingaben dieselbe Ausgabe aus – \
+liest das Programm überhaupt eine Eingabe? Bitte prüfen, ob die Testfälle sinnvoll sind.";
+
+/// German yellow reason when the solutions were repaired to read the input.
+pub const INPUT_REPAIRED_REASON: &str = "Die Lösungen lasen die Eingabe zunächst nicht (gleiche \
+Ausgabe für verschiedene Eingaben) und wurden repariert. Wie das Programm einliest, steht nicht \
+eindeutig im Text – bitte das Ein-/Ausgabeformat der Testfälle prüfen.";
 
 /// German confidence reason for tests dropped as suspected overflow.
 pub fn overflow_reason(n: usize) -> String {
@@ -1225,7 +1427,19 @@ pub fn decide_confidence(e: &Evidence) -> Confidence {
             reasons,
         };
     }
+    if e.input_ignored && e.input_required {
+        return Confidence {
+            level: ConfidenceLevel::Red,
+            reasons: vec![INPUT_IGNORED_REASON.into()],
+        };
+    }
     let mut yellow: Vec<String> = Vec::new();
+    if e.input_ignored {
+        yellow.push(INPUT_IGNORED_NOTE.into());
+    }
+    if e.input_repaired {
+        yellow.push(INPUT_REPAIRED_REASON.into());
+    }
     if e.examples == 0 {
         yellow.push(
             "Im Aufgabentext wurden keine Beispiele (wörtlich) gefunden – die Lösungen konnten \
@@ -1298,11 +1512,13 @@ pub fn decide_confidence(e: &Evidence) -> Confidence {
 /// real answers are known.
 const STRUCTURE_EXPECTED_TOKENS: f64 = 250.0;
 const SOLUTION_EXPECTED_TOKENS: f64 = 350.0;
-/// Without input the solutions also comment every output line with the
-/// values used ([`prompts::STEPS_RULE`]): measured 219 instead of 142 tokens
-/// on average (KI-Benchmark 1.1.1, 7B model), so the prior grows by the same
-/// factor (350 × 219 / 142 ≈ 540).
-const SOLUTION_EXPECTED_TOKENS_NO_INPUT: f64 = 540.0;
+/// Without input the solutions also label every output line and name
+/// every value ([`prompts::STEPS_RULE`]): measured 219 instead of 142 tokens
+/// on average (KI-Benchmark 1.1.1), so the prior grew by the same factor
+/// (350 × 219 / 142 ≈ 540). With the short labels instead of the long
+/// comments these answers were 7 % shorter (KI-Benchmark 1.1.2-e1b: 257
+/// instead of 278 tokens on the same tasks): 540 × 0.93 ≈ 500.
+const SOLUTION_EXPECTED_TOKENS_NO_INPUT: f64 = 500.0;
 const INPUTS_EXPECTED_TOKENS: f64 = 250.0;
 /// Characters per prompt token until the structure step measured it
 /// (German task text, code: rather 3.5; fewer means more tokens).
@@ -1340,6 +1556,10 @@ struct Plan {
     structure_chars: f64,
     solution_chars: f64,
     inputs_chars: f64,
+    /// Characters of the start every step's prompt shares
+    /// ([`prompts::shared_prefix_chars`]): after the structure step it comes
+    /// from llama-server's prompt cache and costs no prompt processing.
+    shared_chars: f64,
     solutions: usize,
     /// The inputs are requested alongside the solutions.
     parallel_inputs: bool,
@@ -1361,6 +1581,12 @@ fn chars(messages: &[super::llama::ChatMessage]) -> f64 {
 impl Plan {
     fn prompt(&self, chars: f64) -> f64 {
         chars / self.chars_per_token + TEMPLATE_TOKENS
+    }
+
+    /// Prompt tokens of a request that starts with the shared prefix, which
+    /// the server takes from its prompt cache (only the rest is processed).
+    fn uncached_prompt(&self, chars: f64) -> f64 {
+        self.prompt((chars - self.shared_chars).max(0.0))
     }
 
     /// Realistic output of one solution: the mean of the answers so far.
@@ -1385,13 +1611,16 @@ impl Plan {
     }
 
     fn work(&self, step: Step) -> eta::Work {
+        // A request after the structure step finds the shared prefix in
+        // the prompt cache – except the inputs requested alongside the
+        // solutions (see [`Step::Round`]).
         let solution = eta::Work {
-            prompt_tokens: self.prompt(self.solution_chars),
+            prompt_tokens: self.uncached_prompt(self.solution_chars),
             gen_tokens: self.solution_gen(),
             sandbox_seconds: 0.0,
         };
         let inputs = eta::Work {
-            prompt_tokens: self.prompt(self.inputs_chars),
+            prompt_tokens: self.uncached_prompt(self.inputs_chars),
             gen_tokens: INPUTS_EXPECTED_TOKENS,
             sandbox_seconds: 0.0,
         };
@@ -1414,13 +1643,20 @@ impl Plan {
                 }
                 .plus(check);
                 if self.parallel_inputs {
-                    round.plus(inputs)
+                    // llama-server b11700 keeps a prompt in one slot only:
+                    // the solutions take the slot of the structure step, the
+                    // inputs alongside get an empty one and process the
+                    // whole prompt again (measured with b11700).
+                    round.plus(eta::Work {
+                        prompt_tokens: self.prompt(self.inputs_chars),
+                        ..inputs
+                    })
                 } else {
                     round
                 }
             }
             Step::Repairs(k) => eta::Work {
-                prompt_tokens: self.prompt(self.solution_chars + REPAIR_EXTRA_CHARS),
+                prompt_tokens: self.uncached_prompt(self.solution_chars + REPAIR_EXTRA_CHARS),
                 ..solution
             }
             .times(k as f64)
@@ -1522,6 +1758,9 @@ struct Attempt<S> {
     /// out or printed something else on the probe): reason for a repair
     /// round with [`prompts::NO_INPUT_REPAIR`].
     reads_input: bool,
+    /// The answer was cut off at the token limit: not compiled, reason for
+    /// a repair round with [`prompts::TRUNCATED_REPAIR`].
+    truncated: bool,
 }
 
 impl<S> Attempt<S> {
@@ -1538,7 +1777,15 @@ impl<S> Attempt<S> {
             llm_error: None,
             fatal: None,
             reads_input: false,
+            truncated: false,
         }
+    }
+
+    /// Takes a solution answer; one cut off at the token limit is marked
+    /// (see [`Attempt::truncated`]).
+    fn set_answer(&mut self, r: ChatResponse) {
+        self.truncated = r.finish_reason.as_deref() == Some("length");
+        self.answer = Some(r.content);
     }
 }
 
@@ -1656,6 +1903,10 @@ where
                 if let Some(t) = r.completion_tokens.filter(|_| req.prefill.is_some()) {
                     // A solution answer: realistic length for the estimate.
                     s.plan.solution_tokens.push(t as f64);
+                    s.stats.solution_tokens.push(t);
+                }
+                if req.prefill.is_some() && r.finish_reason.as_deref() == Some("length") {
+                    s.stats.solutions_truncated += 1;
                 }
                 if let Some(t) = r.tokens_per_second {
                     s.tps_sum += t;
@@ -1664,14 +1915,21 @@ where
                 s.stats.completion_tokens += r.completion_tokens.unwrap_or(0);
             }
             let prompt_tokens = combined.and_then(|c| c.prompt_tokens);
+            // Like the prompt: every answer of one request reports the
+            // shared prompt's cache hit, counted once.
+            let cached_tokens = rs.iter().filter_map(|r| r.cached_tokens).max().unwrap_or(0);
             if s.plan.step == Step::Structure {
-                if let Some(t) = prompt_tokens.filter(|t| *t > 50) {
+                // The whole prompt, also when part of it came from the cache
+                // (the same task again).
+                let total = prompt_tokens.map(|t| t + cached_tokens);
+                if let Some(t) = total.filter(|t| *t > 50) {
                     let cpt = s.plan.structure_chars / t as f64;
                     s.plan.chars_per_token = cpt.clamp(1.5, 4.5);
                 }
             }
             s.stats.llm_calls += 1;
             s.stats.prompt_tokens += prompt_tokens.unwrap_or(0);
+            s.stats.cached_tokens += cached_tokens;
             if let Some(ms) = combined.and_then(|c| c.prompt_ms).filter(|m| *m > 0.0) {
                 // The prompt is processed right at the start of the request
                 // (the template comes from the cache or takes milliseconds).
@@ -1737,6 +1995,12 @@ where
         a.failure = None;
         a.passes = false;
         a.reads_input = false;
+        if a.truncated {
+            // An incomplete program: compiling it only wastes time, the
+            // repair asks for a shorter one.
+            a.failure = Some(prompts::TRUNCATED_REPAIR.into());
+            return Ok(());
+        }
         let code = match prompts::extract_code(&answer, self.lang.id) {
             None => {
                 a.failure = Some("No code block found in the answer.".into());
@@ -1854,6 +2118,72 @@ fn first_fatal<S>(attempts: &mut [Attempt<S>]) -> Option<AiError> {
 
 async fn close_all<S: Session>(sessions: impl IntoIterator<Item = S>) {
     futures_util::future::join_all(sessions.into_iter().map(|s| s.close())).await;
+}
+
+/// A survivor's conversation with the model (messages and last answer).
+type Conversation = (Vec<super::llama::ChatMessage>, String);
+
+/// A solution counts as ignoring its input once it printed the same valid
+/// output for at least this many different non-empty inputs.
+pub const MIN_IGNORED_INPUTS: usize = 3;
+
+/// Per solution (`results[i]`, see [`vote`]): whether its output does not
+/// depend on the input – on at least [`MIN_IGNORED_INPUTS`] different
+/// non-empty inputs every output was valid and the same (`mode`). An
+/// incomplete result (`None`) never counts. Pure.
+pub fn ignoring_input(
+    mode: &CompareMode,
+    results: &[Option<Vec<StepOutput>>],
+    inputs: &[String],
+) -> Vec<bool> {
+    results
+        .iter()
+        .map(|r| {
+            let Some(outs) = r else { return false };
+            let mut seen: Vec<String> = Vec::new();
+            let mut first: Option<&StepOutput> = None;
+            for (input, o) in inputs.iter().zip(outs) {
+                let key = normalize_for_match(input);
+                if key.is_empty() {
+                    continue;
+                }
+                if !valid(o) {
+                    return false;
+                }
+                match first {
+                    None => first = Some(o),
+                    Some(f) if !mode.matches(&f.stdout, &o.stdout) => return false,
+                    Some(_) => {}
+                }
+                if !seen.contains(&key) {
+                    seen.push(key);
+                }
+            }
+            seen.len() >= MIN_IGNORED_INPUTS
+        })
+        .collect()
+}
+
+/// A strict majority of the surviving solutions ignores the input. Pure.
+pub fn most_ignore_input(ignoring: &[bool]) -> bool {
+    ignoring.iter().filter(|x| **x).count() * 2 > ignoring.len()
+}
+
+/// Up to two different non-empty inputs with the program's output, for the
+/// repair prompt of a solution that ignores its input.
+fn ignored_samples(outs: Option<&[StepOutput]>, inputs: &[String]) -> Vec<(String, String)> {
+    let mut samples: Vec<(String, String)> = Vec::new();
+    for (input, o) in inputs.iter().zip(outs.unwrap_or_default()) {
+        let key = normalize_for_match(input);
+        if key.is_empty() || samples.iter().any(|(i, _)| normalize_for_match(i) == key) {
+            continue;
+        }
+        samples.push((input.clone(), o.stdout.clone()));
+        if samples.len() == 2 {
+            break;
+        }
+    }
+    samples
 }
 
 /// Result of [`vote`].
@@ -1994,6 +2324,14 @@ pub async fn generate<L: Llm + Sync, E: Executor>(
 ) -> Result<GenerateResult, AiError> {
     let started = Instant::now();
     let lang = req.validate()?;
+    // Only a class without a main program: nothing to run on stdin, an
+    // invented main would become the "truth" (issue #59).
+    if super::api_task::class_only_task(&req.task_text) {
+        return Ok(api_task_result(req, &settings, started));
+    }
+    // A method plus a program, without console input/output: the tests'
+    // input/output is an assumption – at most yellow, with a note.
+    let method_demo = super::api_task::method_demo_task(&req.task_text);
     let run = Run {
         llm,
         exec,
@@ -2010,6 +2348,7 @@ pub async fn generate<L: Llm + Sync, E: Executor>(
             plan: {
                 let structure_chars = chars(&prompts::structure_messages(&req.task_text));
                 Plan {
+                    shared_chars: prompts::shared_prefix_chars(&req.task_text) as f64,
                     step: Step::Structure,
                     step_started: Instant::now(),
                     chars_per_token: CHARS_PER_TOKEN,
@@ -2222,7 +2561,7 @@ pub async fn generate<L: Llm + Sync, E: Executor>(
             let (examples, example_mode, run_inputs, templates, done) =
                 (&examples, &example_mode, &run_inputs, &templates, &done);
             let checks = attempts.iter_mut().zip(answers).map(|(a, r)| async move {
-                a.answer = Some(r.content);
+                a.set_answer(r);
                 if a.fatal.is_none() {
                     if let Err(e) = run
                         .check_answer(a, examples, example_mode, run_inputs, templates, strict)
@@ -2292,7 +2631,13 @@ pub async fn generate<L: Llm + Sync, E: Executor>(
                             );
                             let failure = a.failure.clone().unwrap_or_default();
                             let answer = a.answer.clone().unwrap_or_default();
-                            a.messages = if a.reads_input {
+                            a.messages = if a.truncated {
+                                prompts::truncated_repair_messages(
+                                    std::mem::take(&mut a.messages),
+                                    &answer,
+                                    lang.id,
+                                )
+                            } else if a.reads_input {
                                 prompts::no_input_repair_messages(
                                     std::mem::take(&mut a.messages),
                                     &answer,
@@ -2308,7 +2653,7 @@ pub async fn generate<L: Llm + Sync, E: Executor>(
                             };
                             match run.chat(run.solution_request(a.messages.clone())).await {
                                 Ok(r) => {
-                                    a.answer = Some(r.content);
+                                    a.set_answer(r);
                                     run.shared().stats.solutions_repaired += 1;
                                     if let Err(e) = run
                                         .check_answer(
@@ -2389,10 +2734,16 @@ pub async fn generate<L: Llm + Sync, E: Executor>(
         }
         // Containers of failed solutions are no longer needed.
         close_all(sessions_of(&mut attempts, false)).await;
-        let survivors: Vec<(String, Vec<StepOutput>, E::Session)> = attempts
+        // Per survivor: code, outputs on the check inputs, sandbox and the
+        // conversation (for a repair after the vote, see `ignoring_input`).
+        #[allow(clippy::type_complexity)]
+        let survivors: Vec<(String, Vec<StepOutput>, E::Session, Conversation)> = attempts
             .into_iter()
             .filter(|a| a.passes)
-            .filter_map(|a| Some((a.code?, a.example_outputs, a.session?)))
+            .filter_map(|a| {
+                let conv = (a.messages, a.answer.unwrap_or_default());
+                Some((a.code?, a.example_outputs, a.session?, conv))
+            })
             .collect();
         {
             let mut s = run.shared();
@@ -2423,7 +2774,15 @@ pub async fn generate<L: Llm + Sync, E: Executor>(
                 confidence.reasons.push(FIXED_VALUES_REASON.into());
             }
             // Red: no tests, no reference solution – only the honest message.
+            let io_assumption_note = method_demo.as_ref().map(|name| {
+                let has_tests = confidence.level != ConfidenceLevel::Red && !tests.is_empty();
+                let note = method_demo_note(name.as_deref(), has_tests, !stats.no_input);
+                cap_for_method_demo(&mut confidence, &note);
+                note
+            });
             let red = confidence.level == ConfidenceLevel::Red;
+            // Method tasks: the variation check would vary an assumed main.
+            let variation_suggested = (fixed_values || stats.no_input) && method_demo.is_none();
             GenerateResult {
                 tests: if red { Vec::new() } else { tests },
                 reference_solution: if red { None } else { reference },
@@ -2438,6 +2797,9 @@ pub async fn generate<L: Llm + Sync, E: Executor>(
                 input_format: structure.input_format.clone(),
                 input_constraints: structure.input_constraints.clone(),
                 stats,
+                variation_suggested,
+                unsupported: None,
+                io_assumption_note,
             }
         };
         let mut evidence = Evidence {
@@ -2515,7 +2877,7 @@ pub async fn generate<L: Llm + Sync, E: Executor>(
             Some((0, s)),
         );
         let majority_done = AtomicUsize::new(0);
-        let runs = survivors.iter().map(|(_, _, session)| {
+        let runs = survivors.iter().map(|(_, _, session, _)| {
             let (run, generated, majority_done) = (&run, &generated, &majority_done);
             async move {
                 let r = if generated.is_empty() {
@@ -2541,18 +2903,18 @@ pub async fn generate<L: Llm + Sync, E: Executor>(
             }
         });
         let outputs = futures_util::future::join_all(runs).await;
-        let (codes, example_outputs): (Vec<String>, Vec<Vec<StepOutput>>) = {
-            let mut codes = Vec::with_capacity(s);
-            let mut ex = Vec::with_capacity(s);
-            let mut sessions = Vec::with_capacity(s);
-            for (c, e, session) in survivors {
-                codes.push(c);
-                ex.push(e);
-                sessions.push(session);
-            }
-            close_all(sessions).await;
-            (codes, ex)
-        };
+        // The sandboxes stay open for a repair of solutions that ignore the
+        // input; they are closed before every return below.
+        let mut codes = Vec::with_capacity(s);
+        let mut example_outputs = Vec::with_capacity(s);
+        let mut sessions = Vec::with_capacity(s);
+        let mut convs = Vec::with_capacity(s);
+        for (c, e, session, conv) in survivors {
+            codes.push(c);
+            example_outputs.push(e);
+            sessions.push(session);
+            convs.push(conv);
+        }
         let mut generated_outputs = Vec::with_capacity(s);
         let mut error: Option<AiError> = None;
         for r in outputs {
@@ -2570,6 +2932,7 @@ pub async fn generate<L: Llm + Sync, E: Executor>(
             }
         }
         if let Some(e) = error {
+            close_all(sessions).await;
             return Err(e);
         }
 
@@ -2578,7 +2941,7 @@ pub async fn generate<L: Llm + Sync, E: Executor>(
             .cloned()
             .chain(generated.iter().cloned())
             .collect();
-        let results: Vec<Option<Vec<StepOutput>>> = example_outputs
+        let mut results: Vec<Option<Vec<StepOutput>>> = example_outputs
             .into_iter()
             .zip(generated_outputs)
             .map(|(mut e, g)| {
@@ -2586,6 +2949,116 @@ pub async fn generate<L: Llm + Sync, E: Executor>(
                 (e.len() == all_inputs.len()).then_some(e)
             })
             .collect();
+
+        // 6b. The task reads input, but most solutions print the same for
+        // every input (regression 1.1.2, „backwards“: every solution printed
+        // `reverseString("Uni")`, every test expected „inU“ – green). Those
+        // solutions get one repair; whatever ignores the input afterwards is
+        // never green (see `decide_confidence`).
+        let reads = !no_input_confirmed;
+        // A method task's examples are method calls („reverseString(“Uni”)
+        // würde “inU” zurückliefern“), not console input.
+        let input_required = method_demo.is_none()
+            && (no_input::has_input_hint(&req.task_text)
+                || examples
+                    .iter()
+                    .any(|e| !normalize_for_match(&e.input).is_empty()));
+        let mut ignoring = if reads {
+            ignoring_input(&mode, &results, &all_inputs)
+        } else {
+            vec![false; s]
+        };
+        let mut input_repaired = false;
+        if most_ignore_input(&ignoring) {
+            let todo: Vec<usize> = (0..s).filter(|&i| ignoring[i]).collect();
+            run.step(Step::Repairs(todo.len()));
+            run.progress(
+                Phase::Solutions,
+                format!(
+                    "Die Lösungen lesen die Eingabe nicht – {} Lösung(en) werden repariert …",
+                    todo.len()
+                ),
+                None,
+            );
+            let phase = Instant::now();
+            let repairs = todo.iter().map(|&i| {
+                let (run, sessions, convs, results, all_inputs) =
+                    (&run, &sessions, &convs, &results, &all_inputs);
+                let (examples, example_mode, templates) = (&examples, &example_mode, &templates);
+                async move {
+                    let (messages, answer) = &convs[i];
+                    let samples = ignored_samples(results[i].as_deref(), all_inputs);
+                    let messages = prompts::input_ignored_repair_messages(
+                        messages.clone(),
+                        answer,
+                        lang.id,
+                        &samples,
+                    );
+                    let r = match run.chat(run.solution_request(messages)).await {
+                        Ok(r) => r,
+                        Err(AiError::Cancelled) => return Err(AiError::Cancelled),
+                        // The model failed for this repair: the old solution stays.
+                        Err(_) => return Ok(None),
+                    };
+                    run.shared().stats.solutions_repaired += 1;
+                    if r.finish_reason.as_deref() == Some("length") {
+                        return Ok(None);
+                    }
+                    let Some(code) = prompts::extract_code(&r.content, lang.id)
+                        .filter(|c| languages::precheck(lang, c).is_none())
+                    else {
+                        return Ok(None);
+                    };
+                    run.check()?;
+                    if !sessions[i].compile(&code).await?.ok {
+                        return Ok(None);
+                    }
+                    run.check()?;
+                    let outs = sessions[i].run(all_inputs).await?;
+                    let passes = outs.len() == all_inputs.len()
+                        && examples.iter().zip(&outs).all(|(ex, o)| {
+                            valid(o)
+                                && fits_templates(templates, o)
+                                && example_mode.matches(&ex.output, &o.stdout)
+                        });
+                    Ok(passes.then_some((code, outs)))
+                }
+            });
+            let repaired = futures_util::future::join_all(repairs).await;
+            let mut fatal: Option<AiError> = None;
+            for (&i, r) in todo.iter().zip(repaired) {
+                match r {
+                    Ok(Some((code, outs))) => {
+                        codes[i] = code;
+                        results[i] = Some(outs);
+                    }
+                    // A failed repair keeps the old solution (it still
+                    // ignores the input and counts as such).
+                    Ok(None) => {}
+                    Err(e) => {
+                        if fatal
+                            .as_ref()
+                            .is_none_or(|old| matches!(old, AiError::Cancelled))
+                        {
+                            fatal = Some(e);
+                        }
+                    }
+                }
+            }
+            if let Some(e) = fatal {
+                close_all(sessions).await;
+                return Err(e);
+            }
+            ignoring = ignoring_input(&mode, &results, &all_inputs);
+            input_repaired = !most_ignore_input(&ignoring);
+            run.shared().stats.phase_ms.repairs += ms(phase.elapsed());
+            run.step(Step::Majority);
+        }
+        close_all(sessions).await;
+        evidence.input_ignored = reads && most_ignore_input(&ignoring);
+        evidence.input_required = input_required;
+        evidence.input_repaired = input_repaired;
+        run.shared().stats.solutions_ignoring_input = ignoring.iter().filter(|x| **x).count();
 
         let voters = s;
         let (sheet, check) = (example_inputs.len(), check_inputs.len());
@@ -2875,6 +3348,9 @@ mod tests {
             .unwrap_or(0);
         if code.contains("crash") {
             step("", 1)
+        } else if code.contains("constant") {
+            // Prints the result of the sheet example for every input.
+            step("42\n", 0)
         } else if code.contains("double") {
             step(&format!("{}\n", n * 2), 0)
         } else if code.contains("triple") {
@@ -3013,10 +3489,10 @@ mod tests {
     }
 
     fn is_structure(r: &ChatRequest) -> bool {
-        r.messages[0].content == prompts::STRUCTURE_SYSTEM
+        prompts::is_step(&r.messages, prompts::STRUCTURE_RULES)
     }
     fn is_inputs(r: &ChatRequest) -> bool {
-        r.messages[0].content == prompts::INPUTS_SYSTEM
+        prompts::is_step(&r.messages, prompts::INPUTS_RULES)
     }
     fn is_repair(r: &ChatRequest) -> bool {
         r.messages.len() > 2 && r.messages[2].role == Role::Assistant
@@ -3167,6 +3643,59 @@ mod tests {
         assert!(example_in_text(&text, &ex("100", "207")));
         // Without input only the output is checked.
         assert!(example_in_text(&normalize_for_match(&far), &ex("", "34")));
+    }
+
+    /// KI-Benchmark task „java-note“: no example, but the numbers of the
+    /// grade limits scattered in one sentence.
+    const NOTE_TASK: &str = "Note aus Punktzahl\n\nLies eine ganze Punktzahl zwischen 0 und \
+        100 und gib die Note als Zahl aus: 90 bis 100 Punkte ergeben 1, 75 bis 89 Punkte 2, 60 \
+        bis 74 Punkte 3, 50 bis 59 Punkte 4 und 0 bis 49 Punkte 5.";
+
+    #[test]
+    fn scattered_numbers_are_no_examples() {
+        let ex = |i: &str, o: &str| Example {
+            input: i.into(),
+            output: o.into(),
+        };
+        // Regression 1.1.1 (baseline): the structure step invented these
+        // five; „75 → 3“ survived because both numbers occur close together.
+        let invented = [
+            ex("95", "1"),
+            ex("85", "2"),
+            ex("75", "3"),
+            ex("65", "4"),
+            ex("55", "5"),
+        ];
+        let (kept, discarded) = verify_examples(NOTE_TASK, &invented);
+        assert!(kept.is_empty(), "{kept:?}");
+        assert_eq!(discarded, 5);
+        // Other numbers of the sentence do not pair up either.
+        for (i, o) in [
+            ("75", "2"),
+            ("60", "4"),
+            ("90", "5"),
+            ("0", "5"),
+            ("100", "2"),
+        ] {
+            let (kept, _) = verify_examples(NOTE_TASK, &[ex(i, o)]);
+            assert!(kept.is_empty(), "{i} -> {o}");
+        }
+        // Numbers only count as whole tokens: „3“ is not in „30“ or „3.5“.
+        let text = normalize_for_match("Eingabe: 7 ergibt 30");
+        assert!(!example_in_text(&text, &ex("7", "3")));
+        let text = normalize_for_match("Eingabe: 7 ergibt 3.5");
+        assert!(!example_in_text(&text, &ex("7", "3")));
+        assert!(example_in_text(&text, &ex("7", "3.5")));
+        // A real example in the same text still counts …
+        let text = format!("{NOTE_TASK}\n\nBeispiel:\nEingabe: 75\nAusgabe: 2\n");
+        let (kept, _) = verify_examples(&text, &[ex("75", "2"), ex("75", "3")]);
+        assert_eq!(kept, vec![ex("75", "2")]);
+        // … also with numbers in between and an output marker, or an arrow.
+        let text = normalize_for_match("Eingabe 1: 75\nEingabe 2: 95\nAusgabe 1: 2\nAusgabe 2: 1");
+        assert!(example_in_text(&text, &ex("95", "1")));
+        let text = normalize_for_match("75 → 2, 95 → 1");
+        assert!(example_in_text(&text, &ex("95", "1")));
+        assert!(example_in_text(&text, &ex("75", "2")));
     }
 
     #[test]
@@ -3359,6 +3888,307 @@ mod tests {
     // --- Flow with mocks -------------------------------------------------------
 
     #[test]
+    fn ignoring_input_needs_three_different_inputs_with_the_same_output() {
+        let mode = CompareMode::default();
+        let ins = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let outs = |v: &[&str]| Some(v.iter().map(|o| step(o, 0)).collect::<Vec<_>>());
+        let inputs = ins(&["21\n", "", "1\n", "2\n"]);
+        let results = vec![
+            // Constant: ignores the input (the empty input does not count).
+            outs(&["42\n", "7\n", "42\n", "42\n"]),
+            // Depends on the input.
+            outs(&["42\n", "0\n", "2\n", "4\n"]),
+            // Incomplete.
+            None,
+        ];
+        assert_eq!(
+            ignoring_input(&mode, &results, &inputs),
+            vec![true, false, false]
+        );
+        assert!(!most_ignore_input(&[true, false, false]));
+        assert!(most_ignore_input(&[true, true, false]));
+        assert!(most_ignore_input(&[true]));
+        // Only two different inputs (a duplicate does not count): too few.
+        let inputs = ins(&["21\n", "1\n", "1\n"]);
+        let results = vec![outs(&["42\n", "42\n", "42\n"])];
+        assert_eq!(ignoring_input(&mode, &results, &inputs), vec![false]);
+        // A crash is no constant output.
+        let inputs = ins(&["21\n", "1\n", "2\n"]);
+        let results = vec![Some(vec![step("42\n", 0), step("42\n", 0), step("", 1)])];
+        assert_eq!(ignoring_input(&mode, &results, &inputs), vec![false]);
+        assert_eq!(
+            ignored_samples(results[0].as_deref(), &inputs),
+            vec![
+                ("21\n".into(), "42\n".into()),
+                ("1\n".into(), "42\n".into())
+            ]
+        );
+    }
+
+    #[test]
+    fn ignored_input_is_never_green() {
+        let base = Evidence {
+            solutions: 3,
+            compiled: 3,
+            survivors: 3,
+            examples: 1,
+            tests: 4,
+            min_agreement: Some(1.0),
+            ..Evidence::default()
+        };
+        assert_eq!(decide_confidence(&base).level, ConfidenceLevel::Green);
+        let c = decide_confidence(&Evidence {
+            input_ignored: true,
+            input_required: true,
+            ..base.clone()
+        });
+        assert_eq!(c.level, ConfidenceLevel::Red);
+        assert_eq!(c.reasons, vec![INPUT_IGNORED_REASON.to_string()]);
+        let c = decide_confidence(&Evidence {
+            input_ignored: true,
+            ..base.clone()
+        });
+        assert_eq!(c.level, ConfidenceLevel::Yellow);
+        assert_eq!(c.reasons[0], INPUT_IGNORED_NOTE);
+        let c = decide_confidence(&Evidence {
+            input_repaired: true,
+            ..base
+        });
+        assert_eq!(c.level, ConfidenceLevel::Yellow);
+        assert_eq!(c.reasons[0], INPUT_REPAIRED_REASON);
+    }
+
+    fn input_ignored_repairs(r: &[ChatRequest]) -> usize {
+        r.iter()
+            .filter(|c| {
+                is_repair(c)
+                    && c.messages
+                        .last()
+                        .is_some_and(|m| m.content.starts_with(prompts::INPUT_IGNORED_REPAIR))
+            })
+            .count()
+    }
+
+    #[test]
+    fn solutions_ignoring_the_input_give_red_not_green() {
+        // Regression 1.1.2 („backwards“): the solutions print the result of
+        // the sheet example for every input; every test expected it – green.
+        let llm = MockLlm::new(scripted(
+            structure_json(&[("21", "42")], "lines"),
+            vec!["constant"],
+            r#"{"inputs": ["1", "2", "3"]}"#,
+        ));
+        let exec = MockExec::new();
+        let token = CancellationToken::new();
+        let r = block_on(generate(
+            &llm,
+            &exec,
+            &req(None),
+            settings(3),
+            &token,
+            |_| {},
+        ))
+        .unwrap();
+        assert_eq!(
+            r.confidence.level,
+            ConfidenceLevel::Red,
+            "{:?}",
+            r.confidence
+        );
+        assert_eq!(r.confidence.reasons, vec![INPUT_IGNORED_REASON.to_string()]);
+        assert!(r.tests.is_empty());
+        assert!(r.reference_solution.is_none());
+        assert_eq!(r.stats.solutions_ignoring_input, 3);
+        // One repair per solution, with the inputs and the same output shown.
+        let calls = llm.calls();
+        assert_eq!(input_ignored_repairs(&calls), 3);
+        let repair = calls.iter().find(|c| is_repair(c)).unwrap();
+        assert!(repair.messages[3].content.contains("```\n21\n```"));
+        assert!(repair.messages[3].content.contains("```\n42\n```"));
+        assert_eq!(r.stats.solutions_repaired, 3);
+        let c = exec.get();
+        assert_eq!(c.opened, c.closed);
+        assert!(!r.variation_suggested);
+    }
+
+    #[test]
+    fn solutions_ignoring_the_input_are_repaired() {
+        let llm = MockLlm::new(scripted(
+            structure_json(&[("21", "42")], "lines"),
+            vec![
+                "constant", "constant", "constant", "double", "double", "double",
+            ],
+            r#"{"inputs": ["1", "2", "3"]}"#,
+        ));
+        let exec = MockExec::new();
+        let token = CancellationToken::new();
+        let r = block_on(generate(
+            &llm,
+            &exec,
+            &req(None),
+            settings(3),
+            &token,
+            |_| {},
+        ))
+        .unwrap();
+        assert_eq!(
+            r.confidence.level,
+            ConfidenceLevel::Yellow,
+            "{:?}",
+            r.confidence
+        );
+        assert!(r
+            .confidence
+            .reasons
+            .contains(&INPUT_REPAIRED_REASON.to_string()));
+        let expected: Vec<&str> = r.tests.iter().map(|t| t.expected.as_str()).collect();
+        assert_eq!(expected, vec!["42\n", "2\n", "4\n", "6\n"]);
+        assert!(r.reference_solution.unwrap().contains("double"));
+        assert_eq!(r.stats.solutions_ignoring_input, 0);
+        assert_eq!(input_ignored_repairs(&llm.calls()), 3);
+        let c = exec.get();
+        assert_eq!(c.opened, c.closed);
+    }
+
+    #[test]
+    fn constant_output_without_input_hint_is_only_yellow() {
+        // No input hint in the text and no sheet example with input: the
+        // model said the task reads input, but maybe it does not.
+        let structure = serde_json::json!({
+            "inputFormat": "eine Zahl",
+            "outputFormat": "",
+            "readsInput": true,
+            "examples": [],
+        })
+        .to_string();
+        let llm = MockLlm::new(scripted(
+            structure,
+            vec!["constant"],
+            r#"{"inputs": ["1", "2", "3"]}"#,
+        ));
+        let r = generate_with(
+            &llm,
+            req_with_text("Berechne die Antwort und gib sie aus."),
+            3,
+        )
+        .unwrap();
+        assert_eq!(
+            r.confidence.level,
+            ConfidenceLevel::Yellow,
+            "{:?}",
+            r.confidence
+        );
+        assert_eq!(r.confidence.reasons[0], INPUT_IGNORED_NOTE);
+        assert_eq!(r.stats.solutions_ignoring_input, 3);
+    }
+
+    #[test]
+    fn class_only_task_is_reported_without_model() {
+        let llm = MockLlm::new(|_: &ChatRequest, _| -> Result<String, AiError> {
+            panic!("no model call for a class-only task")
+        });
+        let r = generate_with(
+            &llm,
+            GenerateRequest {
+                task_text: no_input::tests::BANK_ACCOUNT.into(),
+                language: "java".into(),
+                compare_mode: None,
+            },
+            3,
+        )
+        .unwrap();
+        assert_eq!(r.unsupported, Some(Unsupported::ApiTask));
+        assert_eq!(r.confidence.level, ConfidenceLevel::Red);
+        assert_eq!(r.confidence.reasons, vec![API_TASK_REASON.to_string()]);
+        assert!(r.tests.is_empty());
+        assert!(r.reference_solution.is_none());
+        assert!(!r.variation_suggested);
+        assert_eq!(r.stats.solutions_requested, 3);
+        assert!(llm.calls().is_empty());
+        let v = serde_json::to_value(&r).unwrap();
+        assert_eq!(v["unsupported"], "API_TASK");
+        assert_eq!(v["variationSuggested"], false);
+    }
+
+    /// Method task with a demo program: the text asks for the method
+    /// `doppelt`, speaks of a program, but asks for no console input/output.
+    const METHOD_DEMO: &str = "Schreiben Sie das Programm Doppelt. Dieses Programm enthält die \
+        Methode public static int doppelt(int n), die eine Zahl als Eingabeparameter erhält und \
+        das Doppelte zurückgibt. Der Aufruf doppelt(21) würde z.B. 42 zurückliefern, doppelt(5) \
+        würde 10 zurückliefern.";
+
+    #[test]
+    fn method_demo_task_is_at_most_yellow_with_note() {
+        let llm = MockLlm::new(scripted(
+            structure_json(&[("21", "42"), ("5", "10")], "lines"),
+            vec!["double"],
+            r#"{"inputs": ["0", "-3", "7"]}"#,
+        ));
+        let r = generate_with(&llm, req_with_text(METHOD_DEMO), 3).unwrap();
+        // All solutions agree on every test: green without the cap.
+        assert_eq!(
+            r.confidence.level,
+            ConfidenceLevel::Yellow,
+            "{:?}",
+            r.confidence
+        );
+        let note = r.io_assumption_note.clone().unwrap();
+        assert!(note.contains("die Methode doppelt"), "{note}");
+        assert!(note.contains("eine Zeile einliest"), "{note}");
+        assert_eq!(r.confidence.reasons[0], note);
+        assert!(!r.tests.is_empty());
+        assert!(r.unsupported.is_none());
+        assert!(!r.variation_suggested);
+        let v = serde_json::to_value(&r).unwrap();
+        assert_eq!(v["ioAssumptionNote"], note.as_str());
+
+        // The same task asking for console input and output: green.
+        let text = format!("{METHOD_DEMO} Das Programm liest n ein und gibt doppelt(n) aus.");
+        let llm = MockLlm::new(scripted(
+            structure_json(&[("21", "42"), ("5", "10")], "lines"),
+            vec!["double"],
+            r#"{"inputs": ["0", "-3", "7"]}"#,
+        ));
+        let r = generate_with(&llm, req_with_text(&text), 3).unwrap();
+        assert_eq!(
+            r.confidence.level,
+            ConfidenceLevel::Green,
+            "{:?}",
+            r.confidence
+        );
+        assert!(r.io_assumption_note.is_none());
+    }
+
+    #[test]
+    fn method_demo_cap_keeps_red_and_yellow() {
+        let note = method_demo_note(Some("reverseString"), false, true);
+        assert!(note.starts_with("Die Aufgabe verlangt vor allem die Methode reverseString;"));
+        assert!(!note.contains("Testfälle nehmen an"));
+        let mut red = Confidence {
+            level: ConfidenceLevel::Red,
+            reasons: vec!["keine Mehrheit".into()],
+        };
+        cap_for_method_demo(&mut red, &note);
+        assert_eq!(red.level, ConfidenceLevel::Red);
+        assert_eq!(red.reasons, vec![note.clone(), "keine Mehrheit".into()]);
+        let mut yellow = Confidence {
+            level: ConfidenceLevel::Yellow,
+            reasons: vec!["x".into()],
+        };
+        cap_for_method_demo(&mut yellow, &note);
+        assert_eq!(yellow.level, ConfidenceLevel::Yellow);
+        assert_eq!(yellow.reasons.len(), 2);
+        let mut green = Confidence {
+            level: ConfidenceLevel::Green,
+            reasons: vec!["alles gut".into()],
+        };
+        cap_for_method_demo(&mut green, &note);
+        assert_eq!(green.level, ConfidenceLevel::Yellow);
+        assert_eq!(green.reasons[0], note);
+        assert!(method_demo_note(None, true, false).contains("eine Methode;"));
+    }
+
+    #[test]
     fn green_with_examples_and_clear_majority() {
         let llm = MockLlm::new(scripted(
             structure_json(&[("21", "42"), ("5", "10"), ("7", "14")], "lines"),
@@ -3393,6 +4223,8 @@ mod tests {
         assert_eq!(r.tests[4].expected, "2000000\n");
         assert!(r.tests.iter().all(|t| t.agreement == 1.0));
         assert!(r.reference_solution.unwrap().contains("double"));
+        // A task with input: no variation check suggested.
+        assert!(!r.variation_suggested);
         // Structure, the five solutions in one request, the inputs.
         assert_eq!(r.stats.llm_calls, 3);
         assert_eq!(r.stats.tokens_per_second, Some(20.0));
@@ -3769,6 +4601,7 @@ mod tests {
             structure_chars: 2910.0,
             solution_chars: 2910.0,
             inputs_chars: 2910.0,
+            shared_chars: 1410.0,
             solutions: 3,
             parallel_inputs: true,
             no_input: false,
@@ -3784,10 +4617,12 @@ mod tests {
         let p = plan(Step::Structure);
         let w = p.work(Step::Structure);
         assert_eq!((w.prompt_tokens, w.gen_tokens), (1000.0, 250.0));
-        // The round: one request for three solutions (prompt once) and the
-        // inputs together, plus the sandbox check.
+        // The round: one request for three solutions (prompt once, without
+        // the shared prefix from the cache: 1500 characters, 500 + 30
+        // tokens) and the inputs together (whole prompt: no cache in a
+        // second slot), plus the sandbox check.
         let r = p.work(Step::Round);
-        assert_eq!(r.prompt_tokens, 2000.0);
+        assert_eq!(r.prompt_tokens, 530.0 + 1000.0);
         assert_eq!(r.gen_tokens, 3.0 * 350.0 + 250.0);
         assert_eq!(r.sandbox_seconds, 10.0);
         // Without inputs alongside, and with real answer lengths.
@@ -3795,11 +4630,11 @@ mod tests {
         p.parallel_inputs = false;
         p.solution_tokens = vec![200.0, 400.0];
         assert_eq!(p.work(Step::Round).gen_tokens, 900.0);
-        // Without input the answers are longer (comments per output line).
+        // Without input the answers are longer (labels and named values).
         let mut p = plan(Step::Round);
         p.parallel_inputs = false;
         p.no_input = true;
-        assert_eq!(p.work(Step::Round).gen_tokens, 3.0 * 540.0);
+        assert_eq!(p.work(Step::Round).gen_tokens, 3.0 * 500.0);
         p.solution_tokens = vec![219.0];
         assert_eq!(p.work(Step::Round).gen_tokens, 3.0 * 219.0);
         assert_eq!(p.later(Step::Round).sandbox_seconds, 10.0);
@@ -3810,13 +4645,49 @@ mod tests {
         assert_eq!(later.gen_tokens, 1300.0);
         assert_eq!(later.sandbox_seconds, 20.0);
         // 7B defaults (6 / 1.5 tokens/s): 1000/6 + 250/1.5 ≈ 333 s for the
-        // structure, then 2000/6 + 1300/1.5 + 20 ≈ 1220 s.
+        // structure, then 1530/6 + 1300/1.5 + 20 ≈ 1142 s.
         let e = eta::eta_range(p.work(Step::Structure), 0.0, later, p.prior).unwrap();
-        assert!(e.low > 1450 && e.low < 1650, "{e:?}");
+        assert!(e.low > 1400 && e.low < 1550, "{e:?}");
         assert!(e.high as f64 >= e.low as f64 * 1.29);
-        // Repairs carry the longer conversation.
+        // Repairs carry the longer conversation; the shared prefix comes
+        // from the cache: 2 × ((2910 + 2000 − 1410) / 3 + 30) tokens.
         let p = plan(Step::Repairs(2));
-        assert!(p.work(Step::Repairs(2)).prompt_tokens > 2.0 * 1000.0);
+        let w = p.work(Step::Repairs(2));
+        assert!(
+            (w.prompt_tokens - 2.0 * (3500.0 / 3.0 + 30.0)).abs() < 1e-9,
+            "{w:?}"
+        );
+        // Inputs after the solutions: their slot has the prefix.
+        assert_eq!(p.work(Step::Inputs).prompt_tokens, 530.0);
+    }
+
+    #[test]
+    fn remaining_time_counts_only_uncached_prompt_tokens() {
+        let mut p = plan(Step::Round);
+        p.parallel_inputs = false;
+        let cached = p.work(Step::Round).prompt_tokens;
+        p.shared_chars = 0.0;
+        let uncached = p.work(Step::Round).prompt_tokens;
+        // 1410 cached characters: 470 tokens less to process.
+        assert!((uncached - cached - 470.0).abs() < 1e-9);
+        // The structure step pays for the whole prompt (nothing cached yet).
+        let mut q = plan(Step::Structure);
+        let before = q.work(Step::Structure).prompt_tokens;
+        q.shared_chars = 0.0;
+        assert_eq!(q.work(Step::Structure).prompt_tokens, before);
+        // A prefix longer than the prompt never makes it negative.
+        p.shared_chars = 10_000.0;
+        assert_eq!(p.work(Step::Round).prompt_tokens, TEMPLATE_TOKENS);
+        // The real prefix: system prompt and task text are shared.
+        let task = "Lies n ein.";
+        let shared = prompts::shared_prefix_chars(task);
+        assert!(shared > task.len() + prompts::COMMON_SYSTEM.len());
+        for m in [
+            prompts::structure_messages(task),
+            prompts::inputs_messages(task, &prompts::InputsContext::default()),
+        ] {
+            assert!(chars(&m) > shared as f64);
+        }
     }
 
     #[test]
@@ -4309,6 +5180,8 @@ mod tests {
         // Per solution: the empty input and the probe, nothing else.
         assert_eq!(exec.get().runs, 3 * 2);
         assert!(r.stats.no_input);
+        // Without input the variation check is suggested.
+        assert!(r.variation_suggested);
     }
 
     #[test]
@@ -4488,6 +5361,140 @@ mod tests {
         );
     }
 
+    /// Reports cache hits, per-answer lengths and cut-off answers like
+    /// llama-server: the second answer of every solution request hits the
+    /// token limit.
+    struct MeteredLlm<F>(MockLlm<F>);
+
+    impl<F: Fn(&ChatRequest, usize) -> Result<String, AiError> + Sync> Llm for MeteredLlm<F> {
+        async fn chat(&self, req: &ChatRequest) -> Result<ChatResponse, AiError> {
+            Ok(self.chat_n(req, 1).await?.remove(0))
+        }
+        async fn chat_n(&self, req: &ChatRequest, n: usize) -> Result<Vec<ChatResponse>, AiError> {
+            let mut rs = self.0.chat_n(req, n).await?;
+            for (i, r) in rs.iter_mut().enumerate() {
+                r.cached_tokens = Some(40);
+                if req.prefill.is_some() {
+                    r.completion_tokens = Some(100 + i as u64);
+                    if i == 1 {
+                        r.finish_reason = Some("length".into());
+                    }
+                }
+            }
+            Ok(rs)
+        }
+    }
+
+    #[test]
+    fn stats_measure_cache_solution_lengths_and_truncation() {
+        let llm = MeteredLlm(MockLlm::new(scripted(
+            structure_json(&[("21", "42")], "lines"),
+            vec!["double"],
+            r#"{"inputs": ["1"]}"#,
+        )));
+        let r = generate_with_llm(&llm, req(None), 3).unwrap();
+        assert_eq!(llm.0.batches(), vec![1, 3, 1]);
+        // Structure, solutions (shared prompt once), inputs.
+        assert_eq!(r.stats.cached_tokens, 120);
+        assert_eq!(r.stats.solution_tokens, vec![100, 101, 102]);
+        assert_eq!(r.stats.solutions_truncated, 1);
+        // The cut-off answer fails without a compile; two of three passed,
+        // so no repair.
+        assert_eq!(r.stats.solutions_passed, 2);
+        assert_eq!(r.stats.solutions_repaired, 0);
+        let json = serde_json::to_value(&r.stats).unwrap();
+        assert_eq!(json["cachedTokens"], 120);
+        assert_eq!(json["solutionTokens"], serde_json::json!([100, 101, 102]));
+        assert_eq!(json["solutionsTruncated"], 1);
+    }
+
+    /// Cuts the solution answers `cut` of the first round off at the token
+    /// limit, and every repair answer too if `cut_repairs`.
+    struct CuttingLlm<F> {
+        inner: MockLlm<F>,
+        cut: Vec<usize>,
+        cut_repairs: bool,
+    }
+
+    impl<F: Fn(&ChatRequest, usize) -> Result<String, AiError> + Sync> Llm for CuttingLlm<F> {
+        async fn chat(&self, req: &ChatRequest) -> Result<ChatResponse, AiError> {
+            Ok(self.chat_n(req, 1).await?.remove(0))
+        }
+        async fn chat_n(&self, req: &ChatRequest, n: usize) -> Result<Vec<ChatResponse>, AiError> {
+            let mut rs = self.inner.chat_n(req, n).await?;
+            if req.prefill.is_some() {
+                for (i, r) in rs.iter_mut().enumerate() {
+                    let cut = if is_repair(req) {
+                        self.cut_repairs
+                    } else {
+                        self.cut.contains(&i)
+                    };
+                    if cut {
+                        r.finish_reason = Some("length".into());
+                        // Cut off: no closing fence.
+                        r.content = r.content.trim_end_matches("```").to_string();
+                    }
+                }
+            }
+            Ok(rs)
+        }
+    }
+
+    /// Result, containers opened, compiles, model requests.
+    fn cutting_run(cut_repairs: bool) -> (GenerateResult, usize, usize, Vec<ChatRequest>) {
+        let llm = CuttingLlm {
+            inner: MockLlm::new(scripted(
+                structure_json(&[("21", "42")], "lines"),
+                vec!["double"],
+                r#"{"inputs": ["1"]}"#,
+            )),
+            cut: vec![1, 2],
+            cut_repairs,
+        };
+        let exec = MockExec::new();
+        let r = block_on(generate(
+            &llm,
+            &exec,
+            &req(None),
+            settings(3),
+            &CancellationToken::new(),
+            |_| {},
+        ))
+        .unwrap();
+        let c = exec.get();
+        (r, c.opened, c.compiles, llm.inner.calls())
+    }
+
+    /// Issue #46: an answer cut off at the token limit is not compiled but
+    /// repaired with the hint to write shorter; three solutions stay.
+    #[test]
+    fn truncated_solutions_are_repaired_without_compiling() {
+        let (r, opened, compiles, calls) = cutting_run(false);
+        assert_eq!(opened, 3, "still three solutions");
+        // One compile in the first round (the two cut-off answers are
+        // skipped), two after the repairs.
+        assert_eq!(compiles, 3);
+        let repairs: Vec<&ChatRequest> = calls.iter().filter(|c| is_repair(c)).collect();
+        assert_eq!(repairs.len(), 2);
+        for rq in &repairs {
+            assert!(rq.messages[3]
+                .content
+                .starts_with(prompts::TRUNCATED_REPAIR));
+            assert!(!rq.messages[3].content.contains("does not compile"));
+            assert_eq!(rq.max_tokens, SOLUTION_MAX_TOKENS);
+        }
+        assert_eq!(r.stats.solutions_truncated, 2);
+        assert_eq!(r.stats.solutions_repaired, 2);
+        assert_eq!(r.stats.solutions_passed, 3);
+        assert_eq!(r.confidence.level, ConfidenceLevel::Green);
+        // Cut off again: counted again, still not compiled.
+        let (r, _, compiles, _) = cutting_run(true);
+        assert_eq!(compiles, 1);
+        assert_eq!(r.stats.solutions_truncated, 4);
+        assert_eq!(r.stats.solutions_repaired, 2);
+        assert_eq!(r.stats.solutions_passed, 1);
+    }
+
     /// Regression case A (release 1.1.0, 7B model, three solutions): two
     /// fast solutions agree on a wrong third line, the slow third one is
     /// right. Every solution is waited for now; the majority stays a hint
@@ -4555,7 +5562,7 @@ mod tests {
     /// model read „15 Uhr, 17 Minuten und 51 Sekunden“ as 17:51:00 in every
     /// solution alike (third line 9630 instead of 441), which no majority
     /// can correct. Without input the solution prompt now names the values
-    /// found by rules and asks for one comment per output line; the mock
+    /// found by rules and asks for one named variable per output line; the mock
     /// model gets the time right only with them.
     #[test]
     fn time_sheet_gets_fixed_values_in_the_solution_prompt() {
@@ -4575,7 +5582,7 @@ mod tests {
             } else if is_inputs(r) {
                 Ok(r#"{"inputs": ["15 10 30"]}"#.into())
             } else if r.messages[1].content.contains("(clock time 15:17:51)")
-                && r.messages[0].content.contains(prompts::STEPS_RULE)
+                && r.messages[1].content.contains(prompts::STEPS_RULE)
             {
                 Ok(java_program("qas"))
             } else {
@@ -4617,7 +5624,7 @@ mod tests {
             .iter()
             .find(|c| !is_structure(c) && !is_inputs(c))
             .unwrap();
-        assert!(!solution.messages[0].content.contains(prompts::STEPS_RULE));
+        assert!(!solution.messages[1].content.contains(prompts::STEPS_RULE));
         assert!(!solution.messages[1]
             .content
             .contains(prompts::FIXED_VALUES_HEADING));
@@ -4661,6 +5668,7 @@ mod tests {
         let calls = llm.calls();
         assert!(!calls.iter().any(is_inputs), "no inputs for fixed values");
         assert!(r.stats.fixed_values);
+        assert!(r.variation_suggested);
         assert!(r.stats.no_input);
         assert_eq!(r.stats.inputs_generated, 0);
         // The three reading solutions were repaired with the no-input hint.
@@ -4930,7 +5938,8 @@ mod tests {
             .unwrap();
         assert_eq!(sol.prefill.as_deref(), Some("```python\n"));
         assert_eq!(sol.stop, vec!["\n```".to_string()]);
-        assert_eq!(sol.max_tokens, 1024);
+        assert_eq!(sol.max_tokens, SOLUTION_MAX_TOKENS);
+        assert_eq!(SOLUTION_MAX_TOKENS, 640);
     }
 
     #[test]

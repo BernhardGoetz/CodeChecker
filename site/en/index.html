@@ -1,0 +1,85 @@
+<!-- page: {"title": "Code-Prüfer – check programming exercises locally", "description": "Free, open-source desktop app for Windows and macOS that checks Python and Java exercises against test cases, entirely on your own computer.", "nav": "en", "lang": "en", "fullTitle": true} -->
+<section class="hero" aria-labelledby="hero-title">
+  <div class="container hero-grid">
+    <div>
+      <h1 id="hero-title">Check programming exercises on your own computer</h1>
+      <p class="lead">
+        Code-Prüfer is a free desktop application for Windows and macOS that checks programming exercises
+        (<strong>Python</strong> and <strong>Java</strong>) locally against test cases.
+      </p>
+      <ul class="facts" aria-label="At a glance">
+        <li>free</li>
+        <li>open source</li>
+        <li>everything stays local</li>
+      </ul>
+      <div class="actions">
+        <a class="button primary" href="#download">Download</a>
+        <a class="button" href="{{root}}doku/anleitung/" hreflang="de">Manual (German)</a>
+      </div>
+    </div>
+    <figure class="shot">
+      <picture>
+        <source media="(prefers-color-scheme: dark)" srcset="{{root}}img/ergebnis-dunkel.webp">
+        <img src="{{root}}img/ergebnis-hell.webp" width="1280" height="800" alt="The Code-Prüfer window (German user interface): a Python program in the editor and the result “2 von 3 Tests bestanden” (2 of 3 tests passed) with a comparison of expected and actual output.">
+      </picture>
+    </figure>
+  </div>
+</section>
+
+<section class="section" aria-labelledby="about-title">
+  <div class="container prose">
+    <h2 id="about-title">About</h2>
+    <p>
+      Each program runs in an isolated Docker or Podman container without network access, and no code ever leaves
+      the computer. Optional AI features use a local model (llama.cpp) to suggest test cases.
+    </p>
+    <p>
+      The project is open source under the <a href="{{repo}}/blob/main/LICENSE">MIT License</a>. See the
+      <a href="{{root}}doku/code-signing-policy/">Code signing policy</a> for what is signed, the team roles and the
+      <a href="{{root}}doku/datenschutz/">privacy policy</a>.
+    </p>
+    <p>The user interface and the full manual are in German.</p>
+  </div>
+</section>
+
+<section class="section" id="download" aria-labelledby="download-title">
+  <div class="container">
+    <h2 id="download-title">Download</h2>
+    <p class="section-intro">Current version: <strong>{{version}}</strong>. Each file is about 200&nbsp;MB because it contains the Python and Java runtime environments.</p>
+    <div class="downloads">
+      <a class="download" data-download="windows" href="{{dl.windows}}">
+        <span class="download-suggested">matches your computer</span>
+        <span class="download-os">Windows</span>
+        <span class="download-detail">Windows 10 or 11, 64-bit</span>
+        <span class="download-file">{{file.windows}}</span>
+      </a>
+      <a class="download" data-download="mac-arm" href="{{dl.macArm}}">
+        <span class="download-suggested">matches your computer</span>
+        <span class="download-os">macOS Apple Silicon</span>
+        <span class="download-detail">Macs with an Apple chip</span>
+        <span class="download-file">{{file.macArm}}</span>
+      </a>
+      <a class="download" data-download="mac-intel" href="{{dl.macIntel}}">
+        <span class="download-suggested">matches your computer</span>
+        <span class="download-os">macOS Intel</span>
+        <span class="download-detail">Macs with an Intel processor</span>
+        <span class="download-file">{{file.macIntel}}</span>
+      </a>
+    </div>
+    <p>
+      All files: <a href="{{release}}">release page of version {{version}}</a>
+      (<a href="{{releases}}">all releases</a>). Checksums: <a href="{{dl.sums}}"><code>SHA256SUMS.txt</code></a>.
+    </p>
+    <div class="note warn">
+      <div>
+        <p>
+          The installers are currently <strong>not code-signed</strong>, so Windows SmartScreen and macOS Gatekeeper
+          warn on first start. On Windows choose “More info” → “Run anyway”; on macOS open
+          <em>System Settings → Privacy &amp; Security</em> → “Open Anyway”. Only do this with a file you downloaded
+          from the official release page yourself.
+        </p>
+      </div>
+    </div>
+    <p>Requirements: Docker Desktop or Podman. The optional AI needs at least 12&nbsp;GB of RAM.</p>
+  </div>
+</section>

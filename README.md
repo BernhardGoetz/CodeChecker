@@ -6,6 +6,8 @@ Dieses Programm ist für Schülerinnen, Schüler und Studierende gedacht (und f�
 
 > Du willst das Programm nur **benutzen**? Dann bist du hier richtig.
 > Du willst es **weiterentwickeln**? Dann lies [`CONTRIBUTING.md`](CONTRIBUTING.md).
+>
+> **Website mit Download und Anleitung:** <https://bernhardgoetz.github.io/CodeChecker/>
 
 ---
 

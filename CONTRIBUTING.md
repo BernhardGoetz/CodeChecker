@@ -25,6 +25,7 @@ Lizenz: MIT (siehe [`LICENSE`](LICENSE)).
 14. [Beitragsablauf (Branch und Pull Request)](#14-beitragsablauf-branch-und-pull-request)
 15. [Sicherheit](#15-sicherheit)
 16. [Weitere Dokumente](#16-weitere-dokumente)
+17. [Website (GitHub Pages)](#17-website-github-pages)
 
 ---
 
@@ -479,3 +480,20 @@ Bevor ein Katalogeintrag gepinnt ist, kann man Dateien weiterhin über „Datei 
 | [`CHANGELOG.md`](CHANGELOG.md) | Änderungen je Version |
 | [`THIRD_PARTY_NOTICES.txt`](THIRD_PARTY_NOTICES.txt) | Lizenzen mitgelieferter Drittsoftware |
 | [`SECURITY.md`](SECURITY.md) | Sicherheitslücken vertraulich melden |
+
+## 17. Website (GitHub Pages)
+
+Die Website <https://bernhardgoetz.github.io/CodeChecker/> entsteht aus `site/` und aus den Markdown-Dateien des Repositorys. Nichts wird doppelt gepflegt: Die Doku-Unterseiten werden beim Bauen aus `README.md`, `CONTRIBUTING.md`, `docs/WARNUNG_BEIM_INSTALLIEREN.md`, `docs/Privacy Policy.md` und `docs/CODE_SIGNING_POLICY.md` erzeugt.
+
+```sh
+npm run build:site   # baut nach site-dist/ (nicht im Repository)
+npm run check:site   # prüft alle internen Links und Anker, verbietet externe Ressourcen
+npm run test:site    # Tests der Markdown-Umwandlung (node --test)
+```
+
+- `site/*.html`, `site/en/`, `site/kontakt/`: Seiteninhalte als HTML-Fragmente. Die erste Zeile ist ein Kommentar `<!-- page: {...} -->` mit Titel und Beschreibung; Kopf, Navigation und Fußzeile setzt `scripts/build-site.mjs`. Platzhalter wie `{{version}}` oder `{{dl.windows}}` füllt das Skript aus `src-tauri/tauri.conf.json` (Asset-Namen wie in `scripts/release-notes.sh`).
+- Relative Links im Markdown zeigen auf der Website auf die passende Unterseite oder auf die Datei bei GitHub. Ein Link auf eine fehlende Datei bricht den Build ab.
+- Im Markdown ist rohes HTML außerhalb von Code nicht erlaubt (auch kein `<br>` oder `<details>`); der Build bricht dann mit Datei und Ausschnitt ab. HTML-Kommentare werden still entfernt. Wer spitze Klammern zeigen will, nimmt einen Code-Span, z. B. `` `<Version>` ``. Links dürfen nur auf `https:`, `http:`, `mailto:`, relative Pfade oder `#`-Anker zeigen; jedes andere Schema (`javascript:`, `data:` …) bricht den Build ab.
+- `site/assets/`: Stylesheet (Tokens aus `docs/design/design-tokens.json`, hell und dunkel über `prefers-color-scheme`) und ein kleines Skript, das den passenden Download hervorhebt. Keine externen Ressourcen (keine CDNs, Webfonts oder Tracker); das App-Icon kommt aus `src-tauri/icons`. Jede Seite trägt eine Content-Security-Policy (`CSP` in `scripts/build-site.mjs`), die nur Dateien der Website selbst zulässt; Inline-Styles (`style=`), `<style>`-Blöcke und Inline-Skripte gehen deshalb nicht und werden von `npm run check:site` abgelehnt. Gestaltung gehört in `site/assets/site.css`.
+- `site/img/`: Screenshots (WebP) und Vorschaubild `og-image.png`. Neu aufnehmen mit `node scripts/site-screenshots.mjs`: Das Skript startet die Oberfläche mit dem Mock-Backend (Abschnitt 5) und braucht ein global installiertes Playwright mit Chromium.
+- Veröffentlicht wird per `.github/workflows/pages.yml` bei jedem Push auf `main`, der die Website oder die Doku betrifft (oder per „Run workflow“). Einmalig einstellen: *Settings → Pages → Source: GitHub Actions*.
