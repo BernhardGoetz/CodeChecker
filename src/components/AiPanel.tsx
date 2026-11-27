@@ -247,10 +247,17 @@ export function AiPanel({
             </span>
             <span className="small muted">{LEVEL_HINT[result.confidence.level]}</span>
           </div>
+          {result.ioAssumptionNote && (
+            <p className="note small" role="note">
+              <strong>Methoden-Aufgabe:</strong> {result.ioAssumptionNote}
+            </p>
+          )}
           <ul className="small reasons">
-            {result.confidence.reasons.map((r) => (
-              <li key={r}>{r}</li>
-            ))}
+            {result.confidence.reasons
+              .filter((r) => r !== result.ioAssumptionNote)
+              .map((r) => (
+                <li key={r}>{r}</li>
+              ))}
           </ul>
           <p className="small muted">
             {result.tests.length} Testfälle übernommen (mit „KI“ markiert) ·{" "}

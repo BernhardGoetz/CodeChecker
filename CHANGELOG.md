@@ -53,6 +53,16 @@ Format nach [Keep a Changelog](https://keepachangelog.com/de/1.1.0/), Versionen 
   ohne Ampel und ohne KI-Aufruf. Ein passendes Testprogramm für solche Aufgaben ist für
   1.2.0 geplant (#59). Aufgaben, die Methoden *und* ein Programm verlangen (z. B.
   „Schreiben Sie das Programm Backwards …“), bleiben normale Programmaufgaben.
+- KI: Methoden-Aufgaben mit Programm, die aber keine Eingabe über die Konsole und keine
+  Ausgabe verlangen (z. B. „Schreiben Sie das Programm Backwards. Dieses Programm
+  enthält die Methode `reverseString` …“), bekommen höchstens Gelb, nie Grün. Die
+  Testfälle müssen dort eine Ein- und Ausgabe annehmen (etwa „eine Zeile einlesen,
+  umgedreht ausgeben“), die der Text nicht verlangt. Ein Hinweis nennt die Methode und
+  sagt, was die Testfälle annehmen; schlägt beim Prüfen ein Testfall fehl, steht der
+  Hinweis auch beim Ergebnis. Rot gibt es dort nur noch aus Gründen, die nichts mit
+  dieser Annahme zu tun haben (z. B. keine Lösung bestand die Beispiele); dann gibt es
+  keine Testfälle. Der Variationstest wird für solche Aufgaben nicht vorgeschlagen.
+  Verlangt der Text Ein- oder Ausgabe ausdrücklich, bleibt alles wie bisher.
 
 ### Behoben
 

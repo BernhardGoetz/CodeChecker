@@ -127,10 +127,13 @@ export default function App() {
     reference: { code: string; language: string } | null;
     inputFormat: string;
     inputConstraints: string;
+    /** Method task: the tests' input/output is an assumption (shown with failed checks). */
+    ioAssumptionNote: string | null;
   } | null>(null);
   const activeAi = aiData !== null && aiData.taskText === task ? aiData : null;
   const outputTemplates = activeAi?.templates ?? [];
   const reference = activeAi?.reference ?? null;
+  const ioAssumptionNote = activeAi?.ioAssumptionNote ?? null;
   // Variation check after „Prüfen“: switch, result, progress line (null = not running).
   const [variationEnabled, setVariationEnabled] = useState(() => readStored(VARIATION_KEY) !== "off");
   // Set by the last AI generation (variationSuggested) instead of by hand:
@@ -384,6 +387,7 @@ export default function App() {
       reference: r.referenceSolution ? { code: r.referenceSolution, language: languageId } : null,
       inputFormat: r.inputFormat ?? "",
       inputConstraints: r.inputConstraints ?? "",
+      ioAssumptionNote: r.ioAssumptionNote ?? null,
     });
     if (r.tests.length === 0) return;
     const prev = testsRef.current;
@@ -651,7 +655,7 @@ export default function App() {
                     title={
                       variationEnabled
                         ? "Die Aufgabe hat feste Werte bzw. liest keine Eingabe – dort fallen zufällig richtige Lösungen am ehesten auf. Das Häkchen lässt sich jederzeit ändern."
-                        : "Die Aufgabe liest Eingaben (oder ist eine reine Klassen-Aufgabe) – der Variationstest bringt dort wenig. Das Häkchen lässt sich jederzeit setzen."
+                        : "Die Aufgabe liest Eingaben (oder ist eine Klassen- bzw. Methoden-Aufgabe) – der Variationstest bringt dort wenig. Das Häkchen lässt sich jederzeit setzen."
                     }
                   >
                     (von der KI {variationEnabled ? "gesetzt" : "abgewählt"})
@@ -723,6 +727,15 @@ export default function App() {
             </h2>
             {running && <p className="note busy">{progressText(progress)}</p>}
             {error && <div className="banner error">{error}</div>}
+            {shownReport &&
+              !running &&
+              ioAssumptionNote &&
+              tests.some((t) => t.origin === "ai") &&
+              shownReport.passed < shownReport.total && (
+                <p className="note warn small" role="note">
+                  <strong>Hinweis zu den KI-Testfällen:</strong> {ioAssumptionNote}
+                </p>
+              )}
             {shownReport && !running && (
               <ResultsPanel
                 report={shownReport}

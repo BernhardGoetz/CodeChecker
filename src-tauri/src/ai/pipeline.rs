@@ -301,6 +301,12 @@ pub struct GenerateResult {
     /// The task is of a kind the test generation cannot check yet (no
     /// tests, no traffic light; the reason is in `confidence.reasons`).
     pub unsupported: Option<Unsupported>,
+    /// Method task with a demo program (see
+    /// [`super::api_task::method_demo_task`]): the text asks for a method,
+    /// not for console input/output, so the tests' input/output is an
+    /// assumption. German note (also first in `confidence.reasons`), shown
+    /// again when a check against these tests fails.
+    pub io_assumption_note: Option<String>,
 }
 
 /// Kinds of tasks the test generation cannot check yet.
@@ -345,7 +351,54 @@ pub fn api_task_result(
         },
         variation_suggested: false,
         unsupported: Some(Unsupported::ApiTask),
+        io_assumption_note: None,
     }
+}
+
+/// German note for a method task with a demo program (see
+/// [`GenerateResult::io_assumption_note`]). `method`: the method's name if
+/// known; `tests`: whether tests were generated, `reads_input`: whether
+/// they assume the program reads input.
+pub fn method_demo_note(method: Option<&str>, tests: bool, reads_input: bool) -> String {
+    let what = match method {
+        Some(m) => format!("die Methode {m}"),
+        None => "eine Methode".to_string(),
+    };
+    let mut note = format!(
+        "Die Aufgabe verlangt vor allem {what}; ob das Programm etwas über die Konsole einlesen \
+         oder ausgeben soll, steht nicht im Text."
+    );
+    if tests {
+        note.push_str(if reads_input {
+            " Die Testfälle nehmen an, dass das Programm eine Zeile einliest und das Ergebnis \
+             ausgibt – bitte selbst prüfen. Eine richtige Lösung, deren main nur ein festes \
+             Beispiel ausgibt, besteht diese Testfälle nicht."
+        } else {
+            " Die Testfälle nehmen an, dass das Programm ohne Eingabe genau diese Ausgabe macht – \
+             bitte selbst prüfen. Eine richtige Lösung mit einem anderen Beispiel in main \
+             besteht diese Testfälle nicht."
+        });
+    }
+    note
+}
+
+/// Caps the confidence of a method task with a demo program at yellow and
+/// puts `note` first. Green becomes yellow (the tests rest on an assumed
+/// input/output); red stays red: it only comes from the pipeline itself (no
+/// solution passed, no majority, no output fitting the templates – there
+/// are no tests then, so no student solution can fail them), never from the
+/// input/output assumption, because such a task never counts as requiring
+/// input (see `input_required` in [`generate`]).
+pub fn cap_for_method_demo(confidence: &mut Confidence, note: &str) {
+    if confidence.level == ConfidenceLevel::Green {
+        confidence.level = ConfidenceLevel::Yellow;
+        confidence.reasons.push(
+            "Die erwarteten Ausgaben sind nur ein Hinweis – bitte prüfen, bevor danach bewertet \
+             wird."
+                .into(),
+        );
+    }
+    confidence.reasons.insert(0, note.to_string());
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -2276,6 +2329,9 @@ pub async fn generate<L: Llm + Sync, E: Executor>(
     if super::api_task::class_only_task(&req.task_text) {
         return Ok(api_task_result(req, &settings, started));
     }
+    // A method plus a program, without console input/output: the tests'
+    // input/output is an assumption – at most yellow, with a note.
+    let method_demo = super::api_task::method_demo_task(&req.task_text);
     let run = Run {
         llm,
         exec,
@@ -2718,8 +2774,15 @@ pub async fn generate<L: Llm + Sync, E: Executor>(
                 confidence.reasons.push(FIXED_VALUES_REASON.into());
             }
             // Red: no tests, no reference solution – only the honest message.
+            let io_assumption_note = method_demo.as_ref().map(|name| {
+                let has_tests = confidence.level != ConfidenceLevel::Red && !tests.is_empty();
+                let note = method_demo_note(name.as_deref(), has_tests, !stats.no_input);
+                cap_for_method_demo(&mut confidence, &note);
+                note
+            });
             let red = confidence.level == ConfidenceLevel::Red;
-            let variation_suggested = fixed_values || stats.no_input;
+            // Method tasks: the variation check would vary an assumed main.
+            let variation_suggested = (fixed_values || stats.no_input) && method_demo.is_none();
             GenerateResult {
                 tests: if red { Vec::new() } else { tests },
                 reference_solution: if red { None } else { reference },
@@ -2736,6 +2799,7 @@ pub async fn generate<L: Llm + Sync, E: Executor>(
                 stats,
                 variation_suggested,
                 unsupported: None,
+                io_assumption_note,
             }
         };
         let mut evidence = Evidence {
@@ -2892,10 +2956,13 @@ pub async fn generate<L: Llm + Sync, E: Executor>(
         // solutions get one repair; whatever ignores the input afterwards is
         // never green (see `decide_confidence`).
         let reads = !no_input_confirmed;
-        let input_required = no_input::has_input_hint(&req.task_text)
-            || examples
-                .iter()
-                .any(|e| !normalize_for_match(&e.input).is_empty());
+        // A method task's examples are method calls („reverseString(“Uni”)
+        // würde “inU” zurückliefern“), not console input.
+        let input_required = method_demo.is_none()
+            && (no_input::has_input_hint(&req.task_text)
+                || examples
+                    .iter()
+                    .any(|e| !normalize_for_match(&e.input).is_empty()));
         let mut ignoring = if reads {
             ignoring_input(&mode, &results, &all_inputs)
         } else {
@@ -4041,6 +4108,84 @@ mod tests {
         let v = serde_json::to_value(&r).unwrap();
         assert_eq!(v["unsupported"], "API_TASK");
         assert_eq!(v["variationSuggested"], false);
+    }
+
+    /// Method task with a demo program: the text asks for the method
+    /// `doppelt`, speaks of a program, but asks for no console input/output.
+    const METHOD_DEMO: &str = "Schreiben Sie das Programm Doppelt. Dieses Programm enthält die \
+        Methode public static int doppelt(int n), die eine Zahl als Eingabeparameter erhält und \
+        das Doppelte zurückgibt. Der Aufruf doppelt(21) würde z.B. 42 zurückliefern, doppelt(5) \
+        würde 10 zurückliefern.";
+
+    #[test]
+    fn method_demo_task_is_at_most_yellow_with_note() {
+        let llm = MockLlm::new(scripted(
+            structure_json(&[("21", "42"), ("5", "10")], "lines"),
+            vec!["double"],
+            r#"{"inputs": ["0", "-3", "7"]}"#,
+        ));
+        let r = generate_with(&llm, req_with_text(METHOD_DEMO), 3).unwrap();
+        // All solutions agree on every test: green without the cap.
+        assert_eq!(
+            r.confidence.level,
+            ConfidenceLevel::Yellow,
+            "{:?}",
+            r.confidence
+        );
+        let note = r.io_assumption_note.clone().unwrap();
+        assert!(note.contains("die Methode doppelt"), "{note}");
+        assert!(note.contains("eine Zeile einliest"), "{note}");
+        assert_eq!(r.confidence.reasons[0], note);
+        assert!(!r.tests.is_empty());
+        assert!(r.unsupported.is_none());
+        assert!(!r.variation_suggested);
+        let v = serde_json::to_value(&r).unwrap();
+        assert_eq!(v["ioAssumptionNote"], note.as_str());
+
+        // The same task asking for console input and output: green.
+        let text = format!("{METHOD_DEMO} Das Programm liest n ein und gibt doppelt(n) aus.");
+        let llm = MockLlm::new(scripted(
+            structure_json(&[("21", "42"), ("5", "10")], "lines"),
+            vec!["double"],
+            r#"{"inputs": ["0", "-3", "7"]}"#,
+        ));
+        let r = generate_with(&llm, req_with_text(&text), 3).unwrap();
+        assert_eq!(
+            r.confidence.level,
+            ConfidenceLevel::Green,
+            "{:?}",
+            r.confidence
+        );
+        assert!(r.io_assumption_note.is_none());
+    }
+
+    #[test]
+    fn method_demo_cap_keeps_red_and_yellow() {
+        let note = method_demo_note(Some("reverseString"), false, true);
+        assert!(note.starts_with("Die Aufgabe verlangt vor allem die Methode reverseString;"));
+        assert!(!note.contains("Testfälle nehmen an"));
+        let mut red = Confidence {
+            level: ConfidenceLevel::Red,
+            reasons: vec!["keine Mehrheit".into()],
+        };
+        cap_for_method_demo(&mut red, &note);
+        assert_eq!(red.level, ConfidenceLevel::Red);
+        assert_eq!(red.reasons, vec![note.clone(), "keine Mehrheit".into()]);
+        let mut yellow = Confidence {
+            level: ConfidenceLevel::Yellow,
+            reasons: vec!["x".into()],
+        };
+        cap_for_method_demo(&mut yellow, &note);
+        assert_eq!(yellow.level, ConfidenceLevel::Yellow);
+        assert_eq!(yellow.reasons.len(), 2);
+        let mut green = Confidence {
+            level: ConfidenceLevel::Green,
+            reasons: vec!["alles gut".into()],
+        };
+        cap_for_method_demo(&mut green, &note);
+        assert_eq!(green.level, ConfidenceLevel::Yellow);
+        assert_eq!(green.reasons[0], note);
+        assert!(method_demo_note(None, true, false).contains("eine Methode;"));
     }
 
     #[test]

@@ -5,13 +5,17 @@ llama-server und echter Sandbox auf festen Aufgaben, damit Änderungen an
 Prompts und Pipeline vorher/nachher verglichen werden können.
 
 - `tasks/*.json`: Aufgaben (`name`, `language` `python`/`java`, `text`,
-  `kind` `program`/`api`, `reference`). `reference` ist bei `program` ein
+  `kind` `program`/`api`/`method_demo`, `reference`). `reference` ist bei `program` ein
   Python-Programm (stdin → stdout), das die richtigen Ausgaben liefert; bei
   `api` (Klassen/Methoden ohne Konsolen-Ein-/Ausgabe) nur eine Beschreibung,
   dort gilt Rot/keine Tests als erwartet (ab 1.1.2-e3 meldet die Pipeline das
-  ehrlich als Klassen-Aufgabe, Ampel-Spalte „A“). `backwards` ist seit
-  1.1.2-e3 `program` (vorher `api`); frühere Läufe sind für diese Aufgabe nicht
-  direkt vergleichbar.
+  ehrlich als Klassen-Aufgabe, Ampel-Spalte „A“). `kind` `method_demo`
+  (Methode plus Programm, aber keine Konsolen-Ein-/Ausgabe verlangt): erwartet
+  ist höchstens Gelb mit Hinweis (`ioAssumptionNote`, Ampel-Spalte „M“), Grün
+  gilt als falsch; die Tests werden nicht gegen die Referenz geprüft.
+  `backwards` war bis 1.1.2-e2 `api`, in 1.1.2-e3 `program` und ist seit
+  1.1.2-e3b `method_demo`; frühere Läufe sind für diese Aufgabe nicht direkt
+  vergleichbar.
 - `src-tauri/tests/ki_bench.rs`: der Lauf (`#[ignore]`), schreibt je Lauf
   eine JSON-Zeile nach `src-tauri/target/ki-bench/<label>.jsonl`.
 - `evaluate.py`: prüft die erzeugten Tests gegen die Referenzen.
@@ -59,7 +63,8 @@ python3 -I scripts/ki-bench/evaluate.py --compare \
 
 Kategorien je Lauf: `korrekt` (Grün/Gelb, alle Tests stimmen mit der
 Referenz), `falsch-grün`, `falsch-gelb` (mindestens ein Test weicht ab),
-`rot-leer` (Rot, keine Tests), `api-ungeprüft` (Grün/Gelb bei einer
+`rot-leer` (Rot, keine Tests; bei `method_demo` zählt Gelb mit Hinweis als
+`korrekt`, Grün als `falsch-grün`), `api-ungeprüft` (Grün/Gelb bei einer
 `api`-Aufgabe), `fehler` (Lauf abgebrochen). Dazu je Aufgabe die mittleren
 Zeiten je Phase, Prompt-, Cache- und Ausgabe-Tokens und die Zahl der am
 Token-Limit abgeschnittenen Lösungen.

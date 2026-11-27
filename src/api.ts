@@ -390,6 +390,12 @@ export interface GenerateResult {
   variationSuggested?: boolean;
   /** Task kind the generation cannot check yet ("API_TASK": only a class, no main program). */
   unsupported?: "API_TASK" | null;
+  /**
+   * Method task with a demo program: the text asks for a method, not for console
+   * input/output, so the tests' input/output is an assumption (at most yellow).
+   * German note, also the first entry of `confidence.reasons`.
+   */
+  ioAssumptionNote?: string | null;
 }
 
 export interface GenerateRequest {

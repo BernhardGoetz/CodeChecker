@@ -16,6 +16,14 @@ Aufgaben mit kind "api" haben keine ausführbare Referenz: Rot gilt dort als
 erwartet ("rot-leer"), Grün/Gelb als "api-ungeprüft". Ab 1.1.2-e3 meldet die
 Pipeline solche Klassen-Aufgaben ehrlich ("unsupported": "API_TASK", in der
 Ampel-Spalte "A"; zählt als "rot-leer").
+Aufgaben mit kind "method_demo" (Methode plus Programm, aber keine Konsolen-
+Ein-/Ausgabe verlangt, z. B. backwards ab 1.1.2-e3b): Die Ein-/Ausgabe der
+Tests ist dort eine Annahme, deshalb wird nicht gegen die Referenz geprüft.
+  korrekt      Gelb und Hinweis vorhanden ("ioAssumptionNote")
+  falsch-grün  Grün
+  falsch-gelb  Gelb ohne Hinweis
+  rot-leer     Rot (Gründe aus der Pipeline, keine Tests)
+In der Ampel-Spalte steht dort "M" für Gelb mit Hinweis.
 
 Aufruf (nur Standardbibliothek):
   python3 -I scripts/ki-bench/evaluate.py ERGEBNIS.jsonl [...]
@@ -105,6 +113,10 @@ def classify(run, tasks, ref):
     task = tasks.get(run["task"])
     if level == "red":
         return "rot-leer", []
+    if task is not None and task.get("kind") == "method_demo":
+        if level == "green":
+            return "falsch-grün", []
+        return ("korrekt" if run.get("ioAssumptionNote") else "falsch-gelb"), []
     if task is None or task.get("kind") == "api":
         return "api-ungeprüft", []
     wrong = []
@@ -146,6 +158,8 @@ def summarize(runs, tasks, ref, details=False):
         level = {"green": "G", "yellow": "Y", "red": "R"}.get(run.get("level"), "E")
         if run.get("unsupported") == "API_TASK":
             level = "A"
+        elif level == "Y" and run.get("ioAssumptionNote"):
+            level = "M"
         s["levels"].append(level)
         if not run.get("error"):
             for p in PHASES:
@@ -189,7 +203,7 @@ def print_table(label, summary, details=False):
     runs = sum(s["runs"] for s in summary.values())
     print(f"\nSumme über {runs} Läufe: " + ", ".join(f"{c} {total[c]}" for c in CATEGORIES))
     print("Ampel: G grün, Y gelb, R rot, A Klassen-Aufgabe (ehrliche Meldung, keine Ampel), "
-          "E Fehler; Zeiten und Tokens: Mittel je Lauf; "
+          "M gelb mit Hinweis zur Methoden-Aufgabe, E Fehler; Zeiten und Tokens: Mittel je Lauf; "
           "abgeschn.: abgeschnittene / alle Lösungsantworten.")
     if details:
         for name, s in summary.items():
