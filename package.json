@@ -16,7 +16,7 @@
   },
   "dependencies": {
     "@monaco-editor/react": "4.7.0",
-    "@tauri-apps/api": "2.12.4",
+    "@tauri-apps/api": "2.12.5",
     "@tauri-apps/plugin-opener": "2.7.3",
     "monaco-editor": "0.57.0",
     "react": "19.3.1",
